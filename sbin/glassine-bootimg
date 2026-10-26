@@ -1,0 +1,264 @@
+#!/bin/sh
+# glassine-bootimg — kernel updates that cannot leave the device unbootable.
+# A package upgrade never writes the default slot. The kernel package's
+# trigger runs `install KVER`: the boot image is built here and written to
+# the test slot, which the bootloader boots once when asked. On the user's
+# reboot (`reboot-test`) the initramfs sees its own image pending and runs
+# the default boot by itself; glassine-bootimg-promote (OpenRC, last) checks
+# that boot and copies the test slot to the default slot. A test boot that
+# fails, hangs (watchdog) or ends before the check leaves the default slot
+# alone: the next boot is the old image, and promote marks the new one
+# failed. Never reboots, never retries by itself.
+#
+#   glassine-bootimg install KVER   build + stage (the trigger; exit 0 staged or deferred, 1 error)
+#   glassine-bootimg status         one line: none|pending|testing|failed|promoted KVER ID [deferred KVER]
+#   glassine-bootimg reboot-test    the orderly reboot into the one-shot test boot (user / settings app)
+#   glassine-bootimg retry          a failed image back to pending (the test slot must still hold it)
+#   glassine-bootimg rollback       the default slot back to the image before the last promote
+#   glassine-bootimg promote        the verdict (glassine-bootimg-promote runs it at boot)
+#
+# Board facts (slots, role detection, image fields): board.conf, see
+# conf/board.conf.example.
+# State (/var/lib/glassine-bootimg, shell-sourceable): pending (KVER ID SIZE SHA
+# STAGED TRIES), failed (+ REASON), current (KVER ID of what the default
+# slot holds), deferred (a KVER that arrived during a test boot), prev.img +
+# prev (the default slot's image before the last promote, for rollback).
+# Hooks (the device package's): run-parts /etc/glassine-bootimg/post-promote.d and
+# post-fail.d, with KEEP="kvers whose modules must stay" as env and argv;
+# health.d/* (the test boot's health checks, see health()).
+# If a write to the default slot is cut off (power loss): boot the test slot
+# (it holds the tested image) and copy it to the default slot from there.
+set -u
+ST=${GLASSINE_BI_STATE:-/var/lib/glassine-bootimg}
+BOARD=${GLASSINE_BI_BOARD:-/etc/glassine-bootimg/board.conf}
+TEST_DEV='' DEFAULT_DEV='' DEFAULT_ROLE_MATCH='' TEST_REBOOT_REASON=recovery
+# shellcheck source=/dev/null
+[ -r "$BOARD" ] && . "$BOARD"
+TESTDEV=${GLASSINE_BI_TEST_DEV:-$TEST_DEV}
+DEFDEV=${GLASSINE_BI_DEFAULT_DEV:-$DEFAULT_DEV}
+CMDLINE=${GLASSINE_BI_CMDLINE:-/proc/cmdline}
+HOOKS=${GLASSINE_BI_HOOKS:-/etc/glassine-bootimg}
+PACK=${GLASSINE_BI_PACK:-/usr/lib/glassine-bootimg/glassine-bootimg-pack}
+MODS=${GLASSINE_BI_MODULES:-/lib/modules}
+LOG=${GLASSINE_BI_LOG:-/var/log/glassine-bootimg.log}
+TMP=${GLASSINE_BI_TMP:-/run}
+REBOOT_CLEAN=${GLASSINE_BI_REBOOT_CLEAN:-/usr/sbin/glassine-reboot-clean}    # orderly reboot with a reason
+
+log() { echo "$(date '+%F %T') $*" >> "$LOG" 2>/dev/null; echo "glassine-bootimg: $*" >&2; }
+die() { log "$*"; exit 1; }
+kv() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1; }        # kv FILE KEY
+uname_r() { echo "${GLASSINE_BI_UNAME:-$(uname -r)}"; }
+# the running image's ID, and whether it came from the test slot (the same
+# role detection as the initramfs: DEFAULT_ROLE_MATCH, glassine.test)
+run_id() { sed -n 's/.*glassine[._]img=\([0-9a-f]*\).*/\1/p' "$CMDLINE"; }
+on_test_slot() {
+    grep -qw glassine.test "$CMDLINE" && return 0
+    [ -n "$DEFAULT_ROLE_MATCH" ] && ! grep -qE -- "$DEFAULT_ROLE_MATCH" "$CMDLINE"
+}
+testing() { [ -e "$ST/pending" ] && on_test_slot && [ -n "$(run_id)" ] && [ "$(run_id)" = "$(kv "$ST/pending" ID)" ]; }
+need_slots() { [ -n "$TESTDEV" ] && [ -n "$DEFDEV" ] || die "no TEST_DEV/DEFAULT_DEV in $BOARD"; }
+# sha256 of the first N bytes of a block device / file
+head_sha() { head -c "$2" "$1" | sha256sum | cut -d' ' -f1; }
+
+# write IMG to DEV, read back; one retry
+write_dev() {
+    local img=$1 dev=$2 sha n
+    sha=$(sha256sum < "$img" | cut -d' ' -f1); n=$(stat -c %s "$img")
+    touch "$TMP/glassine-bootimg.writing"       # the service's stop waits for it
+    for try in 1 2; do
+        dd if="$img" of="$dev" bs=1M conv=fsync,notrunc 2>/dev/null && sync
+        [ "$(head_sha "$dev" "$n")" = "$sha" ] && { rm -f "$TMP/glassine-bootimg.writing"; return 0; }
+        log "read-back mismatch on $dev (try $try)"
+    done
+    rm -f "$TMP/glassine-bootimg.writing"
+    return 1
+}
+
+hooks() {   # hooks post-promote|post-fail KVER...
+    local d=$HOOKS/$1.d k
+    shift
+    k=$(echo "$*" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' '); k=${k% }
+    log "$(basename "$d" .d): KEEP=$k"
+    [ -d "$d" ] || return 0
+    for h in "$d"/*; do
+        [ -x "$h" ] || continue
+        KEEP=$k "$h" $k || log "hook $h: exit $?"
+    done
+}
+
+# the default slot's kver: the state file, else (first use, on a normal boot) the running kernel
+current_kver() {
+    local k; k=$(kv "$ST/current" KVER)
+    if [ -z "$k" ] && ! on_test_slot; then
+        k=$(uname_r); printf 'KVER=%s\nID=%s\n' "$k" "$(run_id)" > "$ST/current"
+    fi
+    echo "$k"
+}
+
+cmd_install() {
+    local kver=${1:-} out img id size sha
+    [ -n "$kver" ] || die "usage: install KVER"
+    mkdir -p "$ST"
+    [ -r "$BOARD" ] || die "no $BOARD"
+    need_slots
+    [ -d "$MODS/$kver" ] || die "install $kver: no $MODS/$kver"
+    if testing; then
+        echo "KVER=$kver" > "$ST/deferred"
+        log "install $kver: a test boot is running; deferred until its verdict"
+        echo "glassine-bootimg: kernel $kver will be staged after the current test boot"
+        return 0
+    fi
+    current_kver >/dev/null
+    img=$(mktemp "$TMP/glassine-bootimg.XXXXXX") || die "mktemp in $TMP failed"
+    out=$(python3 "$PACK" "$BOARD" "$KERNEL" "$DTB" "$INITRAMFS" "$img" --expect-release "$kver" 2>&1) \
+        || { rm -f "$img"; die "install $kver: pack failed: $out"; }
+    id=$(echo "$out" | sed -n 's/.*ID=\([^ ]*\).*/\1/p'); size=$(echo "$out" | sed -n 's/.*SIZE=\([^ ]*\).*/\1/p')
+    sha=$(echo "$out" | sed -n 's/.*SHA=\([^ ]*\).*/\1/p')
+    [ -n "$id" ] && [ -n "$size" ] && [ -n "$sha" ] || { rm -f "$img"; die "install $kver: pack said '$out'"; }
+    [ -e "$ST/pending" ] && log "install $kver: replaces the staged $(kv "$ST/pending" KVER) (never booted)"
+    rm -f "$ST/pending"
+    if ! write_dev "$img" "$TESTDEV"; then
+        rm -f "$img"
+        die "install $kver: writing the test slot failed (it holds no bootable image now; the default slot is untouched)"
+    fi
+    rm -f "$img"
+    printf 'KVER=%s\nID=%s\nSIZE=%s\nSHA=%s\nSTAGED=%s\nTRIES=0\n' "$kver" "$id" "$size" "$sha" "$(date +%s)" > "$ST/pending.new"
+    mv "$ST/pending.new" "$ST/pending"; sync
+    log "install $kver: staged on the test slot (image $id, ${size} bytes)"
+    echo "glassine-bootimg: kernel $kver is ready. Reboot to test it (glassine-bootimg reboot-test)."
+}
+
+cmd_status() {
+    local s k i d=""
+    [ -e "$ST/deferred" ] && d=" deferred $(kv "$ST/deferred" KVER)"
+    if testing; then s=testing; k=$(kv "$ST/pending" KVER); i=$(kv "$ST/pending" ID)
+    elif [ -e "$ST/pending" ]; then s=pending; k=$(kv "$ST/pending" KVER); i=$(kv "$ST/pending" ID)
+    elif [ -e "$ST/failed" ]; then s=failed; k=$(kv "$ST/failed" KVER); i=$(kv "$ST/failed" ID)
+    elif [ -e "$ST/promoted" ]; then s=promoted; k=$(kv "$ST/promoted" KVER); i=$(kv "$ST/promoted" ID)
+    else echo "none$d"; return 0; fi
+    echo "$s $k $i$d"
+}
+
+cmd_reboot_test() {
+    [ -e "$ST/pending" ] || die "reboot-test: nothing staged"
+    testing && die "reboot-test: this is the test boot already"
+    sed -i 's/^TRIES=.*/TRIES=1/' "$ST/pending"; sync
+    log "reboot-test: $(kv "$ST/pending" KVER) ($(kv "$ST/pending" ID))"
+    [ -n "${GLASSINE_BI_NOREBOOT:-}" ] && return 0
+    exec "$REBOOT_CLEAN" "$TEST_REBOOT_REASON"
+}
+
+cmd_retry() {
+    need_slots
+    [ -e "$ST/failed" ] || die "retry: no failed image"
+    local size sha; size=$(kv "$ST/failed" SIZE); sha=$(kv "$ST/failed" SHA)
+    [ "$(head_sha "$TESTDEV" "$size")" = "$sha" ] || die "retry: the test slot no longer holds that image; install the kernel again"
+    grep -v '^REASON=' "$ST/failed" | sed 's/^TRIES=.*/TRIES=0/' > "$ST/pending"
+    rm -f "$ST/failed"; sync
+    log "retry: $(kv "$ST/pending" KVER) pending again"
+}
+
+# the health of this (test) boot: the generic checks, then every executable
+# $HOOKS/health.d/* (the device and desktop packages ship them): a non-zero
+# exit = unhealthy, its first output line = the reason (else its name); one
+# that runs longer than GLASSINE_BI_HEALTH_TIMEOUT (60 s) counts as unhealthy
+health() {
+    [ -n "${GLASSINE_BI_HEALTH:-}" ] && { eval "$GLASSINE_BI_HEALTH"; return; }
+    local bad="" up h why
+    up=$(cut -d. -f1 "${GLASSINE_BI_UPTIME:-/proc/uptime}")
+    [ "$up" -ge 90 ] || bad="$bad uptime<90s"
+    awk '$2 == "/" && $4 ~ /^rw(,|$)/ {ok = 1} END {exit !ok}' "${GLASSINE_BI_MOUNTS:-/proc/mounts}" || bad="$bad root-not-rw"
+    rc-status --crashed 2>/dev/null | grep -q . && bad="$bad crashed:$(rc-status --crashed | tr '\n' ',')"
+    for h in "$HOOKS"/health.d/*; do
+        [ -x "$h" ] || continue
+        why=$(timeout "${GLASSINE_BI_HEALTH_TIMEOUT:-60}" "$h" 2>/dev/null </dev/null) && continue
+        case $? in 124|143) why="$(basename "$h"): timed out" ;; esac
+        why=$(echo "$why" | head -n1); bad="$bad ${why:-$(basename "$h")}"
+    done
+    [ -z "$bad" ] && return 0
+    echo "${bad# }"; return 1
+}
+
+# pending -> failed (REASON), hooks, the deferred install
+fail() {
+    { cat "$ST/pending"; echo "REASON=$1"; } > "$ST/failed"; rm -f "$ST/pending"; sync
+    log "promote: $(kv "$ST/failed" KVER) ($(kv "$ST/failed" ID)) FAILED: $1; the default slot keeps $(current_kver)"
+    echo "Kernel $(kv "$ST/failed" KVER) failed its test boot ($1). The old kernel stays." > "$TMP/glassine-bootimg.notice"
+    hooks post-fail "$(current_kver)" "$(kv "$ST/prev" KVER)" "$(kv "$ST/deferred" KVER)"
+}
+
+deferred() {
+    [ -e "$ST/deferred" ] || return 0
+    local k; k=$(kv "$ST/deferred" KVER); rm -f "$ST/deferred"
+    log "promote: installing the deferred $k"
+    cmd_install "$k"
+}
+
+cmd_promote() {
+    [ -e "$ST/pending" ] || { current_kver >/dev/null; deferred; return 0; }
+    local kver id size sha why prev
+    kver=$(kv "$ST/pending" KVER); id=$(kv "$ST/pending" ID); size=$(kv "$ST/pending" SIZE); sha=$(kv "$ST/pending" SHA)
+    if ! testing; then
+        # a normal boot: the test boot happened (TRIES=1) and didn't promote = it failed,
+        # hung (watchdog) or ended before the check; TRIES=0: not tested yet
+        if [ "$(kv "$ST/pending" TRIES)" = 1 ] && ! on_test_slot; then fail "the test boot did not finish (hang, crash or reboot before the check)"; deferred
+        else log "promote: $kver staged, not tested yet"; fi
+        return 0
+    fi
+    need_slots
+    if ! why=$(health); then fail "health: $why"; deferred; return 0; fi
+    [ "$(head_sha "$TESTDEV" "$size")" = "$sha" ] || { fail "the test slot does not hold the staged image any more"; deferred; return 0; }
+    img=$(mktemp "$TMP/glassine-bootimg.XXXXXX") || die "mktemp failed"
+    head -c "$size" "$TESTDEV" > "$img"
+    [ "$(sha256sum < "$img" | cut -d' ' -f1)" = "$sha" ] || { rm -f "$img"; die "promote: the test slot changed while reading"; }
+    # the image before: for rollback (and, on a failed write, back onto the default slot)
+    # (only with room: root fs free after it >= GLASSINE_BI_MINFREE_KB, default 256 MiB;
+    # else no rollback, and the previous kernel's modules aren't kept either)
+    prev=$(kv "$ST/current" KVER)
+    local bsz free
+    bsz=$(blockdev --getsize64 "$DEFDEV" 2>/dev/null || stat -c %s "$DEFDEV")
+    free=$(df -Pk "$ST" | awk 'NR==2 {print $4}')
+    old=$TMP/glassine-bootimg.old                # in RAM: put back if the write fails
+    head -c "$bsz" "$DEFDEV" > "$old" || { rm -f "$img" "$old"; die "promote: reading the default slot failed"; }
+    rm -f "$ST/prev.img" "$ST/prev"
+    if [ $(( free - bsz / 1024 )) -ge "${GLASSINE_BI_MINFREE_KB:-262144}" ]; then
+        cp "$old" "$ST/prev.img.new" && mv "$ST/prev.img.new" "$ST/prev.img" && cp "$ST/current" "$ST/prev" 2>/dev/null
+    else
+        log "promote: only ${free} KiB free: no copy of the previous default image (no rollback)"
+    fi
+    log "promote: $kver ($id) passed its test boot; writing the default slot (was ${prev:-unknown}). If this is cut off: boot the test slot (this image) and copy it to the default slot"
+    if ! write_dev "$img" "$DEFDEV"; then
+        rm -f "$img"
+        log "promote: writing the default slot FAILED; putting the previous image back"
+        write_dev "$old" "$DEFDEV" || log "promote: restoring the default slot FAILED too — boot the test slot and copy it to the default slot"
+        rm -f "$old"; fail "default slot write failed"; return 1
+    fi
+    rm -f "$img" "$old"
+    printf 'KVER=%s\nID=%s\n' "$kver" "$id" > "$ST/current"
+    { cat "$ST/pending"; echo "PROMOTED=$(date +%s)"; } > "$ST/promoted"; rm -f "$ST/pending" "$ST/failed"; sync
+    log "promote: default slot = $kver ($id); the test slot keeps it as well"
+    echo "Kernel $kver is now the default." > "$TMP/glassine-bootimg.notice"
+    hooks post-promote "$kver" "$(kv "$ST/prev" KVER)" "$(kv "$ST/deferred" KVER)"
+    deferred
+}
+
+cmd_rollback() {
+    [ -e "$ST/prev.img" ] && [ -e "$ST/prev" ] || die "rollback: no previous default image"
+    testing && die "rollback: not during a test boot"
+    need_slots
+    local k; k=$(kv "$ST/prev" KVER)
+    [ -z "$k" ] || [ -d "$MODS/$k" ] || log "rollback: warning: $MODS/$k is gone (that kernel boots without modules)"
+    write_dev "$ST/prev.img" "$DEFDEV" || die "rollback: writing the default slot failed (boot the test slot)"
+    cp "$ST/prev" "$ST/current"; sync
+    log "rollback: default slot = ${k:-the previous image} again; reboot to use it"
+}
+
+case "${1:-}" in
+install) shift; cmd_install "$@" ;;
+status) cmd_status ;;
+reboot-test) cmd_reboot_test ;;
+retry) cmd_retry ;;
+rollback) cmd_rollback ;;
+promote) mkdir -p "$ST"; cmd_promote ;;
+*) sed -n '12,17s/^# //p' "$0" >&2; exit 2 ;;
+esac

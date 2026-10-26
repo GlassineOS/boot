@@ -1,0 +1,293 @@
+#!/bin/busybox sh
+# GlassineOS boot initramfs /init. One image, two roles, told apart by the
+# board's DEFAULT_ROLE_MATCH on the kernel command line:
+#
+#   DEFAULT role (a normal boot from the default slot): the daily system. The
+#   root fs (ROOT_PART) checked and mounted read-write, its own runlevels;
+#   the previous boot's pstore saved to /var/log/pstore/. The watchdog stays
+#   armed (busybox watchdog keeps petting after switch_root): a kernel hang
+#   resets warm, pstore kept.
+#
+#   TEST role (a one-shot boot from the test slot, `glassine-reboot recovery`):
+#   never writes to storage unless told to. If glassine-bootimg staged this
+#   image (glassine.img= matches its pending record), the test role runs the
+#   default boot by itself: that boot is the image's test, and
+#   glassine-bootimg-promote judges it. Otherwise, without developer mode, it
+#   runs the default boot as well (back to the default slot if that fails).
+#
+# Developer mode (glassine.devmode=usb, off by default) opens USB networking
+# on the board's DEVMODE_ADDR: a root shell (telnet, no password) and HTTP
+# endpoints. Anyone with a cable gets root, so it is for development only;
+# without it nothing listens on USB. In developer mode the test role waits
+# for the host instead of booting on, and reboots to the default slot after
+# glassine.return=<s> (default 180) unless told to stay:
+#   telnet ADDR                                 shell
+#   curl http://ADDR/cgi-bin/dmesg              kernel log
+#   curl http://ADDR/cgi-bin/status             what probed
+#   curl http://ADDR/cgi-bin/prev               the previous boot's pstore
+#   curl --data-binary @x.sh http://ADDR/cgi-bin/run    run a script
+#   curl http://ADDR/cgi-bin/stay               cancel the auto-return
+#   curl http://ADDR/cgi-bin/back               reboot to the default slot now
+#   curl http://ADDR/cgi-bin/default            run the default boot from here
+# and a failed default boot stays in the initramfs, reachable, instead of
+# powering off.
+#
+# Hooks (developer mode only): /lib/glassine-boot/hooks.d/*.sh are sourced
+# in name order before either role runs. A hook registers functions for
+# stages with `glassine_hook STAGE FUNCTION`:
+#   pre-switch-root   default boot, root fs mounted read-write at $NEWROOT
+#   endpoints         add HTTP endpoints: glassine_endpoint NAME 'shell code'
+#   wait              once a second while the test role waits for the host
+# Hooks may use log, find_root, $NEWROOT, $CMDF, and the files an image
+# builder put in $GLASSINE_EXTRA (build-initramfs.sh --extra DIR).
+#
+# Board facts come from /etc/glassine-boot/board.conf (conf/board.conf.example
+# documents every key). Without it there is no root partition to boot.
+
+/bin/busybox mkdir -p /bin /sbin /usr/bin /usr/sbin /proc /sys /dev /tmp /run
+/bin/busybox --install -s
+for a in telnetd udhcpd httpd; do ln -sf /bin/busybox-extras /sbin/$a; done
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
+
+log() { echo "<3>glassine-boot: $*" > /dev/kmsg; }
+# The host test's overrides (test/initramfs). Never as PID 1: the kernel puts
+# unknown command line words of the form A=B into PID 1's environment.
+[ $$ = 1 ] && unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS
+CMDF=${GLASSINE_INIT_CMDLINE:-/proc/cmdline}
+BOARD=${GLASSINE_INIT_BOARD:-/etc/glassine-boot/board.conf}
+HOOKDIR=${GLASSINE_INIT_HOOKS:-/lib/glassine-boot/hooks.d}
+# for the hooks (sourced): their files from build-initramfs.sh --extra
+# shellcheck disable=SC2034
+GLASSINE_EXTRA=/lib/glassine-boot/extra
+NEWROOT=/newroot
+log "init start $(cat /proc/uptime)"
+
+ROOT_PART='' ROOT_FSTYPE=ext4 DEFAULT_ROLE_MATCH='' DEVMODE_ADDR='' DEVMODE_NETMASK=255.255.255.0
+DEVMODE_DHCP_START='' DEVMODE_DHCP_END='' USB_VENDOR=0x1d6b USB_PRODUCT=0x0104 USB_MANUFACTURER=GlassineOS
+if [ -r "$BOARD" ]; then
+    # shellcheck source=/dev/null
+    . "$BOARD"
+else
+    log "no board config ($BOARD): no root partition known"
+fi
+
+arg() { sed -n "s/.*$1=\([^ ]*\).*/\1/p" "$CMDF"; }
+RETURN_S=$(arg glassine.return); [ -n "$RETURN_S" ] || RETURN_S=180
+
+# Previous boot's pstore (its kernel log; the default boot saves it)
+mkdir -p /sys/fs/pstore /tmp/prev-pstore
+mount -t pstore pstore /sys/fs/pstore 2>/dev/null && cp /sys/fs/pstore/* /tmp/prev-pstore/ 2>/dev/null
+
+DEFAULT=0
+[ -n "$DEFAULT_ROLE_MATCH" ] && grep -qE -- "$DEFAULT_ROLE_MATCH" "$CMDF" && DEFAULT=1
+[ -z "$DEFAULT_ROLE_MATCH" ] && DEFAULT=1
+grep -qw glassine.test "$CMDF" && DEFAULT=0
+DEVMODE=0
+if [ "$(arg glassine.devmode)" = usb ]; then
+    if [ -n "$DEVMODE_ADDR" ]; then DEVMODE=1
+    else log "glassine.devmode=usb, but the board config has no DEVMODE_ADDR: developer mode off"; fi
+fi
+log "role: $([ $DEFAULT = 1 ] && echo default || echo test), devmode $DEVMODE"
+
+# Pet the watchdog from here on: if PID 1 or the kernel stalls, the bite resets.
+[ -e /dev/watchdog ] && { watchdog -t 5 -T 20 /dev/watchdog && log "watchdog armed (20 s)"; } \
+    || log "no /dev/watchdog"
+
+# Hooks: `glassine_hook STAGE FUNCTION` adds FUNCTION to STAGE; run_stage
+# calls them in the order they were added.
+STAGE_pre_switch_root='' STAGE_endpoints='' STAGE_wait=''
+glassine_hook() {
+    case $1 in
+    pre-switch-root) STAGE_pre_switch_root="$STAGE_pre_switch_root $2" ;;
+    endpoints) STAGE_endpoints="$STAGE_endpoints $2" ;;
+    wait) STAGE_wait="$STAGE_wait $2" ;;
+    *) log "hook: unknown stage $1 ($2), ignored" ;;
+    esac
+}
+run_stage() {
+    local f fs
+    case $1 in
+    pre-switch-root) fs=$STAGE_pre_switch_root ;;
+    endpoints) fs=$STAGE_endpoints ;;
+    wait) fs=$STAGE_wait ;;
+    esac
+    for f in $fs; do "$f" || log "hook: $f ($1) exit $?"; done
+}
+if [ $DEVMODE = 1 ]; then
+    for h in "$HOOKDIR"/*.sh; do
+        [ -r "$h" ] || continue
+        # shellcheck source=/dev/null
+        . "$h" && log "hook: $h sourced" || log "hook: $h FAILED"
+    done
+fi
+
+usbnet() {
+    G=/sys/kernel/config/usb_gadget/g1
+    mkdir -p /sys/kernel/config
+    mount -t configfs configfs /sys/kernel/config 2>/dev/null
+    mkdir -p $G/strings/0x409 $G/configs/c.1/strings/0x409 $G/functions/ncm.usb0
+    echo "$USB_VENDOR" > $G/idVendor
+    echo "$USB_PRODUCT" > $G/idProduct
+    echo "$USB_MANUFACTURER" > $G/strings/0x409/manufacturer
+    echo "GlassineOS ($(uname -r))" > $G/strings/0x409/product
+    echo "glassine" > $G/strings/0x409/serialnumber
+    echo "NCM" > $G/configs/c.1/strings/0x409/configuration
+    ln -s $G/functions/ncm.usb0 $G/configs/c.1/
+    for _ in $(seq 1 40); do UDC=$(ls /sys/class/udc 2>/dev/null | head -n1); [ -n "$UDC" ] && break; sleep 0.5; done
+    [ -n "$UDC" ] || { log "usbnet: no UDC"; return 1; }
+    echo "$UDC" > $G/UDC
+    IF=$(cat $G/functions/ncm.usb0/ifname 2>/dev/null); [ -n "$IF" ] || IF=usb0
+    ifconfig "$IF" "$DEVMODE_ADDR" netmask "$DEVMODE_NETMASK" up
+    if [ -n "$DEVMODE_DHCP_START" ] && [ -n "$DEVMODE_DHCP_END" ]; then
+        printf 'start %s\nend %s\ninterface %s\noption subnet %s\nlease_file /tmp/udhcpd.leases\n' \
+            "$DEVMODE_DHCP_START" "$DEVMODE_DHCP_END" "$IF" "$DEVMODE_NETMASK" > /tmp/udhcpd.conf
+        touch /tmp/udhcpd.leases
+        udhcpd /tmp/udhcpd.conf
+    fi
+    log "usbnet: $IF $DEVMODE_ADDR udc=$UDC"
+}
+
+glassine_endpoint() { printf '#!/bin/sh\nprintf "Content-Type: text/plain\\r\\n\\r\\n"\n%s\n' "$2" > /www/cgi-bin/$1; chmod 755 /www/cgi-bin/$1; }
+mkdir -p /www/cgi-bin
+glassine_endpoint dmesg  'dmesg'
+glassine_endpoint status 'cat /tmp/status 2>/dev/null; echo; uptime'
+glassine_endpoint prev   'for f in /tmp/prev-pstore/*; do [ -e "$f" ] && { echo "=== $f"; cat "$f"; }; done'
+glassine_endpoint run    'head -c "${CONTENT_LENGTH:-0}" > /tmp/run.sh; sh /tmp/run.sh 2>&1'
+glassine_endpoint stay   'touch /tmp/stay; echo staying'
+glassine_endpoint back   'echo rebooting to the default boot; (sleep 1; reboot -f) >/dev/null 2>&1 &'
+glassine_endpoint default 'touch /tmp/boot-default; echo "switching to the DEFAULT boot (root fs read-write, full runlevels) in 1s"'
+run_stage endpoints
+
+# The root partition's block device name. Storage may still be probing
+# when /init starts: wait up to 15 s for it.
+find_root() {
+    [ -n "$ROOT_PART" ] || return 1
+    for _ in $(seq 1 60); do
+        for u in /sys/class/block/*/uevent; do
+            grep -qx "PARTNAME=$ROOT_PART" "$u" && { sed -n 's/^DEVNAME=//p' "$u"; return 0; }
+        done
+        sleep 0.25
+    done
+    return 1
+}
+
+# The daily boot: the root fs read-write, its own runlevels (the packages
+# enable their services; nothing is linked here). The busybox watchdog keeps
+# running.
+boot_default() {
+    log "default: preparing"
+    P=$(find_root)
+    [ -n "$P" ] || { log "default: root partition ${ROOT_PART:-(none configured)} not found"; return 1; }
+    mkdir -p $NEWROOT
+    # Preen before mounting read-write, as a distribution does (fixes the
+    # safe things; exit >= 4 needs a human: mount anyway and say so).
+    if command -v "fsck.$ROOT_FSTYPE" >/dev/null; then
+        "fsck.$ROOT_FSTYPE" -p "/dev/$P" > /tmp/fsck.log 2>&1; rc=$?
+        log "default: fsck.$ROOT_FSTYPE -p $ROOT_PART: exit $rc $(tail -n1 /tmp/fsck.log)"
+    fi
+    mount -t "$ROOT_FSTYPE" -o rw,noatime "/dev/$P" $NEWROOT || { log "default: mount /dev/$P failed"; return 1; }
+    [ -x $NEWROOT/sbin/init ] || { umount $NEWROOT; log "default: no /sbin/init on $ROOT_PART"; return 1; }
+    if [ -n "$(ls /tmp/prev-pstore 2>/dev/null)" ]; then
+        D=$NEWROOT/var/log/pstore/$(date +%Y%m%d-%H%M%S)-$$
+        mkdir -p "$D" && cp /tmp/prev-pstore/* "$D"/ && log "default: saved pstore to ${D#"$NEWROOT"}"
+    fi
+    # glassine-bootimg's protocol: this boot is the staged image's test
+    [ "$AUTOTEST" = 1 ] && sed -i 's/^TRIES=.*/TRIES=1/' $NEWROOT/var/lib/glassine-bootimg/pending
+    run_stage pre-switch-root
+    mkdir -p $NEWROOT/var/log
+    { echo "=== $(date) glassine-boot, default boot"; cat "$CMDF"; cat /tmp/fsck.log 2>/dev/null; dmesg | tail -n 300; } > $NEWROOT/var/log/glassine-boot.log
+    # USB goes to the root fs
+    killall httpd telnetd udhcpd 2>/dev/null
+    if [ -d /sys/kernel/config/usb_gadget/g1 ]; then
+        G=/sys/kernel/config/usb_gadget/g1
+        echo "" > $G/UDC 2>/dev/null
+        rm -f $G/configs/c.1/ncm.usb0
+        rmdir $G/configs/c.1/strings/0x409 $G/configs/c.1 $G/functions/ncm.usb0 $G/strings/0x409 $G 2>/dev/null
+    fi
+    umount /sys/kernel/config 2>/dev/null
+    log "default: switch_root $(cut -d' ' -f1 /proc/uptime)"
+    umount /sys/fs/pstore 2>/dev/null
+    for m in /proc /sys /dev; do mkdir -p $NEWROOT$m; done
+    mount --move /dev $NEWROOT/dev
+    mount --move /sys $NEWROOT/sys
+    mount --move /proc $NEWROOT/proc
+    exec switch_root $NEWROOT /sbin/init
+}
+
+# The test boot of an image glassine-bootimg staged (its glassine.img= = the
+# ID in the root fs's /var/lib/glassine-bootimg/pending): the default boot by
+# itself, no host; if it can't, back to the default slot (whose promote then
+# marks the image failed). Without glassine.img= nothing changes.
+AUTOTEST=0
+IMG_ID=$(sed -n 's/.*glassine[._]img=\([0-9a-f]*\).*/\1/p' "$CMDF")
+if [ $DEFAULT = 0 ] && [ -n "$IMG_ID" ]; then
+    P=$(find_root)
+    # a look only: read-only, and for ext3/4 without replaying the journal
+    case $ROOT_FSTYPE in ext3|ext4) o=ro,noload ;; *) o=ro ;; esac
+    if [ -n "$P" ] && mkdir -p /peek && mount -t "$ROOT_FSTYPE" -o $o /dev/$P /peek 2>/dev/null; then
+        [ "$(sed -n 's/^ID=//p' /peek/var/lib/glassine-bootimg/pending 2>/dev/null)" = "$IMG_ID" ] && AUTOTEST=1
+        umount /peek
+    fi
+    log "image $IMG_ID: $([ $AUTOTEST = 1 ] && echo "staged by glassine-bootimg, its test boot" || echo "not staged")"
+fi
+if [ $AUTOTEST = 1 ]; then
+    boot_default
+    log "glassine-bootimg test boot FAILED before switch_root: back to the default slot"
+    sync; reboot -f
+fi
+
+# No developer mode: never a listener on USB (no telnetd/httpd/udhcpd, no gadget).
+if [ $DEVMODE != 1 ]; then
+    boot_default
+    if [ $DEFAULT = 1 ]; then
+        log "default boot FAILED (no developer mode: no USB shell): power off in 60 s"
+        sleep 60; sync; poweroff -f
+    else
+        log "test boot: default boot FAILED: back to the default slot"
+        sync; reboot -f
+    fi
+    while :; do sleep 3600; done        # PID 1 never exits
+fi
+
+# Developer mode, the daily boot: straight on (no host, no auto-return); if it
+# can't, stay here reachable over USB (an auto-return would only loop).
+if [ $DEFAULT = 1 ]; then
+    boot_default
+    log "default boot FAILED: staying in the initramfs (telnet $DEVMODE_ADDR)"
+    touch /tmp/stay
+fi
+
+usbnet
+telnetd -b "$DEVMODE_ADDR:23" -l /bin/sh
+httpd -p "$DEVMODE_ADDR:80" -h /www
+
+# One-screen summary of what probed (the status endpoint).
+{
+    echo "kernel: $(uname -r)"
+    echo "cmdline: $(cat "$CMDF")"
+    echo "block: $(ls /sys/class/block 2>/dev/null | wc -l) devices, root ${ROOT_PART:-?} $(find_root || echo 'not found')"
+    echo "input: $(cat /sys/class/input/input*/name 2>/dev/null | tr '\n' ',')"
+    echo "backlight: $(ls /sys/class/backlight 2>/dev/null | tr '\n' ' ')"
+    echo "leds: $(ls /sys/class/leds 2>/dev/null | tr '\n' ' ')"
+    echo "watchdog: $(ls /dev/watchdog* 2>/dev/null | tr '\n' ' ')"
+    echo "power_supply: $(ls /sys/class/power_supply 2>/dev/null | tr '\n' ' ')"
+    for p in /sys/class/power_supply/*; do [ -e "$p/type" ] && echo "  $(basename "$p"): $(cd "$p" && for f in status capacity voltage_now current_now charge_now temp; do [ -r $f ] && printf '%s=%s ' $f "$(cat $f 2>/dev/null)"; done)"; done
+    echo "deferred: $(cat /sys/kernel/debug/devices_deferred 2>/dev/null | wc -l) (mount debugfs for details)"
+} > /tmp/status
+log "status: $(tr '\n' ';' < /tmp/status)"
+
+# PID 1: wait for the host; auto-return if it never shows up.
+t=0
+while :; do
+    sleep 1; t=$((t + 1))
+    run_stage wait
+    [ -e /tmp/boot-default ] && { rm -f /tmp/boot-default; boot_default; log "default: switch failed, staying in initramfs"; }
+    if [ ! -e /tmp/stay ] && [ $t -ge "$RETURN_S" ]; then
+        log "no host after ${RETURN_S}s — rebooting to the default boot"
+        sync; reboot -f
+    fi
+done

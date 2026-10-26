@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""Pack the boot image on the device (glassine-bootimg install), with the header
+fields from board.conf: Android boot image header v0, kernel = Image.gz +
+appended DTB (where header v0 bootloaders look for it), ramdisk, cmdline.
+
+The ramdisk is the initramfs plus a second cpio archive with board.conf as
+/etc/glassine-boot/board.conf (the kernel unpacks concatenated archives), so
+the initramfs reads the same board facts as the tools.
+
+The cmdline gets glassine.img=<ID>: the first 16 hex digits of sha256 over the
+kernel, DTB, ramdisk and base cmdline. The image can't carry its own sha256,
+so a boot tells which image it runs by this ID (both slots hold the same
+bytes after a promote).
+
+With --expect-release KVER the kernel must be that release ("Linux version
+KVER " in the decompressed Image), else exit 3.
+
+usage: glassine-bootimg-pack BOARD.conf Image.gz board.dtb initramfs.cpio.gz OUT.img [--expect-release KVER]
+prints: ID=<id16> SIZE=<bytes> SHA=<sha256 of OUT>
+"""
+import gzip, hashlib, shlex, struct, sys
+
+a = sys.argv[1:]
+expect = None
+if '--expect-release' in a:
+    i = a.index('--expect-release'); expect = a[i + 1]; del a[i:i + 2]
+conf_path, image_gz, dtb_path, ramdisk_path, out = a
+
+conf = {}
+for line in open(conf_path):
+    line = line.strip()
+    if line and not line.startswith('#') and '=' in line:
+        k, v = line.split('=', 1)
+        conf[k.strip()] = (shlex.split(v) or [''])[0]
+num = lambda k: int(conf[k], 0)
+ps = num('PAGE_SIZE')
+
+kernel_gz = open(image_gz, 'rb').read()
+if expect is not None:
+    if b'Linux version ' + expect.encode() + b' ' not in gzip.decompress(kernel_gz):
+        print(f'glassine-bootimg-pack: {image_gz} is not kernel release {expect}', file=sys.stderr)
+        sys.exit(3)
+kernel = kernel_gz + open(dtb_path, 'rb').read()
+
+def newc(entries):
+    """A newc cpio archive of (name, mode, data) entries, owner 0:0, mtime 0."""
+    out = bytearray()
+    for ino, (name, mode, data) in enumerate(entries + [('TRAILER!!!', 0, b'')], 1):
+        nb = name.encode() + b'\0'
+        fields = (ino, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(nb), 0)
+        out += b'070701' + b''.join(b'%08X' % f for f in fields) + nb
+        out += b'\0' * (-len(out) % 4) + data
+        out += b'\0' * (-len(out) % 4)
+    return bytes(out)
+
+
+rd = open(ramdisk_path, 'rb').read()
+rd += b'\0' * (-len(rd) % 4)              # each archive starts 4-byte aligned
+rd += newc([('etc', 0o40755, b''), ('etc/glassine-boot', 0o40755, b''),
+            ('etc/glassine-boot/board.conf', 0o100644, open(conf_path, 'rb').read())])
+base = conf['CMDLINE']
+ident = hashlib.sha256(kernel + b'\0' + rd + b'\0' + base.encode()).hexdigest()[:16]
+cmd = f'{base} glassine.img={ident}'.encode()
+assert len(cmd) < 512, 'cmdline too long for header v0'
+
+hdr = bytearray(ps)
+hdr[0:8] = b'ANDROID!'
+struct.pack_into('<10I', hdr, 8, len(kernel), num('KERNEL_ADDR'), len(rd), num('RAMDISK_ADDR'),
+                 0, num('SECOND_ADDR'), num('TAGS_ADDR'), ps, 0, num('OS_VERSION'))
+hdr[48:64] = conf.get('NAME', 'glassine').encode()[:15].ljust(16, b'\0')
+hdr[64:64 + 512] = cmd.ljust(512, b'\0')
+sha1 = hashlib.sha1()
+for blob in (kernel, rd, b''):
+    sha1.update(blob); sha1.update(struct.pack('<I', len(blob)))
+hdr[576:608] = sha1.digest().ljust(32, b'\0')           # id (as mkbootimg)
+
+up = lambda n: (n + ps - 1) // ps * ps
+img = bytes(hdr) + kernel.ljust(up(len(kernel)), b'\0') + rd.ljust(up(len(rd)), b'\0')
+limit = num('PART_SIZE')
+assert len(img) <= limit, f'image {len(img)} > partition {limit}'
+open(out, 'wb').write(img)
+print(f'ID={ident} SIZE={len(img)} SHA={hashlib.sha256(img).hexdigest()}')

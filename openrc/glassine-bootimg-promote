@@ -1,0 +1,37 @@
+#!/sbin/openrc-run
+# The verdict on a staged kernel (glassine-bootimg): on its test boot, after
+# the boot has settled, a health check, then the test slot is copied to the
+# default slot; on a normal boot, a test boot that never got there = failed. In the background: the check waits
+# for uptime >= 120 s and never holds up the boot.
+#
+# A one-shot job, not a daemon: OpenRC calls a --background daemon that exits
+# "crashed", so the job runs detached with its own pid file (not pidfile=);
+# the service stays "started".
+# shellcheck disable=SC2034  # read by openrc-run
+description="glassine-bootimg: promote a tested kernel to the default slot"
+
+JOBPID=/run/glassine-bootimg-promote.job
+
+depend() {
+	after *
+}
+
+start() {
+	ebegin "glassine-bootimg-promote: verdict after the boot settles"
+	setsid /bin/sh -c 'echo $$ > '"$JOBPID"'
+		while [ "$(cut -d. -f1 /proc/uptime)" -lt 120 ]; do sleep 5; done
+		/usr/sbin/glassine-bootimg promote
+		rm -f '"$JOBPID" </dev/null >/dev/null 2>&1 &
+	eend 0
+}
+
+stop() {
+	# never cut a partition write short: wait for it (glassine-bootimg marks it)
+	n=0
+	while [ -e /run/glassine-bootimg.writing ] && [ $n -lt 120 ]; do sleep 1; n=$((n + 1)); done
+	if [ -s "$JOBPID" ]; then
+		kill "$(cat "$JOBPID")" 2>/dev/null
+		rm -f "$JOBPID"
+	fi
+	return 0
+}

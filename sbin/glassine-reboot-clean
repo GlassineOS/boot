@@ -1,0 +1,18 @@
+#!/bin/sh
+# glassine-reboot-clean [recovery|bootloader|<reason>] — an orderly reboot WITH a
+# reason. busybox `reboot` runs OpenRC's shutdown (services stopped, root fs
+# read-only) but can't pass a reason; glassine-reboot passes one but skips the
+# shutdown, which leaves the root fs dirty. The test boot looks at the root
+# fs without replaying its journal, so a dirty root would show it a stale
+# file system.
+# Here: `openrc shutdown` from a new session (killprocs' killall5 spares the
+# caller's session), then glassine-reboot. A stop that hangs: reboot after 90 s anyway.
+GLASSINE_REBOOT=${GLASSINE_REBOOT:-/usr/sbin/glassine-reboot}    # reboot(2) with a reason (src/glassine-reboot.c)
+case "$GLASSINE_REBOOT" in *[!A-Za-z0-9/._-]*) echo "glassine-reboot-clean: bad GLASSINE_REBOOT path" >&2; exit 2 ;; esac
+[ -n "$1" ] || exec reboot
+case "$1" in *[!a-z0-9-]*) echo "glassine-reboot-clean: bad reason '$1'" >&2; exit 2 ;; esac
+setsid sh -c "
+	(sleep 90; sync; exec $GLASSINE_REBOOT $1) &
+	openrc shutdown >/dev/null 2>&1
+	sync
+	exec $GLASSINE_REBOOT $1" </dev/null >/dev/null 2>&1 &
