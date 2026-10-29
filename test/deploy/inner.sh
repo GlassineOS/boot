@@ -80,5 +80,66 @@ ok "mounted: hibernated=yes" "[ \"\$(st hibernated)\" = yes ]"
 gs_invalidate_file $W/udmnt/$P/swap/hibernate
 ok "gs_invalidate_file: hibernated=no, size unchanged" "[ \"\$(st hibernated)\" = no ] && [ \$(wc -c < $W/udmnt/$P/swap/hibernate) = 1048576 ]"
 
+# --- list / select / rollback (fake mounts) ----------------------------------
+U=$W/udmnt/$P
+for d in d1 d2 d3 d4; do mkdir -p $U/deployments/$d/build; printf 'base=v3.22.%s\nkernel=7.3.0-na1\ncreated=2026-10-2%s\n' ${d#d} ${d#d} > $U/deployments/$d/meta; done
+echo failed=1 >> $U/deployments/d3/meta
+echo x > $U/deployments/notadir
+printf 'current=d2\nprevious=d1\ncandidate=\ntries=0\nextra=keep\n' > $W/sysmnt/state/deploy
+D=$W/sysmnt/state/deploy
+lst() { $G list --porcelain | grep "	id=$1	" | tr '\t' '\n' | sed -n "s/^$2=//p"; }
+ok "list: header + 4 records" "[ \"\$($G list --porcelain | head -n 1)\" = 'glassine-deploy 1' ] && [ \$($G list --porcelain | grep -c '^type=deployment	') = 4 ]"
+ok "list: states current/previous/failed/kept" "[ \"\$(lst d2 state)\" = current ] && [ \"\$(lst d1 state)\" = previous ] && [ \"\$(lst d3 state)\" = failed ] && [ \"\$(lst d4 state)\" = kept ]"
+ok "list: meta fields + size" "[ \"\$(lst d4 base)\" = v3.22.4 ] && [ \"\$(lst d4 created)\" = 2026-10-24 ] && [ -n \"\$(lst d4 size_kib)\" ]"
+ok "list: human table" "$G list | grep -q '^d4 *kept'"
+$G select d4 >/dev/null
+ok "select d4: candidate=d4 tries=2, current kept, other keys kept" "[ \"\$(gs_kv \$D candidate)\" = d4 ] && [ \"\$(gs_kv \$D tries)\" = 2 ] && [ \"\$(gs_kv \$D current)\" = d2 ] && [ \"\$(gs_kv \$D extra)\" = keep ]"
+ok "list: d4 is the candidate" "[ \"\$(lst d4 state)\" = candidate ]"
+$G select d2 >/dev/null
+ok "select current: candidate cleared" "[ -z \"\$(gs_kv \$D candidate)\" ] && [ \"\$(gs_kv \$D tries)\" = 0 ]"
+cp $D $W/before
+ok "select unknown id: exit 1, state unchanged" "$G select d9 2>/dev/null; [ \$? = 1 ] && cmp -s $D $W/before"
+ok "select a bad id: exit 2" "$G select ../d1 2>/dev/null; [ \$? = 2 ] && cmp -s $D $W/before"
+ok "select needs exactly one id: exit 2" "$G select 2>/dev/null; [ \$? = 2 ]"
+$G rollback >/dev/null
+ok "rollback: candidate = previous" "[ \"\$(gs_kv \$D candidate)\" = d1 ] && [ \"\$(gs_kv \$D tries)\" = 2 ]"
+gs_update $D candidate= tries=0 previous=
+ok "rollback without a previous: exit 1" "$G rollback 2>/dev/null; [ \$? = 1 ]"
+gs_set $D previous d1; cp $D $W/before
+
+# refusals must leave the state alone
+printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/dev/null
+ok "hibernated: select refuses, exit 4, state unchanged" "$G select d4 2>/dev/null </dev/null; [ \$? = 4 ] && cmp -s $D $W/before && [ \"\$(st hibernated)\" = yes ]"
+ok "--discard-hibernation without --yes, no terminal: exit 1, image kept" "$G select d4 --discard-hibernation 2>/dev/null </dev/null; [ \$? = 1 ] && cmp -s $D $W/before && [ \"\$(st hibernated)\" = yes ]"
+ok "--discard-hibernation --yes: invalidated, then selected" "$G select d4 --discard-hibernation --yes >/dev/null && [ \"\$(st hibernated)\" = no ] && [ \"\$(gs_kv \$D candidate)\" = d4 ]"
+cp $D $W/before
+: > $W/run/switching
+ok "a switch running: exit 6, unchanged" "$G select d1 2>/dev/null; [ \$? = 6 ] && cmp -s $D $W/before"
+rm $W/run/switching
+( exec 9>>$W/sysmnt/state/.lock; flock -n 9 && : > $W/held && sleep 5 ) &
+while [ ! -e $W/held ]; do sleep 0.1; done
+ok "lock held: exit 6, unchanged" "$G select d1 2>/dev/null; [ \$? = 6 ] && cmp -s $D $W/before"
+wait; rm -f $W/held
+mkdir -p $W/shim; printf '#!/bin/sh\ncat >/dev/null\nexit 1\n' > $W/shim/dd; chmod +x $W/shim/dd
+ok "a cut write (dd fails): exit 1, old file intact, no temp file" "PATH=$W/shim:\$PATH $G select d1 2>$W/err; [ \$? = 1 ] && grep -q 'cannot write' $W/err && cmp -s $D $W/before && [ -z \"\$(ls -a $W/sysmnt/state | grep tmp)\" ]"
+echo version=2 > $W/sysmnt/state/format
+ok "newer format: select, list, rollback exit 3, unchanged" "$G select d1 2>/dev/null; a=\$?; $G list >/dev/null 2>&1; b=\$?; $G rollback 2>/dev/null; c=\$?; [ \$a\$b\$c = 333 ] && cmp -s $D $W/before"
+echo version=1 > $W/sysmnt/state/format
+
+# --- hibernate-invalidate -----------------------------------------------------
+ok "invalidate, nothing hibernated: exit 0" "$G hibernate-invalidate >/dev/null"
+printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/dev/null
+ok "invalidate without --yes, no terminal: exit 1, kept" "$G hibernate-invalidate 2>/dev/null </dev/null; [ \$? = 1 ] && [ \"\$(st hibernated)\" = yes ]"
+ok "invalidate --yes (mounted): hibernated=no" "$G hibernate-invalidate --yes >/dev/null && [ \"\$(st hibernated)\" = no ]"
+unset GLASSINE_DEPLOY_FAKE_MOUNTS
+printf 'S1SUSPEND\000' | dd of=$W/userdata.img bs=1 seek=$((B * 4096 + 4086)) conv=notrunc 2>/dev/null
+ok "invalidate --yes (unmounted, raw): hibernated=no" "[ \"\$(st hibernated)\" = yes ] && $G hibernate-invalidate --yes >/dev/null && [ \"\$(st hibernated)\" = no ]"
+
+# --- list on unmounted userdata (debugfs) -------------------------------------
+debugfs -w -R "mkdir /$P/deployments" $W/userdata.img 2>/dev/null
+for d in d1 d2; do debugfs -w -R "mkdir /$P/deployments/$d" $W/userdata.img 2>/dev/null; debugfs -w -R "write $U/deployments/$d/meta /$P/deployments/$d/meta" $W/userdata.img >/dev/null 2>&1; done
+ok "list (debugfs): 2 records, meta read, no size" "[ \$($G list --porcelain | grep -c '^type=deployment	') = 2 ] && [ \"\$(lst d2 base)\" = v3.22.2 ] && [ -z \"\$(lst d2 size_kib)\" ]"
+ok "select on an ext4 (unmigrated) system: exit 1" "$G select d1 2>/dev/null; [ \$? = 1 ]"
+
 echo "$fails failed"
 [ $fails = 0 ]

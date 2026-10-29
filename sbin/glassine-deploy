@@ -6,6 +6,15 @@
 # phase docs, "rootfs and deployments" (§5.14 = this interface).
 #
 #   glassine-deploy status [--porcelain]
+#   glassine-deploy list [--porcelain]
+#   glassine-deploy select ID [--yes] [--discard-hibernation]
+#   glassine-deploy rollback [--yes] [--discard-hibernation]
+#   glassine-deploy hibernate-invalidate [--yes]
+#
+# select makes ID the candidate for the next boot (2 tries, then the current
+# one again); selecting the current deployment cancels a candidate. rollback
+# = select the previous one. hibernate-invalidate turns a hibernate image on
+# userdata back into a plain swap file (that session is lost).
 #
 # --porcelain: the first line is "glassine-deploy 1" (the output format
 # version), then one record per line: tab-separated key=value fields, the
@@ -35,6 +44,7 @@ GUARD="$USERDATA_PREFIX/swap/hibernate.guard"
 MOUNTED_HERE=''
 
 die() { echo "glassine-deploy: $*" >&2; exit 1; }
+fail() { _c=$1; shift; echo "glassine-deploy: $*" >&2; exit "$_c"; }
 usage() { sed -n 's/^#   //p' "$0" >&2; exit 2; }
 
 # is_mounted DIR: busybox mountpoint, or the test hook (a plain directory)
@@ -94,6 +104,108 @@ hibernated() {
     [ "$_s" = "$GS_SIG_HIBERNATE" ] && echo yes || echo no
 }
 
+# Userdata is read through its mount when it is mounted, else with debugfs on
+# the device (no mount, no journal replay; may miss the newest writes of an
+# unclean shutdown, which is fine for reading the list).
+ud_mounted() { is_mounted "$USERDATA_MNT"; }
+ud_dev() { [ -n "$USERDATA_DEV" ] && [ -e "$USERDATA_DEV" ]; }
+
+# ud_dirs REL: the subdirectories of <prefix>/REL
+ud_dirs() {
+    if ud_mounted; then
+        for _d in "$USERDATA_MNT/$USERDATA_PREFIX/$1"/*; do
+            [ -d "$_d" ] && echo "${_d##*/}"
+        done
+    elif ud_dev; then
+        # ls -p: /inode/mode/uid/gid/name/size/
+        debugfs -R "ls -p /$USERDATA_PREFIX/$1" "$USERDATA_DEV" 2>/dev/null |
+            awk -F/ 'NF > 6 && $3 ~ /^0*4/ && $6 != "." && $6 != ".." { print $6 }'
+    fi
+}
+
+# ud_cat REL: the contents of <prefix>/REL (empty if missing)
+ud_cat() {
+    if ud_mounted; then
+        cat "$USERDATA_MNT/$USERDATA_PREFIX/$1" 2>/dev/null
+    elif ud_dev; then
+        debugfs -R "cat /$USERDATA_PREFIX/$1" "$USERDATA_DEV" 2>/dev/null
+    fi
+    return 0
+}
+
+# ud_size_kib REL: disk use of <prefix>/REL; empty while userdata is not mounted
+ud_size_kib() {
+    ud_mounted || return 0
+    du -sk "$USERDATA_MNT/$USERDATA_PREFIX/$1" 2>/dev/null | cut -f 1
+}
+
+# invalidate: rule 5 on the swap file, the same way hibernated() reads it
+invalidate() {
+    if ud_mounted; then
+        [ -e "$USERDATA_MNT/$SWAPFILE" ] || return 0
+        gs_invalidate_file "$USERDATA_MNT/$SWAPFILE"
+    else
+        _b=$(gs_dev_block "$USERDATA_DEV" "$SWAPFILE") || return 1
+        gs_invalidate_dev "$USERDATA_DEV" "$_b"
+    fi
+}
+
+# confirm QUESTION: --yes, or a "y" on a terminal; anything else cancels
+confirm() {
+    [ "$YES" = 1 ] && return 0
+    [ -t 0 ] || die "$1: rerun with --yes"
+    printf '%s [y/N] ' "$1" >&2
+    read -r _a || _a=''
+    case "$_a" in y|Y|yes) return 0 ;; esac
+    die cancelled
+}
+
+# format_check: refuse (exit 3) a state format newer than this tool; sets FMT
+format_check() {
+    FMT=none
+    [ -n "$SYS_DIR" ] && FMT=$(gs_format_version "$SYS_DIR")
+    [ "$FMT" = none ] || gs_format_ok "$FMT" ||
+        fail 3 "state format $FMT is newer than this tool ($GS_FORMAT_SUPPORTED); update glassine-deploy"
+}
+
+# hibernation_gate: rule 8, before anything mounts the system partition
+# read-write. Refuses (exit 4) unless --discard-hibernation, then invalidates.
+hibernation_gate() {
+    case $(hibernated) in
+    no) return 0 ;;
+    yes)
+        [ "$DISCARD" = 1 ] || fail 4 "userdata holds a hibernated session; rerun with --discard-hibernation (the session is lost)"
+        confirm "Discard the hibernated session?"
+        invalidate || die "cannot invalidate the hibernate image"
+        [ "$(hibernated)" = no ] || die "the hibernate image is still there"
+        ;;
+    *)
+        [ "$DISCARD" = 1 ] || fail 4 "cannot tell whether userdata holds a hibernated session; rerun with --discard-hibernation"
+        ;;
+    esac
+}
+
+# state_open_rw: the system partition read-write, its state locked. Sets S.
+state_open_rw() {
+    system_open || die "cannot mount $SYSTEM_DEV read-only"
+    format_check
+    [ "$FMT" = none ] && die "the system partition is not migrated (no state/)"
+    cleanup
+    hibernation_gate
+    if ! is_mounted "$SYSTEM_MNT"; then
+        mkdir -p "$SYSTEM_MNT" || die "cannot create $SYSTEM_MNT"
+        mount -t btrfs -o rw "$SYSTEM_DEV" "$SYSTEM_MNT" || die "cannot mount $SYSTEM_DEV read-write"
+        MOUNTED_HERE=$SYSTEM_MNT
+    fi
+    S="$SYSTEM_MNT/state"
+    [ -e "$RUN_DIR/switching" ] && fail 6 "a deployment switch is running"
+    : >>"$S/.lock" 2>/dev/null || die "$S is not writable"
+    gs_lock "$S" || fail 6 "busy: another glassine-deploy holds $S/.lock"
+}
+
+# meta_kv META KEY: one key of a deployment's meta (key=value text)
+meta_kv() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1; }
+
 # out KEY VALUE…: collect the fields of one record
 REC=''
 out() { REC="$REC$1=$2	"; }
@@ -141,16 +253,95 @@ cmd_status() {
     return $rc
 }
 
+cmd_list() {
+    system_open || die "cannot mount $SYSTEM_DEV read-only"
+    format_check
+    cur='' prev='' cand=''
+    if [ "$FMT" != none ]; then
+        cur=$(gs_kv "$SYS_DIR/state/deploy" current)
+        prev=$(gs_kv "$SYS_DIR/state/deploy" previous)
+        cand=$(gs_kv "$SYS_DIR/state/deploy" candidate)
+    fi
+    [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
+    [ "$PORC" = 1 ] || printf '%-24s %-10s %-20s %-16s %-20s %s\n' ID STATE BASE KERNEL CREATED KIB
+    for id in $(ud_dirs deployments); do
+        m=$(ud_cat "deployments/$id/meta")
+        if [ "$id" = "$cur" ]; then st=current
+        elif [ "$id" = "$cand" ]; then st=candidate
+        elif [ "$id" = "$prev" ]; then st=previous
+        elif [ "$(meta_kv "$m" failed)" = 1 ]; then st=failed
+        else st=kept
+        fi
+        if [ "$PORC" = 1 ]; then
+            out type deployment; out id "$id"; out state "$st"
+            out base "$(meta_kv "$m" base)"; out kernel "$(meta_kv "$m" kernel)"
+            out created "$(meta_kv "$m" created)"; out size_kib "$(ud_size_kib "deployments/$id")"
+            emit
+        else
+            printf '%-24s %-10s %-20s %-16s %-20s %s\n' "$id" "$st" "$(meta_kv "$m" base)" \
+                "$(meta_kv "$m" kernel)" "$(meta_kv "$m" created)" "$(ud_size_kib "deployments/$id")"
+        fi
+    done
+}
+
+# do_select ID: ID becomes the candidate (2 tries); the current one cancels it
+do_select() {
+    case "$1" in ''|.*|*[!A-Za-z0-9._-]*) fail 2 "not a deployment id: $1" ;; esac
+    ud_dirs deployments | grep -qx -- "$1" || die "no deployment $1 on userdata"
+    state_open_rw
+    cur=$(gs_kv "$S/deploy" current)
+    if [ "$1" = "$cur" ]; then
+        gs_update "$S/deploy" candidate= tries=0 || die "cannot write $S/deploy"
+        echo "glassine-deploy: $1 is the current deployment; no candidate"
+    else
+        gs_update "$S/deploy" "candidate=$1" tries=2 || die "cannot write $S/deploy"
+        echo "glassine-deploy: $1 boots next (2 tries, then ${cur:-the current one} again)"
+    fi
+}
+
+cmd_select() { do_select "$ARG"; }
+
+cmd_rollback() {
+    system_open || die "cannot mount $SYSTEM_DEV read-only"
+    format_check
+    [ "$FMT" = none ] && die "the system partition is not migrated (no state/)"
+    prev=$(gs_kv "$SYS_DIR/state/deploy" previous)
+    cleanup
+    [ -n "$prev" ] || die "there is no previous deployment"
+    do_select "$prev"
+}
+
+cmd_hibernate_invalidate() {
+    system_open || die "cannot mount $SYSTEM_DEV read-only"
+    format_check
+    cleanup
+    case $(hibernated) in
+    no) echo "glassine-deploy: no hibernate image"; return 0 ;;
+    unknown) die "cannot read the swap file on userdata" ;;
+    esac
+    confirm "Discard the hibernated session?"
+    invalidate || die "cannot invalidate the hibernate image"
+    [ "$(hibernated)" = no ] || die "the hibernate image is still there"
+    echo "glassine-deploy: hibernate image invalidated"
+}
+
 [ $# -ge 1 ] || usage
 CMD=$1; shift
-PORC=0
+PORC=0 YES=0 DISCARD=0 ARG='' NARG=0
 for a in "$@"; do
     case "$a" in
     --porcelain) PORC=1 ;;
-    *) usage ;;
+    --yes) YES=1 ;;
+    --discard-hibernation) DISCARD=1 ;;
+    -*) usage ;;
+    *) ARG=$a; NARG=$((NARG + 1)) ;;
     esac
 done
-case "$CMD" in
-status) cmd_status ;;
+case "$CMD:$NARG" in
+status:0) cmd_status ;;
+list:0) cmd_list ;;
+select:1) cmd_select ;;
+rollback:0) cmd_rollback ;;
+hibernate-invalidate:0) cmd_hibernate_invalidate ;;
 *) usage ;;
 esac

@@ -33,9 +33,22 @@ gs_write() {
     sync
 }
 
+# gs_update FILE KEY=VALUE…: replace several keys of a key=value file in one
+# atomic write (other keys are kept)
+gs_update() {
+    _gs_f=$1; shift
+    _gs_re=''
+    for _gs_a in "$@"; do _gs_re="$_gs_re${_gs_re:+|}^${_gs_a%%=*}="; done
+    { [ -r "$_gs_f" ] && grep -Ev "$_gs_re" "$_gs_f"; printf '%s\n' "$@"; } | gs_write "$_gs_f"
+}
+
 # gs_set FILE KEY VALUE: rewrite one key of a key=value file atomically
-gs_set() {
-    { [ -r "$1" ] && grep -v "^$2=" "$1"; printf '%s=%s\n' "$2" "$3"; } | gs_write "$1"
+gs_set() { gs_update "$1" "$2=$3"; }
+
+# gs_lock STATEDIR: take state/.lock (flock, fd 9, held until exit); 1 if busy
+gs_lock() {
+    exec 9>>"$1/.lock" || return 1
+    flock -n 9
 }
 
 # gs_format_version SYSDIR: the state format of a mounted system partition
