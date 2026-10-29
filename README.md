@@ -9,6 +9,17 @@ the device unbootable.
 Everything specific to one device lives in a board configuration
 (`conf/board.conf.example`), which the device package ships.
 
+It also assembles the root file system from deployments (a read-only btrfs base plus
+the deployment's layers on userdata) and manages them with `glassine-deploy`:
+
+- [docs/deployments.md](docs/deployments.md): on-disk format, state, `glassine-deploy`
+  interface, porcelain and exit codes (the owning reference)
+- [docs/boot.md](docs/boot.md): the initramfs's root layouts and the hibernation step
+- [docs/testing.md](docs/testing.md): what the host tests prove and what is proven on
+  hardware
+- [specs/001-deployments/spec.md](specs/001-deployments/spec.md): requirements and
+  acceptance scenarios
+
 ## Contents
 
 | Path | What |
