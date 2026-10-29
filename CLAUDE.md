@@ -10,3 +10,6 @@ Boot initramfs and on-device kernel update tools (see `README.md`). Every change
   failure case (cut write, read-back mismatch) before it merges.
 - Commits carry an `Assisted-by:` or `Co-Authored-By:` trailer. Never add
   `Signed-off-by`. Run `.glassine/org/scripts/safety-scan.sh --staged` before committing.
+- Specs: Spec Kit 1.1.0 with the org preset (`.specify/`, setup in
+  `.glassine/org/SPECS.md`); features go in `specs/###-name/`. The repository principles
+  are the last section of `.specify/memory/constitution.md`.
