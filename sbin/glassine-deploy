@@ -10,17 +10,23 @@
 #   glassine-deploy select ID [--yes] [--discard-hibernation]
 #   glassine-deploy rollback [--yes] [--discard-hibernation]
 #   glassine-deploy hibernate-invalidate [--yes]
-#   glassine-deploy reset [--full] [--yes] [--discard-hibernation]
+#   glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation]
+#   glassine-deploy switch [--discard-hibernation]
 #   glassine-deploy accept ID
 #
 # select makes ID the candidate for the next boot (2 tries, then the current
 # one again); selecting the current deployment cancels a candidate. rollback
 # = select the previous one. hibernate-invalidate turns a hibernate image on
-# userdata back into a plain swap file (that session is lost). reset builds
-# a new deployment on the current one's base and selects it: it carries the
-# migrate list (/usr/share/glassine/migrate.list + /etc/glassine/migrate.d/
-# *.list of the current deployment); --full carries nothing (home is on
-# userdata, outside the deployments, and never touched). accept ID is the
+# userdata back into a plain swap file (that session is lost). reset stages
+# a new deployment on the current one's base; the next switch fills it and
+# selects it. switch runs at shutdown (the hook's job, after services stop) or
+# at once with reset --now (the recovery): it starts the staged deployment's
+# switch layer afresh, carries the migrate list of the current deployment
+# (/usr/share/glassine/migrate.list + /etc/glassine/migrate.d/*.list) into it,
+# or nothing after reset --full, and only then makes it the candidate; an
+# interrupted switch selects nothing and is redone in full the next time. So
+# changes made between the reset and the shutdown are carried. Home is on
+# userdata, outside the deployments, and never touched. accept ID is the
 # boot-success service's: the booted candidate ID becomes current.
 #
 # --porcelain: the first line is "glassine-deploy 1" (the output format
@@ -50,7 +56,7 @@ RUN_DIR=/run/glassine
 PORCELAIN_VERSION=1
 SWAPFILE="$USERDATA_PREFIX/swap/hibernate"
 GUARD="$USERDATA_PREFIX/swap/hibernate.guard"
-MOUNTED_HERE='' UD_MOUNTED_HERE='' TMP_VIEW='' NEW_DEP=''
+MOUNTED_HERE='' UD_MOUNTED_HERE='' TMP_VIEW='' NEW_DEP='' SWITCHING=''
 
 die() { echo "glassine-deploy: $*" >&2; exit 1; }
 fail() { _c=$1; shift; echo "glassine-deploy: $*" >&2; exit "$_c"; }
@@ -70,6 +76,8 @@ fstype() {
 cleanup() {
     [ -n "$TMP_VIEW" ] && umount "$TMP_VIEW" 2>/dev/null && rmdir "$TMP_VIEW" 2>/dev/null
     TMP_VIEW=''
+    [ -n "$SWITCHING" ] && rm -f "$SWITCHING"
+    SWITCHING=''
     # a half-built deployment never stays behind
     [ -n "$NEW_DEP" ] && rm -rf "$NEW_DEP"
     NEW_DEP=''
@@ -214,9 +222,14 @@ state_open_rw() {
         MOUNTED_HERE=$SYSTEM_MNT
     fi
     S="$SYSTEM_MNT/state"
-    [ -e "$RUN_DIR/switching" ] && fail 6 "a deployment switch is running"
     : >>"$S/.lock" 2>/dev/null || die "$S is not writable"
-    gs_lock "$S" || fail 6 "busy: another glassine-deploy holds $S/.lock"
+    gs_lock "$S" || fail 6 "busy: another glassine-deploy (or a switch) holds $S/.lock"
+    # a switch holds the lock while its marker exists; with the lock ours, a
+    # marker is a killed switch's (its layer is redone by the next switch)
+    if [ -e "$RUN_DIR/switching" ]; then
+        echo "glassine-deploy: removing a stale $RUN_DIR/switching (an interrupted switch)" >&2
+        rm -f "$RUN_DIR/switching"
+    fi
 }
 
 # meta_kv META KEY: one key of a deployment's meta (key=value text)
@@ -252,6 +265,7 @@ cmd_status() {
         out current "$(gs_kv "$S/deploy" current)"
         out previous "$(gs_kv "$S/deploy" previous)"
         out candidate "$(gs_kv "$S/deploy" candidate)"
+        out staged "$(gs_kv "$S/deploy" staged)"
         out tries "$(gs_kv "$S/deploy" tries)"
         out kernel_current "$(gs_kv "$S/kernel" current)"
         out kernel_previous "$(gs_kv "$S/kernel" previous)"
@@ -272,12 +286,13 @@ cmd_status() {
 cmd_list() {
     system_open || die "cannot mount $SYSTEM_DEV read-only"
     format_check
-    cur='' prev='' cand='' failed=''
+    cur='' prev='' cand='' failed='' staged=''
     if [ "$FMT" != none ]; then
         cur=$(gs_kv "$SYS_DIR/state/deploy" current)
         prev=$(gs_kv "$SYS_DIR/state/deploy" previous)
         cand=$(gs_kv "$SYS_DIR/state/deploy" candidate)
         failed=$(gs_kv "$SYS_DIR/state/deploy" failed)
+        staged=$(gs_kv "$SYS_DIR/state/deploy" staged)
     fi
     [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
     [ "$PORC" = 1 ] || printf '%-24s %-10s %-20s %-16s %-20s %s\n' ID STATE BASE KERNEL CREATED KIB
@@ -285,6 +300,7 @@ cmd_list() {
         m=$(ud_cat "deployments/$id/meta")
         if [ "$id" = "$cur" ]; then st=current
         elif [ "$id" = "$cand" ]; then st=candidate
+        elif [ "$id" = "$staged" ]; then st=staged
         elif [ "$id" = "$prev" ]; then st=previous
         elif [ "$(meta_kv "$m" failed)" = 1 ] || [ "$id" = "$failed" ]; then st=failed
         else st=kept
@@ -391,38 +407,76 @@ cmd_reset() {
     cur=$(gs_kv "$S/deploy" current)
     [ -n "$cur" ] || die "no current deployment to reset"
     ud_open_rw
-    od=$UD/deployments/$cur
-    base=$(gs_kv "$od/meta" base)
+    base=$(gs_kv "$UD/deployments/$cur/meta" base)
     [ -n "$base" ] && [ -d "$SYSTEM_MNT/bases/$base" ] || die "deployment $cur: base ${base:-?} is missing"
+    when="at the next shutdown"; [ "$NOW" = 1 ] && when=now
     if [ "$FULL" = 1 ]; then
-        confirm "Full reset: a new deployment on base $base with nothing carried over (accounts, Wi-Fi, Bluetooth, settings, packages; home stays)?"
+        confirm "Full reset: a new deployment on base $base with nothing carried over (accounts, Wi-Fi, Bluetooth, settings, packages; home stays), prepared $when?"
     else
-        confirm "Reset system: a new deployment on base $base that keeps only the migrate list (accounts, Wi-Fi, Bluetooth, settings; your packages and edits go)?"
+        confirm "Reset system: a new deployment on base $base that keeps only the migrate list (accounts, Wi-Fi, Bluetooth, settings; your packages and edits go), prepared $when?"
     fi
     id=$(new_id)
     NEW_DEP=$UD/deployments/$id
     mkdir -p "$NEW_DEP/build" "$NEW_DEP/switch" "$NEW_DEP/work" || die "cannot create $NEW_DEP"
-    if [ "$FULL" != 1 ]; then
+    kind=reset carry=migrate; [ "$FULL" = 1 ] && kind=reset-full carry=none
+    printf 'base=%s\nkind=%s\ncarry=%s\nfrom=%s\ncreated=%s\n' "$base" "$kind" "$carry" "$cur" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" |
+        gs_write "$NEW_DEP/meta" || die "cannot write $NEW_DEP/meta"
+    sync
+    old=$(gs_kv "$S/deploy" staged)
+    gs_update "$S/deploy" "staged=$id" || die "cannot write $S/deploy"
+    NEW_DEP=''
+    [ -n "$old" ] && [ "$old" != "$id" ] && rm -rf "$UD/deployments/$old"
+    if [ "$NOW" = 1 ]; then
+        do_switch
+    else
+        echo "glassine-deploy: $id ($kind of $cur) is staged; the next shutdown carries the settings over and selects it"
+    fi
+}
+
+# do_switch: the staged deployment gets a fresh switch layer with what its
+# meta carry= says, then becomes the candidate. Needs state_open_rw + UD.
+do_switch() {
+    id=$(gs_kv "$S/deploy" staged)
+    [ -n "$id" ] || { echo "glassine-deploy: nothing staged"; return 0; }
+    nd=$UD/deployments/$id
+    [ -r "$nd/meta" ] || die "staged deployment $id is missing on userdata"
+    cur=$(gs_kv "$S/deploy" current)
+    mkdir -p "$RUN_DIR" && : > "$RUN_DIR/switching" || die "cannot create $RUN_DIR/switching"
+    SWITCHING=$RUN_DIR/switching
+    # always from scratch: an interrupted switch left an unknown part behind
+    rm -rf "$nd/switch" "$nd/work" && mkdir -p "$nd/switch" "$nd/work" || die "cannot clear $nd/switch"
+    case "$(gs_kv "$nd/meta" carry)" in
+    none) ;;
+    migrate)
+        [ -n "$cur" ] || die "no current deployment to carry from"
         TMP_VIEW=$RUN_DIR/view.$$
-        gr_merged_ro "$SYSTEM_MNT" "$od" "$TMP_VIEW" || die "cannot open deployment $cur read-only"
+        gr_merged_ro "$SYSTEM_MNT" "$UD/deployments/$cur" "$TMP_VIEW" || die "cannot open deployment $cur read-only"
         need=1024
         for p in $(migrate_paths "$TMP_VIEW"); do
             [ -e "$TMP_VIEW$p" ] && need=$((need + $(du -sk "$TMP_VIEW$p" | cut -f 1)))
         done
         avail=$(df -Pk "$USERDATA_MNT" | awk 'NR == 2 { print $4 }')
-        [ "${avail:-0}" -gt "$need" ] || fail 5 "not enough space on userdata: ${need} KiB needed, ${avail:-?} KiB free"
+        [ "${avail:-0}" -gt "$need" ] || fail 5 "not enough space on userdata: ${need} KiB needed, ${avail:-?} KiB free; $id stays staged"
         for p in $(migrate_paths "$TMP_VIEW"); do
-            copy_path "$TMP_VIEW" "$NEW_DEP/build" "$p" || die "copying $p failed"
+            copy_path "$TMP_VIEW" "$nd/switch" "$p" || die "copying $p failed; $id stays staged"
         done
         umount "$TMP_VIEW" && rmdir "$TMP_VIEW"; TMP_VIEW=''
-    fi
-    kind=reset; [ "$FULL" = 1 ] && kind=reset-full
-    printf 'base=%s\nkind=%s\nfrom=%s\ncreated=%s\n' "$base" "$kind" "$cur" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" |
-        gs_write "$NEW_DEP/meta" || die "cannot write $NEW_DEP/meta"
+        ;;
+    *) die "deployment $id: unknown carry=$(gs_kv "$nd/meta" carry)" ;;
+    esac
     sync
-    gs_update "$S/deploy" "candidate=$id" tries=2 || die "cannot write $S/deploy"
-    NEW_DEP=''
-    echo "glassine-deploy: $id ($kind of $cur) boots next (2 tries, then $cur again)"
+    gs_update "$S/deploy" staged= "candidate=$id" tries=2 || die "cannot write $S/deploy"
+    rm -f "$SWITCHING"; SWITCHING=''
+    echo "glassine-deploy: $id boots next (2 tries, then ${cur:-the current one} again)"
+}
+
+# switch: the shutdown hook's step (after services stop; the hook decides
+# whether this shutdown may switch: started by the user, battery, A25)
+cmd_switch() {
+    state_open_rw
+    [ -n "$(gs_kv "$S/deploy" staged)" ] || { echo "glassine-deploy: nothing staged"; return 0; }
+    ud_open_rw
+    do_switch
 }
 
 cmd_accept() {
@@ -437,13 +491,14 @@ cmd_accept() {
 
 [ $# -ge 1 ] || usage
 CMD=$1; shift
-PORC=0 YES=0 DISCARD=0 FULL=0 ARG='' NARG=0
+PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 ARG='' NARG=0
 for a in "$@"; do
     case "$a" in
     --porcelain) PORC=1 ;;
     --yes) YES=1 ;;
     --discard-hibernation) DISCARD=1 ;;
     --full) FULL=1 ;;
+    --now) NOW=1 ;;
     -*) usage ;;
     *) ARG=$a; NARG=$((NARG + 1)) ;;
     esac
@@ -455,6 +510,7 @@ select:1) cmd_select ;;
 rollback:0) cmd_rollback ;;
 hibernate-invalidate:0) cmd_hibernate_invalidate ;;
 reset:0) cmd_reset ;;
+switch:0) cmd_switch ;;
 accept:1) cmd_accept ;;
 *) usage ;;
 esac

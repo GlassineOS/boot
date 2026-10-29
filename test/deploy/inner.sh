@@ -114,8 +114,8 @@ ok "--discard-hibernation without --yes, no terminal: exit 1, image kept" "$G se
 ok "--discard-hibernation --yes: invalidated, then selected" "$G select d4 --discard-hibernation --yes >/dev/null && [ \"\$(st hibernated)\" = no ] && [ \"\$(gs_kv \$D candidate)\" = d4 ]"
 cp $D $W/before
 : > $W/run/switching
-ok "a switch running: exit 6, unchanged" "$G select d1 2>/dev/null; [ \$? = 6 ] && cmp -s $D $W/before"
-rm $W/run/switching
+ok "a stale switch marker (no lock holder): removed, select goes on" "$G select d1 >/dev/null 2>&1 && [ ! -e $W/run/switching ] && [ \"\$(gs_kv \$D candidate)\" = d1 ]"
+cp $W/before $D
 ( exec 9>>$W/sysmnt/state/.lock; flock -n 9 && : > $W/held && sleep 5 ) &
 while [ ! -e $W/held ]; do sleep 0.1; done
 ok "lock held: exit 6, unchanged" "$G select d1 2>/dev/null; [ \$? = 6 ] && cmp -s $D $W/before"

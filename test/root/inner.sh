@@ -105,15 +105,25 @@ ok "status sees the btrfs system" "$G status --porcelain | grep -q 'system_fs=bt
 gr_assemble $S $U d1 $R && mkdir -p $R/etc/wireguard $R/etc/glassine/migrate.d && echo wg > $R/etc/wireguard/wg0.conf && chmod 700 $R/etc/wireguard &&
     echo /etc/wireguard/ > $R/etc/glassine/migrate.d/user.list && echo junk > $R/etc/junk && gr_umount $R
 ok "reset without --yes, no terminal: refused, nothing built" "$G reset 2>/dev/null </dev/null; [ \$? = 1 ] && [ \$(ls $U/deployments | wc -l) = 1 ] && cmp -s $S/state/deploy $W/st0"
-ok "reset --yes: a new candidate with 2 tries" "$G reset --yes >/dev/null && [ -n \"\$(st candidate)\" ] && [ \"\$(st tries)\" = 2 ] && [ \"\$(st current)\" = d1 ]"
-N=$(st candidate); NB=$U/deployments/$N/build
-ok "reset: meta = base b1, kind reset, from d1" "grep -qx base=b1 $U/deployments/$N/meta && grep -qx kind=reset $U/deployments/$N/meta && grep -qx from=d1 $U/deployments/$N/meta"
-ok "reset carries the migrate list (shipped + the user's)" "[ \"\$(cat $NB/etc/na1/eink.conf)\" = edited ] && [ \"\$(cat $NB/etc/hostname)\" = myhost ] && [ -e $NB/var/lib/bluetooth/k ] && [ -e $NB/etc/wireguard/wg0.conf ] && grep -q ash $NB/etc/passwd"
-ok "reset keeps modes (0700 wireguard)" "[ \$(stat -c %a $NB/etc/wireguard) = 700 ]"
-ok "reset drops the rest (edits, packages, /usr/local, whiteouts)" "[ ! -e $NB/etc/junk ] && [ ! -e $NB/usr/bin/new ] && [ ! -e $NB/usr/local/x ] && [ ! -e $NB/etc/motd ] && [ ! -e $NB/escape ] && [ -z \"\$(ls -A $U/deployments/$N/switch)\" ]"
-ok "reset left nothing mounted" "! grep -q '$W/run' /proc/mounts"
+ok "reset --yes: staged, not selected" "$G reset --yes >/dev/null && [ -n \"\$(st staged)\" ] && [ -z \"\$(st candidate)\" ] && [ \"\$(st current)\" = d1 ]"
+N=$(st staged); NS=$U/deployments/$N/switch
+ok "reset: meta = base b1, kind reset, carry migrate, from d1; layers empty" "grep -qx base=b1 $U/deployments/$N/meta && grep -qx kind=reset $U/deployments/$N/meta && grep -qx carry=migrate $U/deployments/$N/meta && grep -qx from=d1 $U/deployments/$N/meta && [ -z \"\$(ls -A $U/deployments/$N/build)\" ] && [ -z \"\$(ls -A $NS)\" ]"
+ok "list + status: staged" "$G list --porcelain | grep -q \"id=$N	state=staged\" && $G status --porcelain | grep -q \"staged=$N\""
+ok "gr_pick ignores a staged deployment" "[ \"\$(gr_pick $S/state)\" = d1 ]"
+# a change after the reset, before the shutdown: must be carried (option a)
+gr_assemble $S $U d1 $R && echo later > $R/etc/na1/eink.conf && gr_umount $R
+mkdir -p $W/shim; printf '#!/bin/sh\nexit 1\n' > $W/shim/cp; chmod +x $W/shim/cp
+echo leftover > $NS/leftover; cp $S/state/deploy $W/stS
+ok "an interrupted switch (cut copy): exit 1, still staged, nothing selected, marker gone, nothing mounted" "PATH=$W/shim:\$PATH $G switch 2>/dev/null; [ \$? = 1 ] && cmp -s $S/state/deploy $W/stS && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
+: > $W/run/switching
+ok "switch: a stale marker does not block it; redone from scratch; selected with 2 tries" "$G switch >/dev/null 2>&1 && [ \"\$(st candidate)\" = $N ] && [ \"\$(st tries)\" = 2 ] && [ -z \"\$(st staged)\" ] && [ ! -e $NS/leftover ] && [ ! -e $W/run/switching ]"
+ok "switch carries the migrate list (shipped + the user's), with the change made after the reset" "[ \"\$(cat $NS/etc/na1/eink.conf)\" = later ] && [ \"\$(cat $NS/etc/hostname)\" = myhost ] && [ -e $NS/var/lib/bluetooth/k ] && [ -e $NS/etc/wireguard/wg0.conf ] && grep -q ash $NS/etc/passwd"
+ok "switch keeps modes (0700 wireguard)" "[ \$(stat -c %a $NS/etc/wireguard) = 700 ]"
+ok "switch drops the rest (edits, packages, /usr/local, whiteouts)" "[ ! -e $NS/etc/junk ] && [ ! -e $NS/usr/bin/new ] && [ ! -e $NS/usr/local/x ] && [ ! -e $NS/etc/motd ] && [ ! -e $NS/escape ]"
+ok "switch left nothing mounted" "! grep -q '$W/run' /proc/mounts"
+ok "switch with nothing staged: exit 0" "$G switch >/dev/null"
 ok "gr_pick: the candidate, tries 2 -> 1" "[ \"\$(gr_pick $S/state)\" = $N ] && [ \"\$(st tries)\" = 1 ]"
-ok "the candidate's root: carried state, base files back, user edits gone" "gr_assemble $S $U $N $R && [ \"\$(cat $R/etc/na1/eink.conf)\" = edited ] && [ \"\$(cat $R/etc/motd)\" = welcome ] && [ ! -e $R/usr/bin/new ] && [ ! -e $R/etc/junk ]"
+ok "the candidate's root: carried state, base files back, user edits gone" "gr_assemble $S $U $N $R && [ \"\$(cat $R/etc/na1/eink.conf)\" = later ] && [ \"\$(cat $R/etc/motd)\" = welcome ] && [ ! -e $R/usr/bin/new ] && [ ! -e $R/etc/junk ]"
 gr_umount $R
 ok "list: the candidate" "$G list --porcelain | grep -q \"id=$N	state=candidate\""
 ok "gr_pick: tries 1 -> 0, still the candidate" "[ \"\$(gr_pick $S/state)\" = $N ] && [ \"\$(st tries)\" = 0 ]"
@@ -126,18 +136,24 @@ ok "accept of the current one: no-op" "$G accept $N >/dev/null && [ \"\$(st curr
 ok "rollback: back to d1 as the candidate" "$G rollback >/dev/null && [ \"\$(st candidate)\" = d1 ]"
 $G select $N >/dev/null
 
-# --- reset --full ---------------------------------------------------------------
-ok "reset --full: nothing carried" "$G reset --full --yes >/dev/null && F=\$(st candidate) && [ \"\$F\" != $N ] && [ -z \"\$(ls -A $U/deployments/\$F/build)\" ] && grep -qx kind=reset-full $U/deployments/\$F/meta"
+# --- reset --full, reset --now, replacing a staged one ----------------------------
+ok "reset --full --now: selected at once, nothing carried" "$G reset --full --now --yes >/dev/null && F=\$(st candidate) && [ \"\$F\" != $N ] && [ -z \"\$(ls -A $U/deployments/\$F/build)\" ] && [ -z \"\$(ls -A $U/deployments/\$F/switch)\" ] && grep -qx kind=reset-full $U/deployments/\$F/meta && [ -z \"\$(st staged)\" ]"
 $G select $N >/dev/null
+$G reset --yes >/dev/null; A1=$(st staged); sleep 1; $G reset --full --yes >/dev/null; A2=$(st staged)
+ok "a second reset replaces the staged one (the old one is removed)" "[ \"\$A1\" != \"\$A2\" ] && [ ! -e $U/deployments/\$A1 ] && grep -qx carry=none $U/deployments/\$A2/meta"
+gs_update $S/state/deploy staged=; rm -rf $U/deployments/$A2
 
-# --- reset failures leave nothing behind -----------------------------------------
+# --- failures leave nothing behind -------------------------------------------------
 cp $S/state/deploy $W/st1; n0=$(ls $U/deployments | wc -l)
-mkdir -p $W/shim; printf '#!/bin/sh\nexit 1\n' > $W/shim/cp; chmod +x $W/shim/cp
-ok "a cut copy: exit 1, no half-built deployment, state unchanged, nothing mounted" "PATH=$W/shim:\$PATH $G reset --yes 2>/dev/null; [ \$? = 1 ] && [ \$(ls $U/deployments | wc -l) = $n0 ] && cmp -s $S/state/deploy $W/st1 && ! grep -q '$W/run' /proc/mounts"
+printf '#!/bin/sh\ncat >/dev/null\nexit 1\n' > $W/shim/dd; chmod +x $W/shim/dd
+ok "reset: a cut meta write: exit 1, no half-built deployment, state unchanged" "PATH=$W/shim:\$PATH $G reset --yes 2>/dev/null; [ \$? = 1 ] && [ \$(ls $U/deployments | wc -l) = $n0 ] && cmp -s $S/state/deploy $W/st1"
+rm $W/shim/dd
 mkdir -p $U/deployments/$N/switch/var/lib/bluetooth; dd if=/dev/zero of=$U/deployments/$N/switch/var/lib/bluetooth/big bs=1M count=24 2>/dev/null
+$G reset --yes >/dev/null; A3=$(st staged); cp $S/state/deploy $W/st2
 dd if=/dev/zero of=$W/udmnt/fill bs=1M count=$(( $(df -Pk $W/udmnt | awk 'NR==2{print $4}') / 1024 - 10 )) 2>/dev/null
-ok "not enough space: exit 5, nothing left behind" "$G reset --yes 2>/dev/null; [ \$? = 5 ] && [ \$(ls $U/deployments | wc -l) = $n0 ] && cmp -s $S/state/deploy $W/st1"
+ok "switch, not enough space: exit 5, stays staged, nothing selected" "$G switch 2>/dev/null; [ \$? = 5 ] && cmp -s $S/state/deploy $W/st2 && [ \"\$(st staged)\" = \$A3 ]"
 rm -f $W/udmnt/fill $U/deployments/$N/switch/var/lib/bluetooth/big
+gs_update $S/state/deploy staged=; rm -rf $U/deployments/$A3
 
 # --- the hibernation gate on real mounts -------------------------------------------
 mkdir -p $U/swap; head -c 1048576 /dev/zero > $U/swap/hibernate; mkswap $U/swap/hibernate >/dev/null 2>&1
