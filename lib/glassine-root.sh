@@ -118,7 +118,7 @@ gr_merged_ro() {
     mkdir -p "$3" && mount -t overlay overlay -o "ro,lowerdir=$_gr_l" "$3"
 }
 
-# --- the boot (initramfs, §5.3) -------------------------------------------------
+# --- the boot (initramfs, docs/boot.md) ----------------------------------------
 # gr_resume, then gr_boot, then (after the pre-switch-root hooks) gr_carry. The
 # initramfs replaces gr_log with its kernel log and gr_wd_stop/gr_wd_start with
 # its watchdog; GR_SYSPOWER and GR_TMP are for the host test.

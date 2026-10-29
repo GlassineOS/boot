@@ -11,7 +11,7 @@ run on hardware**.
 
 | Term | Meaning |
 |---|---|
-| system partition | The partition named by `SYSTEM_DEV` (Note Air: `system_b`), btrfs. Holds the read-only bases, the kernel modules and `state/`. |
+| system partition | The partition named by `SYSTEM_DEV` btrfs. Holds the read-only bases, the kernel modules and `state/`. |
 | userdata | The partition named by `USERDATA_DEV`, ext4. Holds the deployments under `USERDATA_PREFIX`, and the hibernate swap file. Home lives here as well, outside the deployments. |
 | base | A read-only btrfs subvolume with a complete system (`bases/<id>/`). |
 | deployment | One bootable root: a base plus its own layers on userdata (`deployments/<id>/`). |

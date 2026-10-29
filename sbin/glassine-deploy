@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # glassine-deploy: root deployments (bases on the btrfs system partition, one
 # overlay upper per deployment on userdata). The same code runs on the system
-# and in recovery; the recovery's menu only calls it. Design: GlassineOS
-# phase docs, "rootfs and deployments" (§5.14 = this interface).
+# and in recovery; the recovery's menu only calls it. Interface and formats:
+# docs/deployments.md.
 #
 #   glassine-deploy status [--porcelain]
 #   glassine-deploy list [--porcelain]

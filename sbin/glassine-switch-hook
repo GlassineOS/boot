@@ -6,7 +6,7 @@
 # otherwise it stays staged for the next one. Runs from the OpenRC shutdown
 # runlevel (openrc/glassine-switch): after every other service has stopped
 # and the processes are killed, before / is remounted read-only. A hibernate
-# never gets here (it powers off in the kernel, §5.3 rule 11).
+# never gets here (it powers off in the kernel).
 #
 #   glassine-switch-hook --user-shutdown   the power menu, right before it
 #                                          shuts down or reboots: this shutdown

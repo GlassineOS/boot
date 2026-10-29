@@ -72,8 +72,8 @@ export GLASSINE_DEPLOY_FAKE_MOUNTS=1
 mkdir -p $W/sysmnt/state
 echo version=1 > $W/sysmnt/state/format
 printf 'current=d2\nprevious=d1\ncandidate=\ntries=0\n' > $W/sysmnt/state/deploy
-printf 'current=7.3.0-na1\nprevious=7.2.3-1\n' > $W/sysmnt/state/kernel
-ok "migrated: tables" "[ \"\$(st migrated)\" = yes ] && [ \"\$(st format)\" = 1 ] && [ \"\$(st current)\" = d2 ] && [ \"\$(st previous)\" = d1 ] && [ \"\$(st kernel_current)\" = 7.3.0-na1 ]"
+printf 'current=7.3.0-dev\nprevious=7.2.3-1\n' > $W/sysmnt/state/kernel
+ok "migrated: tables" "[ \"\$(st migrated)\" = yes ] && [ \"\$(st format)\" = 1 ] && [ \"\$(st current)\" = d2 ] && [ \"\$(st previous)\" = d1 ] && [ \"\$(st kernel_current)\" = 7.3.0-dev ]"
 echo version=2 > $W/sysmnt/state/format
 ok "newer format: exit 3, both versions printed, no tables" "$G status --porcelain >$W/o 2>/dev/null; [ \$? = 3 ] && grep -q 'format=2	supported=1' $W/o && ! grep -q 'current=' $W/o"
 echo version=x > $W/sysmnt/state/format
@@ -109,7 +109,7 @@ ok "gs_invalidate_file: hibernated=no, size unchanged" "[ \"\$(st hibernated)\" 
 
 # --- list / select / rollback (fake mounts) ----------------------------------
 U=$W/udmnt/$P
-for d in d1 d2 d3 d4; do mkdir -p $U/deployments/$d/build; printf 'base=v3.22.%s\nkernel=7.3.0-na1\ncreated=2026-10-2%s\n' ${d#d} ${d#d} > $U/deployments/$d/meta; done
+for d in d1 d2 d3 d4; do mkdir -p $U/deployments/$d/build; printf 'base=v3.22.%s\nkernel=7.3.0-dev\ncreated=2026-10-2%s\n' ${d#d} ${d#d} > $U/deployments/$d/meta; done
 echo failed=1 >> $U/deployments/d3/meta
 echo x > $U/deployments/notadir
 printf 'current=d2\nprevious=d1\ncandidate=\ntries=0\nextra=keep\n' > $W/sysmnt/state/deploy

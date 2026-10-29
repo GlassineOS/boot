@@ -33,14 +33,14 @@ S=$W/sysmnt
 mkdir -p $S/bases $S/modules $S/state
 btrfs -q subvolume create $S/bases/b1
 B=$S/bases/b1
-mkdir -p $B/etc/apk $B/etc/na1 $B/usr/bin $B/usr/local $B/opt $B/var/lib $B/lib/modules/7.3.0 $B/usr/share/glassine
+mkdir -p $B/etc/apk $B/etc/eink $B/usr/bin $B/usr/local $B/opt $B/var/lib $B/lib/modules/7.3.0 $B/usr/share/glassine
 echo alpine-base > $B/etc/apk/world
 echo glassine > $B/etc/hostname
 echo welcome > $B/etc/motd
-echo '@stagger_ctl=3' > $B/etc/na1/eink.conf
+echo '@stagger_ctl=3' > $B/etc/eink/eink.conf
 echo 'root:x:0:0:root:/root:/bin/sh' > $B/etc/passwd
 printf '#!/bin/sh\necho hello\n' > $B/usr/bin/hello; chmod 755 $B/usr/bin/hello
-printf '# shipped\n/etc/na1/\n/etc/hostname\n/etc/passwd\n/var/lib/bluetooth/\n../escape\nrelative/path\n' > $B/usr/share/glassine/migrate.list
+printf '# shipped\n/etc/eink/\n/etc/hostname\n/etc/passwd\n/var/lib/bluetooth/\n../escape\nrelative/path\n' > $B/usr/share/glassine/migrate.list
 btrfs property set -ts $B ro true
 btrfs -q subvolume create $S/modules/7.3.0
 mkdir -p $S/modules/7.3.0/kernel; echo ko > $S/modules/7.3.0/kernel/x.ko
@@ -51,6 +51,7 @@ U=$W/udmnt/$P
 mkdir -p $U/deployments/d1/build $U/deployments/d1/switch $U/deployments/d1/work
 printf 'base=b1\nkind=install\n' > $U/deployments/d1/meta
 basesum() { find $B -print0 | sort -z | xargs -0 ls -ld --full-time 2>/dev/null | md5sum; find $B -type f -exec cat {} + | md5sum; }
+# shellcheck disable=SC2034  # read in the eval of ok()
 SUM0=$(basesum)
 R=$W/root
 ro() { ! sh -c "echo x > $1" 2>/dev/null; }
@@ -58,8 +59,8 @@ ro() { ! sh -c "echo x > $1" 2>/dev/null; }
 # --- a deployment's root, locked ---------------------------------------------
 ok "gr_assemble d1" "gr_assemble $S $U d1 $R 7.3.0"
 ok "/ is read-only: /usr, a new file in /" "ro $R/usr/bin/new && ro $R/newfile"
-ok "/etc, /var, /usr/local, /opt are writable" "echo edited > $R/etc/na1/eink.conf && echo myhost > $R/etc/hostname && mkdir -p $R/var/lib/bluetooth && echo pair > $R/var/lib/bluetooth/k && echo l > $R/usr/local/x && echo o > $R/opt/y"
-ok "the writes go through the overlay: copy-up into d1's switch layer" "[ \"\$(cat $U/deployments/d1/switch/etc/na1/eink.conf)\" = edited ] && [ -e $U/deployments/d1/switch/usr/local/x ]"
+ok "/etc, /var, /usr/local, /opt are writable" "echo edited > $R/etc/eink/eink.conf && echo myhost > $R/etc/hostname && mkdir -p $R/var/lib/bluetooth && echo pair > $R/var/lib/bluetooth/k && echo l > $R/usr/local/x && echo o > $R/opt/y"
+ok "the writes go through the overlay: copy-up into d1's switch layer" "[ \"\$(cat $U/deployments/d1/switch/etc/eink/eink.conf)\" = edited ] && [ -e $U/deployments/d1/switch/usr/local/x ]"
 rm $R/etc/motd
 ok "a deletion in /etc: a whiteout in the switch layer, the base keeps the file" "[ ! -e $R/etc/motd ] && [ -c $U/deployments/d1/switch/etc/motd ] && [ \"\$(cat $B/etc/motd)\" = welcome ]"
 ok "rename-replace in /etc works (passwd-style)" "echo 'root:x:0:0:root:/root:/bin/ash' > $R/etc/passwd.new && mv $R/etc/passwd.new $R/etc/passwd && grep -q ash $R/etc/passwd"
@@ -69,7 +70,7 @@ ok "lock: / read-only again" "gr_lock $R && ro $R/usr/bin/new2"
 ok "the base is unchanged" "[ \"\$(basesum)\" = \"\$SUM0\" ]"
 gr_umount $R
 ok "gr_umount: nothing left mounted" "! grep -q \" $R\" /proc/mounts"
-ok "persistence: reassembled, edits still there" "gr_assemble $S $U d1 $R 7.3.0 && [ \"\$(cat $R/etc/na1/eink.conf)\" = edited ] && [ ! -e $R/etc/motd ] && [ -e $R/usr/bin/new ] && ro $R/usr/bin/x"
+ok "persistence: reassembled, edits still there" "gr_assemble $S $U d1 $R 7.3.0 && [ \"\$(cat $R/etc/eink/eink.conf)\" = edited ] && [ ! -e $R/etc/motd ] && [ -e $R/usr/bin/new ] && ro $R/usr/bin/x"
 gr_umount $R
 ok "a kernel without modules: boots, says so" "gr_assemble $S $U d1 $R 9.9.9 2>$W/err && grep -q 'no modules for 9.9.9' $W/err && [ -z \"\$(ls $R/lib/modules/7.3.0)\" ]"
 gr_umount $R
@@ -111,19 +112,19 @@ ok "reset: meta = base b1, kind reset, carry migrate, from d1; layers empty" "gr
 ok "list + status: staged" "$G list --porcelain | grep -q \"id=$N	state=staged\" && $G status --porcelain | grep -q \"staged=$N\""
 ok "gr_pick ignores a staged deployment" "[ \"\$(gr_pick $S/state)\" = d1 ]"
 # a change after the reset, before the shutdown: must be carried (option a)
-gr_assemble $S $U d1 $R && echo later > $R/etc/na1/eink.conf && gr_umount $R
+gr_assemble $S $U d1 $R && echo later > $R/etc/eink/eink.conf && gr_umount $R
 mkdir -p $W/shim; printf '#!/bin/sh\nexit 1\n' > $W/shim/cp; chmod +x $W/shim/cp
 echo leftover > $NS/leftover; cp $S/state/deploy $W/stS
 ok "an interrupted switch (cut copy): exit 1, still staged, nothing selected, marker gone, nothing mounted" "PATH=$W/shim:\$PATH $G switch 2>/dev/null; [ \$? = 1 ] && cmp -s $S/state/deploy $W/stS && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
 : > $W/run/switching
 ok "switch: a stale marker does not block it; redone from scratch; selected with 2 tries" "$G switch >/dev/null 2>&1 && [ \"\$(st candidate)\" = $N ] && [ \"\$(st tries)\" = 2 ] && [ -z \"\$(st staged)\" ] && [ ! -e $NS/leftover ] && [ ! -e $W/run/switching ]"
-ok "switch carries the migrate list (shipped + the user's), with the change made after the reset" "[ \"\$(cat $NS/etc/na1/eink.conf)\" = later ] && [ \"\$(cat $NS/etc/hostname)\" = myhost ] && [ -e $NS/var/lib/bluetooth/k ] && [ -e $NS/etc/wireguard/wg0.conf ] && grep -q ash $NS/etc/passwd"
+ok "switch carries the migrate list (shipped + the user's), with the change made after the reset" "[ \"\$(cat $NS/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $NS/etc/hostname)\" = myhost ] && [ -e $NS/var/lib/bluetooth/k ] && [ -e $NS/etc/wireguard/wg0.conf ] && grep -q ash $NS/etc/passwd"
 ok "switch keeps modes (0700 wireguard)" "[ \$(stat -c %a $NS/etc/wireguard) = 700 ]"
 ok "switch drops the rest (edits, packages, /usr/local, whiteouts)" "[ ! -e $NS/etc/junk ] && [ ! -e $NS/usr/bin/new ] && [ ! -e $NS/usr/local/x ] && [ ! -e $NS/etc/motd ] && [ ! -e $NS/escape ]"
 ok "switch left nothing mounted" "! grep -q '$W/run' /proc/mounts"
 ok "switch with nothing staged: exit 0" "$G switch >/dev/null"
 ok "gr_pick: the candidate, tries 2 -> 1" "[ \"\$(gr_pick $S/state)\" = $N ] && [ \"\$(st tries)\" = 1 ]"
-ok "the candidate's root: carried state, base files back, user edits gone" "gr_assemble $S $U $N $R && [ \"\$(cat $R/etc/na1/eink.conf)\" = later ] && [ \"\$(cat $R/etc/motd)\" = welcome ] && [ ! -e $R/usr/bin/new ] && [ ! -e $R/etc/junk ]"
+ok "the candidate's root: carried state, base files back, user edits gone" "gr_assemble $S $U $N $R && [ \"\$(cat $R/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $R/etc/motd)\" = welcome ] && [ ! -e $R/usr/bin/new ] && [ ! -e $R/etc/junk ]"
 gr_umount $R
 ok "list: the candidate" "$G list --porcelain | grep -q \"id=$N	state=candidate\""
 ok "gr_pick: tries 1 -> 0, still the candidate" "[ \"\$(gr_pick $S/state)\" = $N ] && [ \"\$(st tries)\" = 0 ]"
@@ -139,7 +140,10 @@ $G select $N >/dev/null
 # --- reset --full, reset --now, replacing a staged one ----------------------------
 ok "reset --full --now: selected at once, nothing carried" "$G reset --full --now --yes >/dev/null && F=\$(st candidate) && [ \"\$F\" != $N ] && [ -z \"\$(ls -A $U/deployments/\$F/build)\" ] && [ -z \"\$(ls -A $U/deployments/\$F/switch)\" ] && grep -qx kind=reset-full $U/deployments/\$F/meta && [ -z \"\$(st staged)\" ]"
 $G select $N >/dev/null
-$G reset --yes >/dev/null; A1=$(st staged); sleep 1; $G reset --full --yes >/dev/null; A2=$(st staged)
+$G reset --yes >/dev/null
+# shellcheck disable=SC2034  # read in the eval of ok()
+A1=$(st staged)
+sleep 1; $G reset --full --yes >/dev/null; A2=$(st staged)
 ok "a second reset replaces the staged one (the old one is removed)" "[ \"\$A1\" != \"\$A2\" ] && [ ! -e $U/deployments/\$A1 ] && grep -qx carry=none $U/deployments/\$A2/meta"
 gs_update $S/state/deploy staged=; rm -rf $U/deployments/$A2
 
@@ -206,10 +210,10 @@ ok "the system's glassine-deploy works on the carried mounts (select = a state w
 # the shutdown switch in the running system: OpenRC's localmount has unmounted
 # /run/glassine/*; a mount on top of / must not leak into the carried state
 GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G reset --yes >/dev/null; LS=$(gs_kv $R/run/glassine/system/state/deploy staged)
-echo live > $R/etc/na1/eink.conf
+echo live > $R/etc/eink/eink.conf
 mount -t tmpfs tmpfs $R/var/lib/bluetooth && echo submount > $R/var/lib/bluetooth/fromsubmount
 umount $R/run/glassine/root $R/run/glassine/userdata $R/run/glassine/system
-ok "switch in the running deployment: carries from its live root, selects, leaves nothing mounted" "GLASSINE_DEPLOY_CONF=$W/deploy3.conf GLASSINE_DEPLOY_ROOT=$R $G switch >/dev/null && LSW=$U/deployments/$LS/switch && mount -t ext4 $UDEV $W/udmnt && [ \"\$(cat $W/udmnt/$P/deployments/$LS/switch/etc/na1/eink.conf)\" = live ] && ! grep -q 'view\.' /proc/mounts"
+ok "switch in the running deployment: carries from its live root, selects, leaves nothing mounted" "GLASSINE_DEPLOY_CONF=$W/deploy3.conf GLASSINE_DEPLOY_ROOT=$R $G switch >/dev/null && LSW=$U/deployments/$LS/switch && mount -t ext4 $UDEV $W/udmnt && [ \"\$(cat $W/udmnt/$P/deployments/$LS/switch/etc/eink/eink.conf)\" = live ] && ! grep -q 'view\.' /proc/mounts"
 ok "switch in the running deployment: a mount on top of / is not carried" "[ -e $W/udmnt/$P/deployments/$LS/switch/var/lib/bluetooth/k ] && [ ! -e $W/udmnt/$P/deployments/$LS/switch/var/lib/bluetooth/fromsubmount ]"
 umount $W/udmnt $R/var/lib/bluetooth
 mkdir -p $R/run/glassine/system $R/run/glassine/userdata && mount -t btrfs $SD $R/run/glassine/system && mount -t ext4 $UDEV $R/run/glassine/userdata

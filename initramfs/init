@@ -104,7 +104,7 @@ wd_arm() {
 }
 wd_arm
 
-# The deployments layout (§5.3 of the lab's Phase 18): the boot steps of
+# The deployments layout (docs/boot.md): the boot steps of
 # lib/glassine-root.sh. The watchdog stops (busybox's magic close on SIGTERM)
 # only around the resume write: qcom-wdt can't wait out an image load.
 if [ "$ROOT_LAYOUT" = deployments ]; then
