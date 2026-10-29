@@ -107,6 +107,18 @@ gs_invalidate_dev() {
 }
 
 # --- the guard file ----------------------------------------------------------
+# gs_dumpe2fs DEV FIELD: one superblock field (leading spaces dropped), times
+# in UTC and the C locale: the running system (its own TZ) and the initramfs
+# (none) must print the same string
+gs_dumpe2fs() {
+    TZ=UTC0 LC_ALL=C dumpe2fs -h "$1" 2>/dev/null | sed -n "s/^$2: *//p" | head -n 1
+}
+# gs_guard_mounts DEV: the guard's userdata lines (rule 4), for the hibernate
+# wrapper: mount_count=… and last_mount=…
+gs_guard_mounts() {
+    echo "mount_count=$(gs_dumpe2fs "$1" 'Mount count')"
+    echo "last_mount=$(gs_dumpe2fs "$1" 'Last mount time')"
+}
 # gs_guard_file FILE KEY / gs_guard_dev DEV RELPATH KEY: one key of the guard
 gs_guard_file() { gs_kv "$1" "$2"; }
 gs_guard_dev() {

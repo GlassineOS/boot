@@ -144,15 +144,12 @@ gr_would_pick() {
 # The guard file (<prefix>/swap/hibernate.guard, written by the hibernate
 # wrapper right before `echo disk`, gs_write), key=value:
 #   mount_count  last_mount   userdata's ext4 "Mount count" / "Last mount time"
-#                             (dumpe2fs -h) at the hibernate (rule 4)
+#                             at the hibernate (rule 4): gs_guard_mounts writes
+#                             both, so the wrapper and the initramfs format
+#                             them the same way (UTC, C locale)
 #   deployment                the deployment it hibernated in (rule 7)
 #   krel  kver                uname -r / uname -v of the hibernating kernel (rule 7)
 # A missing key is a mismatch.
-
-# gr_dumpe2fs DEV FIELD: one field of the superblock (leading spaces dropped)
-gr_dumpe2fs() {
-    dumpe2fs -h "$1" 2>/dev/null | sed -n "s/^$2: *//p" | head -n 1
-}
 
 # gr_resume_refusal SYSDEV UDDEV PREFIX MAY: why the image must not be resumed
 # (empty = resume). Reads userdata with debugfs only; mounts the system
@@ -163,7 +160,7 @@ gr_resume_refusal() {
     [ -n "$_gr_g" ] || { echo "no guard file"; return 0; }
     for _gr_k in mount_count:"Mount count" last_mount:"Last mount time"; do
         _gr_v=$(printf '%s\n' "$_gr_g" | sed -n "s/^${_gr_k%%:*}=//p" | head -n 1)
-        [ -n "$_gr_v" ] && [ "$_gr_v" = "$(gr_dumpe2fs "$2" "${_gr_k#*:}")" ] ||
+        [ -n "$_gr_v" ] && [ "$_gr_v" = "$(gs_dumpe2fs "$2" "${_gr_k#*:}")" ] ||
             { echo "userdata was mounted since the hibernate (${_gr_k%%:*})"; return 0; }
     done
     _gr_v=$(printf '%s\n' "$_gr_g" | sed -n 's/^krel=//p' | head -n 1)

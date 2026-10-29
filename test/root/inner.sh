@@ -174,7 +174,7 @@ SWB=$(gs_dev_block $UDEV $P/swap/hibernate)
 hib() { printf 'S1SUSPEND\000' | dd of=$UDEV bs=1 seek=$((SWB * 4096 + 4086)) conv=notrunc 2>/dev/null; sync; blockdev --flushbufs $UDEV; rm -f $GR_SYSPOWER/*; }
 sig() { gs_sig_dev $UDEV $SWB; }
 guard() {   # guard [KEY=VALUE...]: the guard file, written with debugfs (no mount: the mount count stays)
-    { echo "mount_count=$(gr_dumpe2fs $UDEV 'Mount count')"; echo "last_mount=$(gr_dumpe2fs $UDEV 'Last mount time')"
+    { TZ=CET-1CEST gs_guard_mounts $UDEV        # the wrapper's own time zone must not matter
       echo "deployment=$CUR"; echo "krel=$(uname -r)"; echo "kver=$(uname -v)"; } > $W/g
     for kv in "$@"; do sed -i "s|^${kv%%=*}=.*|$kv|" $W/g; done
     debugfs_w "cd /$P/swap\nrm hibernate.guard\nwrite $W/g hibernate.guard\n"
@@ -188,6 +188,7 @@ hib
 ok "resume step, no guard file: invalidated" "res resume && [ \"\$(sig)\" = SWAPSPACE2 ] && [ -z \"\$(ls $GR_SYSPOWER)\" ] && grep -q 'no guard file' $W/rlog"
 guard; mount -t ext4 $UDEV $W/udmnt && umount $W/udmnt; hib
 ok "resume step, userdata mounted after the hibernate: invalidated" "res resume && [ \"\$(sig)\" = SWAPSPACE2 ] && [ -z \"\$(ls $GR_SYSPOWER)\" ] && grep -q 'userdata was mounted since the hibernate (mount_count)' $W/rlog"
+ok "gs_dumpe2fs: the same last mount time under any TZ" "[ \"\$(TZ=CET-1CEST gs_dumpe2fs $UDEV 'Last mount time')\" = \"\$(TZ=JST-9 gs_dumpe2fs $UDEV 'Last mount time')\" ]"
 guard kver=other; hib
 ok "resume step, another kernel build: invalidated" "res resume && [ \"\$(sig)\" = SWAPSPACE2 ] && grep -q 'another kernel build' $W/rlog"
 guard deployment=d9; hib
