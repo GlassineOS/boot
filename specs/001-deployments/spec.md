@@ -76,6 +76,9 @@ the running system.
 3. **Given** a hibernated session, **when** any `glassine-deploy` command would write,
    **then** it refuses (exit 4) unless `--discard-hibernation` is given, and then it
    cancels the image first.
+4. **Given** a booted candidate on its last try, or another deployment selected since
+   this boot, **when** the user hibernates, **then** the hibernate step refuses
+   (exit 3), because the next boot would cancel the image.
 
 ### Story 5: a broken userdata never blocks a boot (P2)
 
@@ -147,6 +150,9 @@ the running system.
 - **FR-018** The boot-success service (`glassine-deploy-accept`) accepts only the
   booted candidate, only after `ACCEPT_AFTER` seconds of uptime, and only when no
   OpenRC service has crashed and every health check in `ACCEPT_HEALTH_DIR` passes.
+- **FR-019** The hibernate step (`glassine-hibernate now`) writes the guard through the
+  same helper as the initramfs reads it, and refuses (exit 3) when the state would boot
+  another deployment next, so it never makes an image the initramfs would cancel.
 
 ## Not in this feature (later)
 
@@ -156,7 +162,6 @@ the running system.
 - The apk wrapper and `glassine unlock`.
 - `kernel-restore`, `--wipe-flatpak`, `--wipe-docker`.
 - The kexec loader.
-- The hibernate step itself (it writes the guard).
 
 ## Success criteria
 

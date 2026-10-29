@@ -79,6 +79,7 @@ cat > $B/etc/glassine/deploy.conf <<'EOF'
 SYSTEM_DEV=/dev/vda1
 USERDATA_DEV=/dev/vda2
 ACCEPT_AFTER=40
+HIBERNATE_RESERVE_MB=64
 EOF
 # a health check for the accept step: the agent's own service is up
 mkdir -p $B/etc/glassine-bootimg/health.d

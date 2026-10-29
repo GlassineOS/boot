@@ -28,7 +28,7 @@ boot() {    # boot N EXTRA-CMDLINE: one boot, until the guest powers off
         -append 'console=ttyAMA0 rdinit=/init panic=10 ${2:-}' \
         -drive if=none,id=d,file=/out/disk.img,format=raw -device virtio-blk-pci,drive=d \
         " > "$OUT/boot$1.log" 2>&1 || echo "(qemu exit $?)"
-    grep -a 'QTEST\|glassine-switch:\|glassine-deploy-accept:\|glassine-boot:' "$OUT/boot$1.log" | sed 's/\r$//'
+    grep -a 'QTEST\|glassine-switch:\|glassine-deploy-accept:\|glassine-hibernate:\|glassine-boot:' "$OUT/boot$1.log" | sed 's/\r$//'
 }
 boot 1
 boot 2
@@ -39,4 +39,4 @@ fail=$(cat "$OUT"/boot*.log | grep -ac 'QTEST FAIL' || true)
 done=$(grep -ac 'QTEST DONE' "$OUT/boot4.log" || true)
 sw=$(grep -ac 'glassine-switch: .* boots next' "$OUT/boot1.log" || true)
 echo "qemu: $pass ok, $fail FAIL, switch at shutdown: $sw, done: $done"
-[ "$fail" = 0 ] && [ "$done" = 1 ] && [ "$sw" = 1 ] && [ "$pass" -ge 22 ]
+[ "$fail" = 0 ] && [ "$done" = 1 ] && [ "$sw" = 1 ] && [ "$pass" -ge 25 ]

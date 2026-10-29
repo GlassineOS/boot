@@ -16,21 +16,12 @@ next() { echo "$1" > "$Q/stage"; sync; }
 booted=$(cat /run/glassine/booted 2>/dev/null)
 st() { glassine-deploy status --porcelain | sed -n 2p | tr '\t' '\n' | sed -n "s/^$1=//p"; }
 
-# hibernate: the hibernate step's job (written here until it exists): swap file
-# on userdata, the guard, the watchdog off, the image to the swap file
+# hibernate: the real hibernate step (glassine-hibernate); returns after the resume
 hibernate() {
-    if [ ! -e "$SW" ]; then
-        mkdir -p "${SW%/*}" && dd if=/dev/zero of="$SW" bs=1M count=320 2>/dev/null && chmod 600 "$SW" && mkswap "$SW" >/dev/null
-    fi
-    swapon "$SW" 2>/dev/null
-    off=$(debugfs -R "bmap /$P/swap/hibernate 0" /dev/vda2 2>/dev/null | tail -n 1)
-    echo "$off" > /sys/power/resume_offset && cat /sys/class/block/vda2/dev > /sys/power/resume
-    { gs_guard_mounts /dev/vda2; echo "deployment=$booted"; echo "krel=$(uname -r)"; echo "kver=$(uname -v)"; } | gs_write "$GUARD"
-    killall watchdog 2>/dev/null; sleep 1
-    echo shutdown > /sys/power/disk
-    say "hibernating (offset $off)"
-    echo disk > /sys/power/state
-    # here only after a resume (or a failed hibernate)
+    [ -e "$SW" ] || glassine-hibernate setup 320 > /dev/console 2>&1
+    chk "glassine-hibernate check: ready" "glassine-hibernate check > /dev/console 2>&1"
+    say "hibernating"
+    glassine-hibernate now > /dev/console 2>&1
 }
 
 stage=$(cat "$Q/stage" 2>/dev/null || echo 0)
@@ -68,6 +59,7 @@ case $stage in
     echo alive > /run/qtest-mem
     next 2
     hibernate
+    chk "glassine-hibernate: guard removed after the resume" "[ ! -e $GUARD ]"
     chk "resumed: memory state kept" "[ \"\$(cat /run/qtest-mem 2>/dev/null)\" = alive ]"
     chk "resumed: image cancelled after the resume" "[ \"\$(gs_sig_file $SW)\" != S1SUSPEND ]"
     # once more, for a boot that must not resume (the host passes glassine.noresume)

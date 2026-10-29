@@ -24,13 +24,14 @@ with a btrfs system partition and an ext4 userdata, through four boots:
 2. The reset boots as the candidate (1 try left), the migrate list is carried
    (including the change made after the reset), other files aren't; the
    `glassine-deploy-accept` service accepts it after 40 s with its health check
-   passing; hibernate.
-3. The initramfs resumes the image (memory state kept); hibernate again.
+   passing; `glassine-hibernate setup` + `check` + `now`.
+3. The initramfs resumes the image (memory state kept, the guard removed); hibernate
+   again.
 4. With `glassine.noresume`: the image is cancelled, the initramfs logs why, the
    accepted deployment boots fresh, and the accept service leaves it alone.
 
 A test shim in front of `/init` loads the virt kernel's modules (virtio, ext4, btrfs,
-overlay), and the agent in the base (`test/qemu/agent.sh`) plays the hibernate step. The
+overlay), and the agent in the base (`test/qemu/agent.sh`) drives each stage. The
 virt kernel has no watchdog driver, so the watchdog stop around the resume is covered by
 `test/root` only.
 
@@ -43,7 +44,7 @@ virt kernel has no watchdog driver, so the watchdog stop around the resume is co
 | the boot-success service accepting a healthy candidate | ✅ stubs (test/deploy); ✅ QEMU | not yet |
 | initramfs end to end in the deployments layout (mounts moved, `switch_root`, OpenRC start) | ✅ QEMU (2026-10-29) | not yet |
 | hibernation decision + cancel | ✅ real devices; ✅ QEMU (`noresume`) | not yet |
-| the hibernate step (guard, resume files, swap, watchdog) | ✅ real ext4, stubbed swapon and `/sys/power` | not yet |
+| the hibernate step (guard, resume files, swap, watchdog) | ✅ real ext4, stubbed swapon and `/sys/power`; ✅ QEMU (a real hibernate and resume) | not yet |
 | a real resume through the initramfs (the kernel reads the image) | ✅ QEMU (2026-10-29) | not yet; the kernel's own `test_resume` passed on the Note Air (2026-10-27) |
 | OpenRC: keeps the pre-mounted `/run`; the shutdown runlevel runs the switch; the lock survives `localmount` and `root` | ✅ QEMU, with the base's `bind,ro` fstab line ([boot.md](boot.md#deployments-layout)) | not yet |
 | the watchdog stop around the resume | ✅ order only (test/root) | not yet |
