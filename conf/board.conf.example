@@ -16,7 +16,10 @@ ROOT_FSTYPE=ext4
 # The slot the bootloader boots normally (the default slot) and the slot it
 # boots only when asked (the test slot: a one-shot boot of a new image).
 DEFAULT_DEV=/dev/disk/by-partlabel/boot_b
-TEST_DEV=/dev/disk/by-partlabel/recovery
+# Empty = no test slot: the recovery partition belongs to the recovery for good,
+# so install stages nothing and kernel updates wait for the kexec test boot.
+# (Until 2026-10-29 the Note Air used /dev/disk/by-partlabel/recovery here.)
+TEST_DEV=
 # The reboot reason that makes the bootloader boot the test slot once
 # (glassine-reboot passes it to the kernel's reboot-mode driver).
 TEST_REBOOT_REASON=recovery

@@ -118,6 +118,10 @@ ok "board without a role word: a plain boot is not the test slot" "$B status | g
 kernel 7.2.4-1-sdm660; $B install 7.2.4-1-sdm660 >/dev/null 2>&1; ID6=$(v pending ID)
 echo "panic=5 glassine.img=$ID6 glassine.test" > $W/cmdline
 ok "board without a role word: glassine.test = the test slot" "[ \"\$($B status)\" = \"testing 7.2.4-1-sdm660 $ID6\" ]"
+cp $W/board.conf $W/board.conf.orig; d0=$(sha256sum < $W/testslot); f0=$(sha256sum < $W/defslot)
+sed -i 's/^TEST_DEV=.*/TEST_DEV=/' $W/board.conf
+ok "board without a test slot: install refused as paused, no slot written" "env -u GLASSINE_BI_TEST_DEV $B install 7.2.4-1-sdm660 2>&1 | grep -q 'kernel updates are paused' && [ \"\$(sha256sum < $W/testslot)\" = \"\$d0\" ] && [ \"\$(sha256sum < $W/defslot)\" = \"\$f0\" ]"
+cp $W/board.conf.orig $W/board.conf
 sed -i 's/^TEST_DEV=.*//; s/^DEFAULT_DEV=.*//' $W/board.conf
 ok "board without slots: install refused (env overrides off)" "! env -u GLASSINE_BI_TEST_DEV -u GLASSINE_BI_DEFAULT_DEV $B install 7.2.4-1-sdm660 2>&1 | grep -q staged && env -u GLASSINE_BI_TEST_DEV -u GLASSINE_BI_DEFAULT_DEV $B install 7.2.4-1-sdm660 2>&1 | grep -q 'no TEST_DEV/DEFAULT_DEV'"
 cp $W/board.conf.keep $W/board.conf; rm -f $W/st/pending

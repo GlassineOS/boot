@@ -56,7 +56,12 @@ on_test_slot() {
     [ -n "$DEFAULT_ROLE_MATCH" ] && ! grep -qE -- "$DEFAULT_ROLE_MATCH" "$CMDLINE"
 }
 testing() { [ -e "$ST/pending" ] && on_test_slot && [ -n "$(run_id)" ] && [ "$(run_id)" = "$(kv "$ST/pending" ID)" ]; }
-need_slots() { [ -n "$TESTDEV" ] && [ -n "$DEFDEV" ] || die "no TEST_DEV/DEFAULT_DEV in $BOARD"; }
+# an empty TEST_DEV with a DEFAULT_DEV = a board without a test slot (its recovery
+# owns that partition): kernel updates wait for a test boot without one (kexec)
+need_slots() {
+    [ -n "$DEFDEV" ] || die "no TEST_DEV/DEFAULT_DEV in $BOARD"
+    [ -n "$TESTDEV" ] || die "no test slot (TEST_DEV is empty in $BOARD): kernel updates are paused until the kexec test boot exists; nothing written"
+}
 # sha256 of the first N bytes of a block device / file
 head_sha() { head -c "$2" "$1" | sha256sum | cut -d' ' -f1; }
 
