@@ -1,0 +1,55 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-deploy-accept: the boot-success step of a deployment candidate. When
+# the booted deployment (/run/glassine/booted) is the candidate, wait until the
+# system has been up ACCEPT_AFTER seconds (deploy.conf, default 120), check its
+# health, and accept it (glassine-deploy accept). Unhealthy or never reached:
+# not accepted, so the next boot uses the candidate's next try, and after the
+# last one the old deployment boots again.
+#
+# Health = the same checks as a kernel test boot (one definition of a healthy
+# system): no crashed OpenRC service, and every executable in
+# ACCEPT_HEALTH_DIR (default /etc/glassine-bootimg/health.d; the device and
+# desktop packages ship them) exits 0 within 60 s; a non-zero exit = unhealthy,
+# its first output line = the reason.
+#
+#   glassine-deploy-accept          run by the OpenRC service glassine-deploy-accept
+# Exit: 0 accepted or nothing to accept, 1 not accepted (logged).
+set -u
+CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+DEPLOY=${GLASSINE_DEPLOY:-/usr/sbin/glassine-deploy}
+UPTIME=${GLASSINE_ACCEPT_UPTIME:-/proc/uptime}
+RUN_DIR=/run/glassine ACCEPT_AFTER=120 ACCEPT_HEALTH_DIR=/etc/glassine-bootimg/health.d
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+say() {
+    echo "glassine-deploy-accept: $*"
+    { [ -w /dev/kmsg ] && echo "<5>glassine-deploy-accept: $*" > /dev/kmsg; } 2>/dev/null
+    return 0
+}
+field() { "$DEPLOY" status --porcelain 2>/dev/null | sed -n 2p | tr '\t' '\n' | sed -n "s/^$1=//p"; }
+
+booted=$(cat "$RUN_DIR/booted" 2>/dev/null)
+case $booted in ''|bare:*) exit 0 ;; esac
+[ "$booted" = "$(field candidate)" ] || exit 0
+
+while [ "$(cut -d. -f1 "$UPTIME")" -lt "$ACCEPT_AFTER" ]; do sleep 5; done
+
+bad=''
+crashed=$(rc-status --crashed 2>/dev/null | tr '\n' ' ')
+[ -z "${crashed% }" ] || bad="crashed: ${crashed% }"
+for h in "$ACCEPT_HEALTH_DIR"/*; do
+    [ -x "$h" ] || continue
+    why=$(timeout 60 "$h" 2>/dev/null </dev/null) && continue
+    case $? in 124|143) why="${h##*/}: timed out" ;; esac
+    why=$(echo "$why" | head -n 1)
+    bad="$bad${bad:+; }${why:-${h##*/}}"
+done
+if [ -n "$bad" ]; then
+    say "$booted not accepted: $bad (tries left: $(field tries))"
+    exit 1
+fi
+"$DEPLOY" accept "$booted" || { say "accept $booted failed"; exit 1; }
+say "$booted accepted after ${ACCEPT_AFTER}s healthy"
+exit 0

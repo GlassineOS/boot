@@ -49,4 +49,4 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - run: shellcheck -s sh -S warning -e SC3043 sbin/glassine-bootimg sbin/glassine-reboot-clean sbin/glassine-deploy sbin/glassine-switch-hook lib/glassine-state.sh lib/glassine-root.sh build-initramfs.sh initramfs/init openrc/glassine-bootimg-promote openrc/glassine-switch test/*/*.sh
+      - run: shellcheck -s sh -S warning -e SC3043 sbin/glassine-bootimg sbin/glassine-reboot-clean sbin/glassine-deploy sbin/glassine-switch-hook sbin/glassine-deploy-accept lib/glassine-state.sh lib/glassine-root.sh build-initramfs.sh initramfs/init openrc/glassine-bootimg-promote openrc/glassine-switch openrc/glassine-deploy-accept test/*/*.sh

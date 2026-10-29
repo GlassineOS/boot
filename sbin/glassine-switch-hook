@@ -29,6 +29,7 @@ MARK=$RUN_DIR/user-shutdown
 say() {
     echo "glassine-switch: $*"
     { [ -w /dev/kmsg ] && echo "<5>glassine-switch: $*" > /dev/kmsg; } 2>/dev/null
+    return 0
 }
 
 if [ "${1:-}" = --user-shutdown ]; then

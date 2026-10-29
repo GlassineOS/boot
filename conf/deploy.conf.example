@@ -25,3 +25,9 @@ RUN_DIR=/run/glassine
 # battery percent or more (the threshold is a0's, Phase 12 W10 / R3; 30 until
 # then).
 SWITCH_MIN_CAPACITY=30
+
+# The boot-success step (glassine-deploy-accept): a candidate is accepted once
+# it has been up this long and healthy (the same health.d checks as a kernel
+# test boot).
+ACCEPT_AFTER=120
+ACCEPT_HEALTH_DIR=/etc/glassine-bootimg/health.d

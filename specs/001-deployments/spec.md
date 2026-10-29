@@ -142,6 +142,11 @@ the running system.
   util-linux, no btrfs-progs.
 - **FR-016** Before `switch_root`, the initramfs moves its mounts to `/run/glassine/`
   and releases the state lock.
+- **FR-017** A base lists `/` with `bind,ro` in `/etc/fstab`, so the init system keeps
+  the lock without making `/etc` and `/var` read-only.
+- **FR-018** The boot-success service (`glassine-deploy-accept`) accepts only the
+  booted candidate, only after `ACCEPT_AFTER` seconds of uptime, and only when no
+  OpenRC service has crashed and every health check in `ACCEPT_HEALTH_DIR` passes.
 
 ## Not in this feature (later)
 
@@ -150,7 +155,7 @@ the running system.
   carrying all of `/var/lib`.
 - The apk wrapper and `glassine unlock`.
 - `kernel-restore`, `--wipe-flatpak`, `--wipe-docker`.
-- The kexec loader, and the boot-success service that calls `accept`.
+- The kexec loader.
 - The hibernate step itself (it writes the guard).
 
 ## Success criteria

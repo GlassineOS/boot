@@ -49,7 +49,9 @@ The merged root of a deployment is the overlay
 
 Locked (the default): `/` is a read-only bind of that overlay, and `/etc`, `/var`,
 `/usr/local`, `/opt` are read-write binds of its own directories. So writes there go
-through the overlay (copy-up, whiteouts), and the base never changes.
+through the overlay (copy-up, whiteouts), and the base never changes. The base's
+`/etc/fstab` must list `/` with `bind,ro` ([boot.md](boot.md#deployments-layout)), or the
+init system remounts it read-write.
 
 ## State files
 
@@ -214,11 +216,27 @@ Otherwise the deployment stays staged for the next shutdown. The hook never stop
 shutdown. A hibernate never runs it, because the kernel powers off without the init
 system's shutdown.
 
+## Accepting a candidate
+
+`glassine-deploy-accept`, started by the OpenRC service `glassine-deploy-accept` in the
+`default` runlevel (after every other service, as a background job). It acts only when
+the booted deployment is the candidate. It waits until the system has been up
+`ACCEPT_AFTER` seconds (default 120), then checks health:
+
+- no OpenRC service has crashed (`rc-status --crashed`);
+- every executable in `ACCEPT_HEALTH_DIR` (default `/etc/glassine-bootimg/health.d`,
+  the same checks as a kernel test boot) exits 0 within 60 seconds. The first output
+  line of a failing check is the logged reason.
+
+Healthy: `glassine-deploy accept`. Otherwise it logs `<id> not accepted: <reason>` to
+the kernel log and changes nothing, so the next boot uses the candidate's next try, and
+after the last one the old deployment boots again.
+
 ## Configuration: `/etc/glassine/deploy.conf`
 
 See [`conf/deploy.conf.example`](../conf/deploy.conf.example): `SYSTEM_DEV`,
 `SYSTEM_MNT`, `USERDATA_DEV`, `USERDATA_MNT`, `USERDATA_PREFIX`, `RUN_DIR`,
-`SWITCH_MIN_CAPACITY`. A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
+`SWITCH_MIN_CAPACITY`, `ACCEPT_AFTER`, `ACCEPT_HEALTH_DIR`. A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
 
 ## Runtime directory: `/run/glassine/`
 

@@ -44,6 +44,37 @@ psu bat:Battery=90; echo 5 > $HW/rc
 ok "hook: the switch fails: its exit code, said" "hook; [ \$? = 5 ] && grep -q 'switch failed (exit 5): r1 stays staged' $HW/out"
 ok "hook: a stray argument: usage, exit 2" "hook --now; [ \$? = 2 ]"
 
+# --- the boot-success step (glassine-deploy-accept), on a stub -----------------
+A=/p/sbin/glassine-deploy-accept
+AW=$W/acc; mkdir -p $AW/run $AW/health $AW/bin
+printf '#!/bin/sh\ncase $1 in\nstatus) printf "v\\tx\\n%%s\\n" "$(cat %s/status)" ;;\naccept) echo "accept $2" >> %s/calls ;;\nesac\n' $AW $AW > $AW/deploy; chmod +x $AW/deploy
+printf '#!/bin/sh\n[ "$1" = --crashed ] && cat %s/crashed 2>/dev/null\nexit 0\n' $AW > $AW/bin/rc-status; chmod +x $AW/bin/rc-status
+printf 'RUN_DIR=%s/run\nACCEPT_AFTER=120\nACCEPT_HEALTH_DIR=%s/health\n' $AW $AW > $AW/conf
+acc() { : > $AW/calls; PATH=$AW/bin:$PATH GLASSINE_DEPLOY_CONF=$AW/conf GLASSINE_DEPLOY=$AW/deploy GLASSINE_ACCEPT_UPTIME=$AW/uptime sh $A > $AW/out 2>&1; }
+echo '130.0 1.0' > $AW/uptime; echo c1 > $AW/run/booted
+printf 'type=status\tcandidate=c1\ttries=1\n' > $AW/status
+printf '#!/bin/sh\nexit 0\n' > $AW/health/10-ok; chmod +x $AW/health/10-ok
+ok "accept: the booted candidate, healthy, up long enough: accepted" "acc && grep -qx 'accept c1' $AW/calls"
+printf 'type=status\tcandidate=\ttries=0\n' > $AW/status
+ok "accept: the booted one is not the candidate: nothing" "acc && [ ! -s $AW/calls ]"
+echo bare:b1 > $AW/run/booted
+ok "accept: a bare boot: nothing" "acc && [ ! -s $AW/calls ]"
+echo c1 > $AW/run/booted; printf 'type=status\tcandidate=c1\ttries=1\n' > $AW/status
+printf '#!/bin/sh\necho epdd not running\nexit 1\n' > $AW/health/20-bad; chmod +x $AW/health/20-bad
+ok "accept: a health check fails: not accepted, its reason logged" "! acc && [ ! -s $AW/calls ] && grep -q 'c1 not accepted: epdd not running (tries left: 1)' $AW/out"
+rm $AW/health/20-bad; echo sway > $AW/crashed
+ok "accept: a crashed service: not accepted" "! acc && [ ! -s $AW/calls ] && grep -q 'crashed: sway' $AW/out"
+rm $AW/crashed; printf '#!/bin/sh\nsleep 120\n' > $AW/health/30-slow; chmod +x $AW/health/30-slow
+printf '#!/bin/sh\nexit 124\n' > $AW/bin/timeout; chmod +x $AW/bin/timeout
+ok "accept: a health check that times out: not accepted" "! acc && grep -q '30-slow: timed out' $AW/out"
+rm $AW/health/30-slow $AW/bin/timeout
+echo '10.0 1.0' > $AW/uptime
+acc & ap=$!
+sleep 1
+ok "accept: waits while uptime < ACCEPT_AFTER" "[ ! -s $AW/calls ] && kill -0 $ap"
+echo '130.0 1.0' > $AW/uptime
+ok "accept: then accepts once it is up long enough" "wait $ap && grep -qx 'accept c1' $AW/calls"
+
 # --- the library -------------------------------------------------------------
 printf 'a=1\nb=2\n' > $W/kv
 ok "gs_kv reads a key" "[ \"\$(gs_kv $W/kv b)\" = 2 ]"

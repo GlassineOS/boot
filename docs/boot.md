@@ -53,6 +53,12 @@ steps from `lib/glassine-root.sh`:
    - The lock is released.
 5. `switch_root`.
 
+**The base must list `/` as `bind,ro` in `/etc/fstab`:** `overlay / overlay bind,ro 0 0`.
+OpenRC's `root` service (pulled in by `localmount`) remounts `/` read-write unless
+fstab says `ro`. It then remounts every fstab entry with `mount -o remount,<options>`,
+so a plain `ro` would make the whole overlay read-only, `/etc` and `/var` included.
+`bind,ro` changes only the `/` bind. Found by the QEMU test, 2026-10-29.
+
 The test role makes no staged-image test boot in this layout: reading the pending
 record would mean mounting userdata before the hibernation step.
 
