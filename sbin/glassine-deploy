@@ -132,6 +132,23 @@ hibernated() {
 # the device (no mount, no journal replay; may miss the newest writes of an
 # unclean shutdown, which is fine for reading the list).
 ud_mounted() { is_mounted "$USERDATA_MNT"; }
+
+# mounted_at DEV: where DEV is mounted already (any path, e.g. a recovery's
+# /data), or empty; compares the resolved device nodes
+mounted_at() {
+    _rd=$(readlink -f "$1" 2>/dev/null) || return 0
+    while read -r _src _mp _rest; do
+        case "$_src" in /*) ;; *) continue ;; esac
+        [ "$(readlink -f "$_src" 2>/dev/null)" = "$_rd" ] && { printf '%b\n' "$_mp"; return 0; }
+    done < "${GLASSINE_DEPLOY_MOUNTS:-/proc/mounts}"
+}
+
+# userdata mounted somewhere else than USERDATA_MNT: use that mount. Never
+# the raw device under a mounted file system (glassine-state.sh).
+if [ -z "${GLASSINE_DEPLOY_FAKE_MOUNTS:-}" ] && [ -n "$USERDATA_DEV" ] && ! is_mounted "$USERDATA_MNT"; then
+    _m=$(mounted_at "$USERDATA_DEV")
+    [ -n "$_m" ] && USERDATA_MNT=$_m
+fi
 ud_dev() { [ -n "$USERDATA_DEV" ] && [ -e "$USERDATA_DEV" ]; }
 
 # ud_dirs REL: the subdirectories of <prefix>/REL
