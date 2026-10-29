@@ -117,3 +117,165 @@ gr_merged_ro() {
     [ -d "$2/switch" ] && _gr_l="$2/switch:$_gr_l"
     mkdir -p "$3" && mount -t overlay overlay -o "ro,lowerdir=$_gr_l" "$3"
 }
+
+# --- the boot (initramfs, §5.3) -------------------------------------------------
+# gr_resume, then gr_boot, then (after the pre-switch-root hooks) gr_carry. The
+# initramfs replaces gr_log with its kernel log and gr_wd_stop/gr_wd_start with
+# its watchdog; GR_SYSPOWER and GR_TMP are for the host test.
+GR_SYSPOWER=/sys/power
+GR_TMP=/run/glassine-root
+gr_log() { echo "glassine-root: $*" >&2; }
+gr_wd_stop() { :; }
+gr_wd_start() { :; }
+
+# gr_would_pick STATEDIR: what gr_pick would boot, without writing anything
+gr_would_pick() {
+    _gr_s=$1/deploy
+    _gr_cur=$(gs_kv "$_gr_s" current)
+    _gr_cand=$(gs_kv "$_gr_s" candidate)
+    _gr_t=$(gs_kv "$_gr_s" tries)
+    case "$_gr_t" in ''|*[!0-9]*) _gr_t=0 ;; esac
+    if [ -n "$_gr_cand" ] && [ "$_gr_cand" != "$_gr_cur" ] && [ "$_gr_t" -gt 0 ]; then
+        echo "$_gr_cand"
+    elif [ -n "$_gr_cur" ]; then echo "$_gr_cur"
+    else gs_kv "$_gr_s" previous; fi
+}
+
+# The guard file (<prefix>/swap/hibernate.guard, written by the hibernate
+# wrapper right before `echo disk`, gs_write), key=value:
+#   mount_count  last_mount   userdata's ext4 "Mount count" / "Last mount time"
+#                             (dumpe2fs -h) at the hibernate (rule 4)
+#   deployment                the deployment it hibernated in (rule 7)
+#   krel  kver                uname -r / uname -v of the hibernating kernel (rule 7)
+# A missing key is a mismatch.
+
+# gr_dumpe2fs DEV FIELD: one field of the superblock (leading spaces dropped)
+gr_dumpe2fs() {
+    dumpe2fs -h "$1" 2>/dev/null | sed -n "s/^$2: *//p" | head -n 1
+}
+
+# gr_resume_refusal SYSDEV UDDEV PREFIX MAY: why the image must not be resumed
+# (empty = resume). Reads userdata with debugfs only; mounts the system
+# partition read-only without a log replay (rule 1), and unmounts it again.
+gr_resume_refusal() {
+    [ "$4" = resume ] || { echo "no resume on this boot ($4)"; return 0; }
+    _gr_g=$(debugfs -R "cat /$3/swap/hibernate.guard" "$2" 2>/dev/null)
+    [ -n "$_gr_g" ] || { echo "no guard file"; return 0; }
+    for _gr_k in mount_count:"Mount count" last_mount:"Last mount time"; do
+        _gr_v=$(printf '%s\n' "$_gr_g" | sed -n "s/^${_gr_k%%:*}=//p" | head -n 1)
+        [ -n "$_gr_v" ] && [ "$_gr_v" = "$(gr_dumpe2fs "$2" "${_gr_k#*:}")" ] ||
+            { echo "userdata was mounted since the hibernate (${_gr_k%%:*})"; return 0; }
+    done
+    _gr_v=$(printf '%s\n' "$_gr_g" | sed -n 's/^krel=//p' | head -n 1)
+    [ -n "$_gr_v" ] && [ "$_gr_v" = "$(uname -r)" ] || { echo "another kernel release hibernated"; return 0; }
+    _gr_v=$(printf '%s\n' "$_gr_g" | sed -n 's/^kver=//p' | head -n 1)
+    [ -n "$_gr_v" ] && [ "$_gr_v" = "$(uname -v)" ] || { echo "another kernel build hibernated"; return 0; }
+    _gr_v=$(printf '%s\n' "$_gr_g" | sed -n 's/^deployment=//p' | head -n 1)
+    [ -n "$_gr_v" ] || { echo "the guard names no deployment"; return 0; }
+    mkdir -p "$GR_TMP/peek" && mount -t btrfs -o ro,rescue=nologreplay "$1" "$GR_TMP/peek" 2>/dev/null ||
+        { echo "cannot read the system partition's state"; return 0; }
+    _gr_p=$(gr_would_pick "$GR_TMP/peek/state")
+    umount "$GR_TMP/peek"
+    [ "$_gr_p" = "$_gr_v" ] || { echo "state/ boots $_gr_p, the session ran $_gr_v"; return 0; }
+}
+
+# gr_resume SYSDEV UDDEV PREFIX MAY: before anything mounts either partition
+# read-write. A hibernate image on userdata is resumed when MAY = resume and
+# every check passes (the kernel does not return then); otherwise it is
+# invalidated (rule 5), the only write before the mounts. MAY: resume, or a
+# word saying why not (noresume, test-role). 0 = no image left (none,
+# invalidated, or a block size other than 4096: the wrapper never hibernates
+# there); 1 = an image that could not be invalidated: mount nothing read-write.
+gr_resume() {
+    _gr_sw=$3/swap/hibernate
+    debugfs -R "stat /$_gr_sw" "$2" 2>/dev/null | grep -q '^Inode:' || return 0
+    _gr_b=$(gs_dev_block "$2" "$_gr_sw") || { gr_log "hibernate file: no 4096-byte block, no resume"; return 0; }
+    [ "$(gs_sig_dev "$2" "$_gr_b")" = "$GS_SIG_HIBERNATE" ] || return 0
+    _gr_why=$(gr_resume_refusal "$1" "$2" "$3" "$4")
+    if [ -z "$_gr_why" ]; then
+        _gr_mm=$(stat -L -c '%t %T' "$2") && _gr_mm=$(printf '%d:%d' 0x${_gr_mm% *} 0x${_gr_mm#* })
+        gr_log "resuming the hibernated session (block $_gr_b, $_gr_mm)"
+        gr_wd_stop
+        echo "$_gr_b" > "$GR_SYSPOWER/resume_offset" && echo "$_gr_mm" > "$GR_SYSPOWER/resume"
+        gr_wd_start
+        _gr_why="the kernel did not resume it"
+    fi
+    gr_log "hibernated session not resumed: $_gr_why; invalidating it"
+    gs_invalidate_dev "$2" "$_gr_b" && [ "$(gs_sig_dev "$2" "$_gr_b")" != "$GS_SIG_HIBERNATE" ] && return 0
+    gr_log "cannot invalidate the hibernate image"
+    return 1
+}
+
+# gr_boot SYSDEV UDDEV PREFIX NEWROOT KREL: after gr_resume. The system
+# partition read-write at NEWROOT.sys with its state locked (fd 9, until
+# gr_carry), userdata checked and mounted at NEWROOT.ud, the deployment picked
+# (gr_pick: a try used) and assembled at NEWROOT. One that does not assemble is
+# skipped (a candidate is marked failed) for current, then previous. Without
+# userdata (UDDEV empty or not mountable) or any deployment: bare, on the
+# current deployment's base or else the last base by name. A state format
+# newer than this code, or a held lock: the state is read, never written.
+# Sets GR_BOOTED (the id, or bare:<base>). 1 = nothing bootable, nothing left
+# mounted.
+gr_boot() {
+    _gr_sm=$4.sys _gr_um=$4.ud GR_BOOTED='' _gr_ud=''
+    mkdir -p "$_gr_sm" && mount -t btrfs -o rw,noatime "$1" "$_gr_sm" || { gr_log "cannot mount $1"; return 1; }
+    _gr_f=$(gs_format_version "$_gr_sm")
+    [ "$_gr_f" != none ] || { gr_log "the system partition has no state/ (not migrated)"; umount "$_gr_sm"; return 1; }
+    _gr_rw=1
+    gs_format_ok "$_gr_f" || { gr_log "state format $_gr_f is newer than this initramfs: state read only"; _gr_rw=0; }
+    [ $_gr_rw = 0 ] || gs_lock "$_gr_sm/state" || { gr_log "state is locked: read only"; _gr_rw=0; }
+    if [ -n "$2" ] && [ -e "$2" ]; then
+        e2fsck -p "$2" >/dev/null 2>&1; _gr_rc=$?
+        [ $_gr_rc -lt 4 ] || gr_log "e2fsck -p $2: exit $_gr_rc (mounting anyway)"
+        if mkdir -p "$_gr_um" && mount -t ext4 -o rw,noatime "$2" "$_gr_um"; then _gr_ud=$_gr_um/$3
+        else gr_log "userdata does not mount: bare boot"; fi
+    fi
+    _gr_st=$_gr_sm/state/deploy
+    if [ -n "$_gr_ud" ]; then
+        if [ $_gr_rw = 1 ]; then _gr_id=$(gr_pick "$_gr_sm/state"); else _gr_id=$(gr_would_pick "$_gr_sm/state"); fi
+        for _gr_try in "$_gr_id" "$(gs_kv "$_gr_st" current)" "$(gs_kv "$_gr_st" previous)"; do
+            [ -n "$_gr_try" ] || continue
+            if gr_assemble "$_gr_sm" "$_gr_ud" "$_gr_try" "$4" "$5"; then GR_BOOTED=$_gr_try; return 0; fi
+            gr_log "deployment $_gr_try does not assemble"
+            [ $_gr_rw = 1 ] && [ "$_gr_try" = "$(gs_kv "$_gr_st" candidate)" ] &&
+                gs_update "$_gr_st" candidate= tries=0 "failed=$_gr_try"
+        done
+    fi
+    _gr_base=''
+    [ -z "$_gr_ud" ] || _gr_base=$(gs_kv "$_gr_ud/deployments/$(gs_kv "$_gr_st" current)/meta" base)
+    [ -n "$_gr_base" ] && [ -d "$_gr_sm/bases/$_gr_base" ] || _gr_base=$(ls -1 "$_gr_sm/bases" 2>/dev/null | sort | tail -n 1)
+    if [ -n "$_gr_base" ] && gr_assemble_bare "$_gr_sm" "$_gr_base" "$4" "$5"; then
+        gr_log "bare boot on base $_gr_base (nothing kept)"
+        GR_BOOTED=bare:$_gr_base; return 0
+    fi
+    gr_log "nothing to boot"
+    gr_boot_umount "$4"
+    return 1
+}
+
+# gr_boot_umount NEWROOT: undo gr_boot (and gr_carry), the lock released
+gr_boot_umount() {
+    exec 9>&-                   # the lock file is open on $1.sys
+    gr_umount "$1"
+    umount "$1.ud" 2>/dev/null; umount "$1.sys" 2>/dev/null
+}
+
+# gr_carry NEWROOT: right before switch_root. A tmpfs on NEWROOT/run (the init
+# system keeps a mounted /run), the system partition, userdata and the merged
+# overlay moved to /run/glassine/{system,userdata,root} (deploy.conf's
+# SYSTEM_MNT, USERDATA_MNT), a bare boot's tmpfs to /run/glassine/bare, the
+# booted deployment in /run/glassine/booted (for the boot-success service's
+# accept); the state lock released, so the system's glassine-deploy can take it.
+gr_carry() {
+    _gr_r=$1/run/glassine
+    # a base without /run: made in the overlay underneath (/ is read-only)
+    [ -d "$1/run" ] || mkdir -p "$1.rw/run" || return 1
+    mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$1/run" || return 1
+    mkdir -p "$_gr_r/system" "$_gr_r/userdata" "$_gr_r/root" || return 1
+    mount --move "$1.sys" "$_gr_r/system" || return 1
+    if mountpoint -q "$1.ud"; then mount --move "$1.ud" "$_gr_r/userdata" || return 1; fi
+    mount --move "$1.rw" "$_gr_r/root" || return 1
+    if mountpoint -q "$1.tmp"; then mkdir -p "$_gr_r/bare" && mount --move "$1.tmp" "$_gr_r/bare" || return 1; fi
+    echo "$GR_BOOTED" > "$_gr_r/booted"
+    exec 9>&-
+}

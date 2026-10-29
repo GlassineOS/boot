@@ -13,7 +13,7 @@ glassine-reboot: src/glassine-reboot.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 initramfs: initramfs.cpio.gz
-initramfs.cpio.gz: initramfs/init build-initramfs.sh
+initramfs.cpio.gz: initramfs/init build-initramfs.sh lib/glassine-state.sh lib/glassine-root.sh
 	sh build-initramfs.sh $@
 
 install: glassine-reboot

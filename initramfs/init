@@ -3,7 +3,10 @@
 # board's DEFAULT_ROLE_MATCH on the kernel command line:
 #
 #   DEFAULT role (a normal boot from the default slot): the daily system. The
-#   root fs (ROOT_PART) checked and mounted read-write, its own runlevels;
+#   root fs (ROOT_PART) checked and mounted read-write, its own runlevels
+#   (ROOT_LAYOUT=deployments: the deployment's root assembled from the btrfs
+#   ROOT_PART + userdata instead, lib/glassine-root.sh, after the hibernation
+#   resume step);
 #   the previous boot's pstore saved to /var/log/pstore/. The watchdog stays
 #   armed (busybox watchdog keeps petting after switch_root): a kernel hang
 #   resets warm, pstore kept.
@@ -56,17 +59,18 @@ mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
 log() { echo "<3>glassine-boot: $*" > /dev/kmsg; }
 # The host test's overrides (test/initramfs). Never as PID 1: the kernel puts
 # unknown command line words of the form A=B into PID 1's environment.
-[ $$ = 1 ] && unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS
+[ $$ = 1 ] && unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS GLASSINE_INIT_LIB
 CMDF=${GLASSINE_INIT_CMDLINE:-/proc/cmdline}
 BOARD=${GLASSINE_INIT_BOARD:-/etc/glassine-boot/board.conf}
 HOOKDIR=${GLASSINE_INIT_HOOKS:-/lib/glassine-boot/hooks.d}
+LIBDIR=${GLASSINE_INIT_LIB:-/lib/glassine-boot}
 # for the hooks (sourced): their files from build-initramfs.sh --extra
 # shellcheck disable=SC2034
 GLASSINE_EXTRA=/lib/glassine-boot/extra
 NEWROOT=/newroot
 log "init start $(cat /proc/uptime)"
 
-ROOT_PART='' ROOT_FSTYPE=ext4 DEFAULT_ROLE_MATCH='' DEVMODE_ADDR='' DEVMODE_NETMASK=255.255.255.0
+ROOT_PART='' ROOT_FSTYPE=ext4 ROOT_LAYOUT=plain USERDATA_PART='' USERDATA_PREFIX=media/glassine DEFAULT_ROLE_MATCH='' DEVMODE_ADDR='' DEVMODE_NETMASK=255.255.255.0
 DEVMODE_DHCP_START='' DEVMODE_DHCP_END='' USB_VENDOR=0x1d6b USB_PRODUCT=0x0104 USB_MANUFACTURER=GlassineOS
 if [ -r "$BOARD" ]; then
     # shellcheck source=/dev/null
@@ -94,8 +98,23 @@ fi
 log "role: $([ $DEFAULT = 1 ] && echo default || echo test), devmode $DEVMODE"
 
 # Pet the watchdog from here on: if PID 1 or the kernel stalls, the bite resets.
-[ -e /dev/watchdog ] && { watchdog -t 5 -T 20 /dev/watchdog && log "watchdog armed (20 s)"; } \
-    || log "no /dev/watchdog"
+wd_arm() {
+    [ -e /dev/watchdog ] && { watchdog -t 5 -T 20 /dev/watchdog && log "watchdog armed (20 s)"; } \
+        || log "no /dev/watchdog"
+}
+wd_arm
+
+# The deployments layout (§5.3 of the lab's Phase 18): the boot steps of
+# lib/glassine-root.sh. The watchdog stops (busybox's magic close on SIGTERM)
+# only around the resume write: qcom-wdt can't wait out an image load.
+if [ "$ROOT_LAYOUT" = deployments ]; then
+    # shellcheck source=../lib/glassine-state.sh
+    [ -r "$LIBDIR/glassine-root.sh" ] && . "$LIBDIR/glassine-state.sh" && . "$LIBDIR/glassine-root.sh" ||
+        { log "ROOT_LAYOUT=deployments, but $LIBDIR has no glassine-root.sh: no root"; ROOT_PART=''; }
+    gr_log() { log "$*"; }
+    gr_wd_stop() { killall watchdog 2>/dev/null; sleep 1; }
+    gr_wd_start() { wd_arm; }
+fi
 
 # Hooks: `glassine_hook STAGE FUNCTION` adds FUNCTION to STAGE; run_stage
 # calls them in the order they were added.
@@ -164,15 +183,37 @@ run_stage endpoints
 
 # The root partition's block device name. Storage may still be probing
 # when /init starts: wait up to 15 s for it.
-find_root() {
-    [ -n "$ROOT_PART" ] || return 1
+find_part() {
+    [ -n "$1" ] || return 1
     for _ in $(seq 1 60); do
         for u in /sys/class/block/*/uevent; do
-            grep -qx "PARTNAME=$ROOT_PART" "$u" && { sed -n 's/^DEVNAME=//p' "$u"; return 0; }
+            grep -qx "PARTNAME=$1" "$u" && { sed -n 's/^DEVNAME=//p' "$u"; return 0; }
         done
         sleep 0.25
     done
     return 1
+}
+find_root() { find_part "$ROOT_PART"; }
+
+# The deployments layout: resume or invalidate a hibernated session first
+# (nothing mounted before it), then the deployment's root at $NEWROOT. No
+# resume on a test-role boot or with glassine.noresume (the loader's word for
+# "I took the normal path", rule 10).
+mount_deployments() {
+    U=''
+    [ -n "$USERDATA_PART" ] && { U=$(find_part "$USERDATA_PART") || log "default: userdata $USERDATA_PART not found"; }
+    may=resume
+    [ $DEFAULT = 1 ] || may=test-role
+    grep -qw glassine.noresume "$CMDF" && may=noresume
+    if [ -n "$U" ] && ! gr_resume "/dev/$P" "/dev/$U" "$USERDATA_PREFIX" $may; then
+        log "default: userdata holds a hibernate image that cannot be invalidated: nothing mounted"
+        return 1
+    fi
+    gr_boot "/dev/$P" "${U:+/dev/$U}" "$USERDATA_PREFIX" $NEWROOT "$(uname -r)" || return 1
+    log "default: deployment $GR_BOOTED"
+}
+root_release() {
+    if [ "$ROOT_LAYOUT" = deployments ]; then gr_boot_umount $NEWROOT; else umount $NEWROOT; fi
 }
 
 # The daily boot: the root fs read-write, its own runlevels (the packages
@@ -183,14 +224,18 @@ boot_default() {
     P=$(find_root)
     [ -n "$P" ] || { log "default: root partition ${ROOT_PART:-(none configured)} not found"; return 1; }
     mkdir -p $NEWROOT
-    # Preen before mounting read-write, as a distribution does (fixes the
-    # safe things; exit >= 4 needs a human: mount anyway and say so).
-    if command -v "fsck.$ROOT_FSTYPE" >/dev/null; then
-        "fsck.$ROOT_FSTYPE" -p "/dev/$P" > /tmp/fsck.log 2>&1; rc=$?
-        log "default: fsck.$ROOT_FSTYPE -p $ROOT_PART: exit $rc $(tail -n1 /tmp/fsck.log)"
+    if [ "$ROOT_LAYOUT" = deployments ]; then
+        mount_deployments || return 1
+    else
+        # Preen before mounting read-write, as a distribution does (fixes the
+        # safe things; exit >= 4 needs a human: mount anyway and say so).
+        if command -v "fsck.$ROOT_FSTYPE" >/dev/null; then
+            "fsck.$ROOT_FSTYPE" -p "/dev/$P" > /tmp/fsck.log 2>&1; rc=$?
+            log "default: fsck.$ROOT_FSTYPE -p $ROOT_PART: exit $rc $(tail -n1 /tmp/fsck.log)"
+        fi
+        mount -t "$ROOT_FSTYPE" -o rw,noatime "/dev/$P" $NEWROOT || { log "default: mount /dev/$P failed"; return 1; }
     fi
-    mount -t "$ROOT_FSTYPE" -o rw,noatime "/dev/$P" $NEWROOT || { log "default: mount /dev/$P failed"; return 1; }
-    [ -x $NEWROOT/sbin/init ] || { umount $NEWROOT; log "default: no /sbin/init on $ROOT_PART"; return 1; }
+    [ -x $NEWROOT/sbin/init ] || { root_release; log "default: no /sbin/init on $ROOT_PART"; return 1; }
     if [ -n "$(ls /tmp/prev-pstore 2>/dev/null)" ]; then
         D=$NEWROOT/var/log/pstore/$(date +%Y%m%d-%H%M%S)-$$
         mkdir -p "$D" && cp /tmp/prev-pstore/* "$D"/ && log "default: saved pstore to ${D#"$NEWROOT"}"
@@ -209,6 +254,9 @@ boot_default() {
         rmdir $G/configs/c.1/strings/0x409 $G/configs/c.1 $G/functions/ncm.usb0 $G/strings/0x409 $G 2>/dev/null
     fi
     umount /sys/kernel/config 2>/dev/null
+    if [ "$ROOT_LAYOUT" = deployments ]; then
+        gr_carry $NEWROOT || { log "default: cannot move the mounts into the new root"; return 1; }
+    fi
     log "default: switch_root $(cut -d' ' -f1 /proc/uptime)"
     umount /sys/fs/pstore 2>/dev/null
     for m in /proc /sys /dev; do mkdir -p $NEWROOT$m; done
@@ -224,7 +272,11 @@ boot_default() {
 # marks the image failed). Without glassine.img= nothing changes.
 AUTOTEST=0
 IMG_ID=$(sed -n 's/.*glassine[._]img=\([0-9a-f]*\).*/\1/p' "$CMDF")
-if [ $DEFAULT = 0 ] && [ -n "$IMG_ID" ]; then
+if [ $DEFAULT = 0 ] && [ -n "$IMG_ID" ] && [ "$ROOT_LAYOUT" = deployments ]; then
+    # the pending record is inside a deployment on userdata; reading it would
+    # come before the hibernation step (test slot paused since A30 anyway)
+    log "image $IMG_ID: no staged-image test boot in the deployments layout"
+elif [ $DEFAULT = 0 ] && [ -n "$IMG_ID" ]; then
     P=$(find_root)
     # a look only: read-only, and for ext3/4 without replaying the journal
     case $ROOT_FSTYPE in ext3|ext4) o=ro,noload ;; *) o=ro ;; esac

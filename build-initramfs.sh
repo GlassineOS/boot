@@ -2,7 +2,7 @@
 # Build the boot initramfs (initramfs/init + busybox + fsck): the image a
 # device package installs for glassine-bootimg (no options), and what an image
 # builder extends. Runs inside an arm64 Alpine (the caller provides it) with:
-#   busybox-static busybox-extras e2fsprogs cpio gzip
+#   busybox-static busybox-extras e2fsprogs e2fsprogs-extra cpio gzip
 #   + for --helpers: gcc musl-dev linux-headers
 #
 #   build-initramfs.sh [--board FILE] [--hook FILE]... [--extra DIR] [--helpers SRCDIR] OUT.cpio.gz
@@ -45,13 +45,20 @@ cp /lib/ld-musl-aarch64.so.1 "$I/lib/"
 ln -s ld-musl-aarch64.so.1 "$I/lib/libc.musl-aarch64.so.1"
 install -m 755 "$HERE/initramfs/init" "$I/init"
 # fsck for the default boot (preen the root fs before mounting it read-write):
-# e2fsck as fsck.ext2/3/4, the dynamic binary + its libraries (Alpine has no
-# static e2fsck)
-cp /sbin/e2fsck "$I/sbin/"
-for t in ext2 ext3 ext4; do ln -s e2fsck "$I/sbin/fsck.$t"; done
-for l in $(ldd /sbin/e2fsck | sed -n 's/.* => \(\/[^ ]*\) .*/\1/p'); do
-    case $l in */ld-musl*|*/libc.musl*) ;; *) cp -L "$l" "$I/usr/lib/" ;; esac
+# e2fsck as fsck.ext2/3/4; debugfs + dumpe2fs for the hibernation step of the
+# deployments layout (userdata read without a mount). Dynamic binaries + their
+# libraries (Alpine has no static e2fsprogs).
+for n in e2fsck dumpe2fs debugfs; do
+    b=$(command -v $n) || { echo "build-initramfs.sh: no $n (e2fsprogs, e2fsprogs-extra)" >&2; exit 1; }
+    cp "$b" "$I/sbin/"
+    for l in $(ldd "$b" | sed -n 's/.* => \(\/[^ ]*\) .*/\1/p'); do
+        case $l in */ld-musl*|*/libc.musl*) ;; *) cp -L "$l" "$I/usr/lib/" ;; esac
+    done
 done
+for t in ext2 ext3 ext4; do ln -s e2fsck "$I/sbin/fsck.$t"; done
+# the deployments layout (ROOT_LAYOUT=deployments)
+install -D -m 644 "$HERE/lib/glassine-state.sh" "$I/lib/glassine-boot/glassine-state.sh"
+install -D -m 644 "$HERE/lib/glassine-root.sh" "$I/lib/glassine-boot/glassine-root.sh"
 if [ -n "$HELPERS" ]; then
     for c in "$HELPERS"/*.c; do
         t=$(basename "$c" .c)
@@ -60,7 +67,7 @@ if [ -n "$HELPERS" ]; then
         strip "$I/bin/$t"
     done
 fi
-for a in watchdog ifconfig seq reboot head sed mount; do
+for a in watchdog ifconfig seq reboot head sed mount mountpoint flock stat killall blockdev awk; do
     "$I/bin/busybox" --list | grep -qx "$a" || { echo "busybox.static lacks $a" >&2; exit 1; }
 done
 for a in telnetd udhcpd httpd; do

@@ -18,7 +18,7 @@ jobs:
       - name: build twice, compare (reproducible), no board/hooks unless asked, install
         run: |
           docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh -euc '
-            apk add -q build-base linux-headers busybox-static busybox-extras e2fsprogs cpio gzip
+            apk add -q build-base linux-headers busybox-static busybox-extras e2fsprogs e2fsprogs-extra cpio gzip
             sh build-initramfs.sh /tmp/a.cpio.gz; sh build-initramfs.sh /tmp/b.cpio.gz
             cmp /tmp/a.cpio.gz /tmp/b.cpio.gz
             zcat /tmp/a.cpio.gz | cpio -t --quiet | grep -E "^(etc/glassine-boot|lib/glassine-boot/(hooks.d|extra))" && exit 1

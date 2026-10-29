@@ -16,7 +16,7 @@ loop() {
     losetup "$LOOP" "$1" && LOOPS="$LOOPS $LOOP"
 }
 finish() {
-    gr_umount $W/root 2>/dev/null
+    gr_boot_umount $W/root 2>/dev/null
     umount $W/udmnt $W/sysmnt 2>/dev/null
     for l in $LOOPS; do losetup -d "$l" 2>/dev/null; done
     cd /; umount $W 2>/dev/null
@@ -164,6 +164,57 @@ sed "s|^USERDATA_MNT=.*|USERDATA_MNT=$W/notmounted|" $W/deploy.conf > $W/deploy2
 printf '#!/bin/sh\n: > %s/debugfs-used\nexit 1\n' $W > $W/shim/debugfs; chmod +x $W/shim/debugfs; rm -f $W/shim/cp
 ok "userdata mounted elsewhere: found, read through the mount (no debugfs)" "[ \"\$(GLASSINE_DEPLOY_CONF=$W/deploy2.conf PATH=$W/shim:\$PATH $G status --porcelain | tr '\t' '\n' | sed -n 's/^hibernated=//p')\" = yes ] && [ ! -e $W/debugfs-used ]"
 ok "invalidate through that mount: no raw write" "GLASSINE_DEPLOY_CONF=$W/deploy2.conf PATH=$W/shim:\$PATH $G hibernate-invalidate --yes >/dev/null && [ \"\$(gs_sig_file $U/swap/hibernate)\" = SWAPSPACE2 ] && [ ! -e $W/debugfs-used ] && [ ! -e $W/notmounted ]"
+
+# --- the boot steps (initramfs): resume or invalidate, boot, carry ---------------
+CUR=$(gr_would_pick $S/state)
+debugfs_w() { printf "$1" > $W/dbg; debugfs -w -f $W/dbg $UDEV >/dev/null 2>&1; }
+umount $W/udmnt $S          # the initramfs starts with nothing mounted
+GR_SYSPOWER=$W/power GR_TMP=$W/grtmp; mkdir -p $GR_SYSPOWER
+SWB=$(gs_dev_block $UDEV $P/swap/hibernate)
+hib() { printf 'S1SUSPEND\000' | dd of=$UDEV bs=1 seek=$((SWB * 4096 + 4086)) conv=notrunc 2>/dev/null; sync; blockdev --flushbufs $UDEV; rm -f $GR_SYSPOWER/*; }
+sig() { gs_sig_dev $UDEV $SWB; }
+guard() {   # guard [KEY=VALUE...]: the guard file, written with debugfs (no mount: the mount count stays)
+    { echo "mount_count=$(gr_dumpe2fs $UDEV 'Mount count')"; echo "last_mount=$(gr_dumpe2fs $UDEV 'Last mount time')"
+      echo "deployment=$CUR"; echo "krel=$(uname -r)"; echo "kver=$(uname -v)"; } > $W/g
+    for kv in "$@"; do sed -i "s|^${kv%%=*}=.*|$kv|" $W/g; done
+    debugfs_w "cd /$P/swap\nrm hibernate.guard\nwrite $W/g hibernate.guard\n"
+}
+WD=$W/wd; gr_wd_stop() { echo stop >> $WD; }; gr_wd_start() { echo start >> $WD; }
+res() { : > $WD; gr_resume $SD $UDEV $P "$1" 2>$W/rlog; }
+ok "resume step: no hibernate image: nothing written" "res resume && [ -z \"\$(ls $GR_SYSPOWER)\" ] && [ \"\$(sig)\" = SWAPSPACE2 ]"
+hib
+ok "resume step, noresume: invalidated, no resume write" "res noresume && [ \"\$(sig)\" = SWAPSPACE2 ] && [ -z \"\$(ls $GR_SYSPOWER)\" ] && grep -q 'no resume on this boot (noresume)' $W/rlog"
+hib
+ok "resume step, no guard file: invalidated" "res resume && [ \"\$(sig)\" = SWAPSPACE2 ] && [ -z \"\$(ls $GR_SYSPOWER)\" ] && grep -q 'no guard file' $W/rlog"
+guard; mount -t ext4 $UDEV $W/udmnt && umount $W/udmnt; hib
+ok "resume step, userdata mounted after the hibernate: invalidated" "res resume && [ \"\$(sig)\" = SWAPSPACE2 ] && [ -z \"\$(ls $GR_SYSPOWER)\" ] && grep -q 'userdata was mounted since the hibernate (mount_count)' $W/rlog"
+guard kver=other; hib
+ok "resume step, another kernel build: invalidated" "res resume && [ \"\$(sig)\" = SWAPSPACE2 ] && grep -q 'another kernel build' $W/rlog"
+guard deployment=d9; hib
+ok "resume step, state/ boots another deployment: invalidated, the system partition unmounted again" "res resume && [ \"\$(sig)\" = SWAPSPACE2 ] && grep -q \"state/ boots $CUR, the session ran d9\" $W/rlog && ! grep -q '$GR_TMP' /proc/mounts"
+guard; hib
+MM=$(stat -L -c '%t %T' $UDEV); MM=$(printf '%d:%d' 0x${MM% *} 0x${MM#* })
+ok "resume step, every check passes: resume_offset + resume written, watchdog stopped around it" "res resume && [ \"\$(cat $GR_SYSPOWER/resume_offset)\" = $SWB ] && [ \"\$(cat $GR_SYSPOWER/resume)\" = $MM ] && [ \"\$(cat $WD | tr '\n' ' ')\" = 'stop start ' ]"
+ok "resume step: the kernel returned (refused image): invalidated" "[ \"\$(sig)\" = SWAPSPACE2 ] && grep -q 'did not resume it' $W/rlog"
+
+ok "gr_boot: the current deployment, system + userdata mounted, state locked" "gr_boot $SD $UDEV $P $R 7.3.0 2>$W/blog && [ \"\$GR_BOOTED\" = $CUR ] && mountpoint -q $R.sys && mountpoint -q $R.ud && ro $R/usr/bin/x && ! flock -n $R.sys/state/.lock true"
+ok "gr_carry: mounts under /run/glassine, booted recorded, lock released" "gr_carry $R && mountpoint -q $R/run/glassine/system && mountpoint -q $R/run/glassine/userdata && mountpoint -q $R/run/glassine/root && ! mountpoint -q $R.sys && [ \"\$(cat $R/run/glassine/booted)\" = $CUR ] && flock -n $R/run/glassine/system/state/.lock true"
+ok "after the carry: / still read-only, /etc writable" "ro $R/usr/bin/x && echo c > $R/etc/carried && [ -e $R/run/glassine/userdata/$P/deployments/$CUR/switch/etc/carried ]"
+sed -e "s|^SYSTEM_MNT=.*|SYSTEM_MNT=$R/run/glassine/system|" -e "s|^USERDATA_MNT=.*|USERDATA_MNT=$R/run/glassine/userdata|" -e "s|^RUN_DIR=.*|RUN_DIR=$R/run/glassine|" $W/deploy.conf > $W/deploy3.conf
+ok "the system's glassine-deploy works on the carried mounts (select = a state write)" "GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G select d1 >/dev/null && [ \"\$(gs_kv $R/run/glassine/system/state/deploy candidate)\" = d1 ] && GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G select $CUR >/dev/null"
+mkdir -p $R/run/glassine/userdata/$P/deployments/dz && echo base=gone > $R/run/glassine/userdata/$P/deployments/dz/meta
+gs_update $R/run/glassine/system/state/deploy candidate=dz tries=2
+gr_boot_umount $R
+ok "gr_boot_umount: nothing left mounted" "! grep -q \" $R\" /proc/mounts"
+ok "gr_boot: a candidate that does not assemble: failed, current boots" "gr_boot $SD $UDEV $P $R 7.3.0 2>$W/blog && [ \"\$GR_BOOTED\" = $CUR ] && [ \"\$(gs_kv $R.sys/state/deploy failed)\" = dz ] && [ -z \"\$(gs_kv $R.sys/state/deploy candidate)\" ] && grep -q 'deployment dz does not assemble' $W/blog"
+rm -rf $R.ud/$P/deployments/dz; gs_update $R.sys/state/deploy candidate=d1 tries=2 failed=; echo version=9 > $R.sys/state/format
+gr_boot_umount $R
+ok "gr_boot: a newer state format: boots what it would pick, writes nothing" "gr_boot $SD $UDEV $P $R 7.3.0 2>$W/blog && [ \"\$GR_BOOTED\" = d1 ] && [ \"\$(gs_kv $R.sys/state/deploy tries)\" = 2 ] && grep -q 'newer than this initramfs' $W/blog"
+echo version=1 > $R.sys/state/format; gs_update $R.sys/state/deploy candidate= tries=0
+gr_boot_umount $R
+ok "gr_boot without userdata: bare on the newest base" "gr_boot $SD '' $P $R 7.3.0 2>$W/blog && [ \"\$GR_BOOTED\" = bare:b1 ] && [ \"\$(cat $R/etc/motd)\" = welcome ] && gr_carry $R && mountpoint -q $R/run/glassine/bare"
+gr_boot_umount $R
+mount -t btrfs $SD $S && mount -t ext4 $UDEV $W/udmnt
 ok "base unchanged after everything" "[ \"\$(basesum)\" = \"\$SUM0\" ]"
 
 finish
