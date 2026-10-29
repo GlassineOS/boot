@@ -240,6 +240,9 @@ ok "now, device hooks: pre in name order, post resumed in reverse" "hn now && [ 
 hpow; : > $HL; : > $W/hookfail
 ok "now, a pre hook fails: exit 1, nothing switched on or written, post failed for all" "hn now; [ \$? = 1 ] && grep -q 'hook 20-b pre failed' $W/hout && [ ! -s $HC ] && [ ! -e $HP/resume ] && [ ! -e $HS.guard ] && [ \"\$(cat $HL | tr '\n' ,)\" = '10-a pre,20-b pre,20-b post failed,10-a post failed,' ]"
 rm -f $W/hookfail
+hpow; printf '#!/bin/sh\n[ "$1" = post ] && sleep 30 >/dev/null 2>&1 &\nexit 0\n' > $W/hooks/40-daemon; chmod +x $W/hooks/40-daemon
+ok "now, a post hook leaves a process running: it does not hold the state lock" "hn now && flock -n $S/state/.lock true"
+pkill -f 'sleep 30' 2>/dev/null; rm -f $W/hooks/40-daemon
 hpow
 ok "now --reboot: disk=reboot" "hn now --reboot && [ \"\$(cat $HP/disk)\" = reboot ]"
 hpow; echo '[shutdown] test' > $HP/disk; : > $HL

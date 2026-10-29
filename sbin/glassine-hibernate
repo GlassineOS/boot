@@ -20,7 +20,8 @@
 # /etc/glassine/hibernate.d), run in name order with `pre` before anything is
 # written (a failure cancels the hibernate), and in reverse order with
 # `post resumed` or `post failed` after the kernel returns, or after a cancel.
-# A post hook must cope with a pre step that did not run.
+# A post hook must cope with a pre step that did not run. Hooks run without
+# the state lock's descriptor, so a daemon one starts can't keep the lock.
 #
 # Exit: 0 done (resumed; setup: the file is ready), 1 failed (the kernel did
 # not hibernate, a write failed), 2 usage, 3 not possible here (no deployments
@@ -118,9 +119,9 @@ hooks() {
     [ "$1" = pre ] || _l=$(printf '%s\n' "$_l" | sort -r)
     for _h in $_l; do
         if [ "$1" = pre ]; then
-            "$_h" pre || { say "hook ${_h##*/} pre failed"; return 1; }
+            "$_h" pre 9>&- || { say "hook ${_h##*/} pre failed"; return 1; }
         else
-            "$_h" post "$2" || say "hook ${_h##*/} post failed"
+            "$_h" post "$2" 9>&- || say "hook ${_h##*/} post failed"
         fi
     done
 }
