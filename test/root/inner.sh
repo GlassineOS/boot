@@ -107,6 +107,7 @@ gr_assemble $S $U d1 $R && mkdir -p $R/etc/wireguard $R/etc/glassine/migrate.d &
     echo /etc/wireguard/ > $R/etc/glassine/migrate.d/user.list && echo junk > $R/etc/junk && gr_umount $R
 ok "reset without --yes, no terminal: refused, nothing built" "$G reset 2>/dev/null </dev/null; [ \$? = 1 ] && [ \$(ls $U/deployments | wc -l) = 1 ] && cmp -s $S/state/deploy $W/st0"
 ok "reset --yes: staged, not selected" "$G reset --yes >/dev/null && [ -n \"\$(st staged)\" ] && [ -z \"\$(st candidate)\" ] && [ \"\$(st current)\" = d1 ]"
+ok "reset: the TWRP keep marker in the top-level media directory, status says so" "[ -f $W/udmnt/media/glassine/.twrp-keep ] && $G status --porcelain | grep -q '	twrp_keep=yes'"
 N=$(st staged); NS=$U/deployments/$N/switch
 ok "reset: meta = base b1, kind reset, carry migrate, from d1; layers empty" "grep -qx base=b1 $U/deployments/$N/meta && grep -qx kind=reset $U/deployments/$N/meta && grep -qx carry=migrate $U/deployments/$N/meta && grep -qx from=d1 $U/deployments/$N/meta && [ -z \"\$(ls -A $U/deployments/$N/build)\" ] && [ -z \"\$(ls -A $NS)\" ]"
 ok "list + status: staged" "$G list --porcelain | grep -q \"id=$N	state=staged\" && $G status --porcelain | grep -q \"staged=$N\""

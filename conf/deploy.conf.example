@@ -31,6 +31,9 @@ SWITCH_MIN_CAPACITY=30
 # test boot).
 ACCEPT_AFTER=120
 ACCEPT_HEALTH_DIR=/etc/glassine-bootimg/health.d
+# Dual-boot boards: the same healthy boot marks the booted bootloader slot
+# successful through glassine-slot (empty = off, e.g. a board without A/B).
+SLOT_TOOL=
 
 # Hibernation (glassine-hibernate): the swap file's size in MiB (empty = half
 # the RAM), the free space setup leaves on userdata, and the board's hook

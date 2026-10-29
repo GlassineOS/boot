@@ -14,12 +14,18 @@
 # its first output line = the reason.
 #
 #   glassine-deploy-accept          run by the OpenRC service glassine-deploy-accept
+# Boot slot (dual-boot boards, SLOT_TOOL = the path of glassine-slot, empty =
+# off): a healthy boot also marks the booted bootloader slot successful, for any
+# deployment (candidate, current or a fallback), since the slot itself works.
+# Without that the bootloader counts a try per boot after a kernel update and
+# ends up in the other system. A bare boot (userdata broken) does not mark it.
+#
 # Exit: 0 accepted or nothing to accept, 1 not accepted (logged).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 DEPLOY=${GLASSINE_DEPLOY:-/usr/sbin/glassine-deploy}
 UPTIME=${GLASSINE_ACCEPT_UPTIME:-/proc/uptime}
-RUN_DIR=/run/glassine ACCEPT_AFTER=120 ACCEPT_HEALTH_DIR=/etc/glassine-bootimg/health.d
+RUN_DIR=/run/glassine ACCEPT_AFTER=120 ACCEPT_HEALTH_DIR=/etc/glassine-bootimg/health.d SLOT_TOOL=
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
 
@@ -30,9 +36,20 @@ say() {
 }
 field() { "$DEPLOY" status --porcelain 2>/dev/null | sed -n 2p | tr '\t' '\n' | sed -n "s/^$1=//p"; }
 
+# the booted slot, when it is not marked successful yet (else nothing to do)
+slot_todo() {
+    [ -n "$SLOT_TOOL" ] || return 1
+    st=$("$SLOT_TOOL" status --porcelain 2>/dev/null) || return 1
+    b=$(echo "$st" | sed -n 's/^booted=//p')
+    [ -n "$b" ] && echo "$st" | grep "^slot=$b	" | grep -q "	successful=0"
+}
+
 booted=$(cat "$RUN_DIR/booted" 2>/dev/null)
 case $booted in ''|bare:*) exit 0 ;; esac
-[ "$booted" = "$(field candidate)" ] || exit 0
+cand=0 slot=0
+[ "$booted" = "$(field candidate)" ] && cand=1
+slot_todo && slot=1
+[ $cand = 1 ] || [ $slot = 1 ] || exit 0
 
 while [ "$(cut -d. -f1 "$UPTIME")" -lt "$ACCEPT_AFTER" ]; do sleep 5; done
 
@@ -47,9 +64,21 @@ for h in "$ACCEPT_HEALTH_DIR"/*; do
     bad="$bad${bad:+; }${why:-${h##*/}}"
 done
 if [ -n "$bad" ]; then
-    say "$booted not accepted: $bad (tries left: $(field tries))"
+    if [ $cand = 1 ]; then
+        say "$booted not accepted: $bad (tries left: $(field tries))"
+    else
+        say "boot slot not marked successful: $bad"
+    fi
     exit 1
 fi
+if [ $slot = 1 ]; then
+    if "$SLOT_TOOL" mark-successful >/dev/null; then
+        say "boot slot marked successful"
+    else
+        say "marking the boot slot successful failed (exit $?)"
+    fi
+fi
+[ $cand = 1 ] || exit 0
 # busy (exit 6: another writer, or a hibernate holding the state lock across
 # the sleep): try again for up to ACCEPT_BUSY_S seconds
 n=0

@@ -145,7 +145,7 @@ glassine-deploy accept ID
 
 | Command | Does |
 |---|---|
-| `status` | format (state and supported), the system file system, current/previous/candidate/staged/tries, the kernels, `hibernated=yes\|no\|unknown` |
+| `status` | format (state and supported), the system file system, current/previous/candidate/staged/tries, the kernels, `hibernated=yes\|no\|unknown`, `twrp_keep` |
 | `list` | one record per deployment: id, state (`current`, `candidate`, `staged`, `previous`, `failed`, `kept`), base, kernel, created, size |
 | `select ID` | ID becomes the candidate with 2 tries; selecting current cancels a candidate. Never makes an untried deployment current. |
 | `rollback` | `select` previous |
@@ -181,7 +181,7 @@ Keys may be added within a version, so readers ignore keys they don't know.
 
 ```
 glassine-deploy 1
-type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previous=…	candidate=…	staged=…	tries=…	kernel_current=…	kernel_previous=…	hibernated=no	userdata_prefix=media/glassine	swapfile=…	guard=…
+type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previous=…	candidate=…	staged=…	tries=…	kernel_current=…	kernel_previous=…	hibernated=no	userdata_prefix=media/glassine	twrp_keep=yes	swapfile=…	guard=…
 ```
 
 ```
@@ -232,11 +232,25 @@ Healthy: `glassine-deploy accept`. Otherwise it logs `<id> not accepted: <reason
 the kernel log and changes nothing, so the next boot uses the candidate's next try, and
 after the last one the old deployment boots again.
 
+**The boot slot** (dual-boot boards, `SLOT_TOOL` = the path of `glassine-slot`, see
+[boot.md § Slots](boot.md#slots); empty = off): the same healthy boot also runs
+`glassine-slot mark-successful` when the booted bootloader slot is not marked
+successful yet, whichever deployment booted (the candidate, the current one or a
+fallback), because the slot itself works. Without it the bootloader counts a try per
+boot after a kernel update and in the end boots the other system. A bare boot does not
+mark it. A failing `glassine-slot` is logged and does not stop the accept.
+
+**The recovery's keep marker:** every command that opens userdata read-write creates
+`.twrp-keep` in the prefix's top-level media directory (`media/glassine/.twrp-keep`
+for the default prefix). A recovery that honours it skips that directory when it wipes
+internal storage. `status` reports `twrp_keep=yes|no` (empty while userdata is not
+mounted or the prefix is not under `media/`).
+
 ## Configuration: `/etc/glassine/deploy.conf`
 
 See [`conf/deploy.conf.example`](../conf/deploy.conf.example): `SYSTEM_DEV`,
 `SYSTEM_MNT`, `USERDATA_DEV`, `USERDATA_MNT`, `USERDATA_PREFIX`, `RUN_DIR`,
-`SWITCH_MIN_CAPACITY`, `ACCEPT_AFTER`, `ACCEPT_HEALTH_DIR`, `ACCEPT_BUSY_S` (default 600: how long the accept retries while the state is busy), `HIBERNATE_SIZE_MB`, `HIBERNATE_RESERVE_MB`. A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
+`SWITCH_MIN_CAPACITY`, `ACCEPT_AFTER`, `ACCEPT_HEALTH_DIR`, `ACCEPT_BUSY_S` (default 600: how long the accept retries while the state is busy), `SLOT_TOOL` (default empty: no boot slot marking), `HIBERNATE_SIZE_MB`, `HIBERNATE_RESERVE_MB`. A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
 
 ## Runtime directory: `/run/glassine/`
 

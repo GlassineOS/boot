@@ -83,6 +83,26 @@ ok "accept: busy, then free: accepted" "wait $ap && [ \$(grep -c 'accept c1' $AW
 printf 'ACCEPT_BUSY_S=0\n' >> $AW/conf; : > $AW/busy
 ok "accept: busy past ACCEPT_BUSY_S: not accepted, logged" "! acc && grep -q 'accept c1 failed (exit 6)' $AW/out"
 rm $AW/busy
+sed -i '/^ACCEPT_BUSY_S=/d' $AW/conf
+# the boot slot (SLOT_TOOL): a stub glassine-slot with a status file
+printf '#!/bin/sh\ncase $1 in\nstatus) cat %s/slot ;;\nmark-successful) echo mark >> %s/calls; exit $(cat %s/slotrc 2>/dev/null || echo 0) ;;\nesac\n' $AW $AW $AW > $AW/slottool; chmod +x $AW/slottool
+printf 'booted=b\nnext=b\nslot=a\tpriority=2\tactive=0\ttries=0\tsuccessful=1\tunbootable=0\nslot=b\tpriority=3\tactive=1\ttries=6\tsuccessful=0\tunbootable=0\n' > $AW/slot
+ok "slot: no SLOT_TOOL: the slot is left alone" "acc && ! grep -qx mark $AW/calls"
+printf 'SLOT_TOOL=%s\n' $AW/slottool >> $AW/conf
+ok "slot: the booted candidate, healthy: slot marked, then accepted" "acc && [ \"\$(tr '\\n' ' ' < $AW/calls)\" = 'mark accept c1 ' ]"
+printf 'type=status\tcandidate=\ttries=0\n' > $AW/status
+ok "slot: a boot of the current deployment, healthy: slot marked, nothing accepted" "acc && grep -qx mark $AW/calls && ! grep -q accept $AW/calls && grep -q 'boot slot marked successful' $AW/out"
+printf '#!/bin/sh\necho epdd not running\nexit 1\n' > $AW/health/20-bad; chmod +x $AW/health/20-bad
+ok "slot: unhealthy: the slot is not marked" "! acc && [ ! -s $AW/calls ] && grep -q 'boot slot not marked successful: epdd not running' $AW/out"
+rm $AW/health/20-bad
+echo 3 > $AW/slotrc
+ok "slot: glassine-slot fails: logged, the boot is still fine" "acc && grep -q 'marking the boot slot successful failed (exit 3)' $AW/out"
+rm $AW/slotrc
+sed -i 's/tries=6\tsuccessful=0/tries=7\tsuccessful=1/' $AW/slot
+ok "slot: already successful and no candidate: nothing at all" "acc && [ ! -s $AW/calls ] && [ ! -s $AW/out ]"
+echo bare:b1 > $AW/run/booted; sed -i 's/tries=7\tsuccessful=1/tries=6\tsuccessful=0/' $AW/slot
+ok "slot: a bare boot: the slot is not marked" "acc && [ ! -s $AW/calls ]"
+echo c1 > $AW/run/booted; sed -i '/^SLOT_TOOL=/d' $AW/conf
 
 # --- the library -------------------------------------------------------------
 printf 'a=1\nb=2\n' > $W/kv
