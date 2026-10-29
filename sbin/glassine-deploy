@@ -81,9 +81,16 @@ cleanup() {
     # a half-built deployment never stays behind
     [ -n "$NEW_DEP" ] && rm -rf "$NEW_DEP"
     NEW_DEP=''
-    [ -n "$UD_MOUNTED_HERE" ] && umount "$UD_MOUNTED_HERE" 2>/dev/null
+    # the state lock (fd 9, on $SYSTEM_MNT/state/.lock) keeps the system
+    # partition busy; cleanup runs only before the lock is taken or at exit
+    exec 9>&-
+    if [ -n "$UD_MOUNTED_HERE" ]; then
+        umount "$UD_MOUNTED_HERE" || echo "glassine-deploy: cannot unmount $UD_MOUNTED_HERE" >&2
+    fi
     UD_MOUNTED_HERE=''
-    [ -n "$MOUNTED_HERE" ] && umount "$MOUNTED_HERE" 2>/dev/null
+    if [ -n "$MOUNTED_HERE" ]; then
+        umount "$MOUNTED_HERE" || echo "glassine-deploy: cannot unmount $MOUNTED_HERE" >&2
+    fi
     MOUNTED_HERE=''
 }
 trap cleanup EXIT INT TERM
@@ -414,7 +421,9 @@ ud_open_rw() {
     fi
 }
 
-# new_id: a fresh deployment id (UTC time, a suffix if taken)
+# new_id: a fresh deployment id (UTC time, a suffix if taken). Ids are names,
+# never an order: state/deploy says which is current, previous, candidate,
+# and a recovery whose clock is unset (1970) makes 1970 ids, which is fine.
 new_id() {
     _i=$(date -u +%Y%m%d-%H%M%S); _n=$_i _k=1
     while [ -e "$UD/deployments/$_n" ]; do _k=$((_k + 1)); _n=$_i-$_k; done

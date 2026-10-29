@@ -136,6 +136,15 @@ $G select $N >/dev/null
 ok "accept the candidate: current, previous = d1" "$G accept $N >/dev/null && [ \"\$(st current)\" = $N ] && [ \"\$(st previous)\" = d1 ] && [ -z \"\$(st candidate)\" ]"
 ok "accept of the current one: no-op" "$G accept $N >/dev/null && [ \"\$(st current)\" = $N ]"
 ok "rollback: back to d1 as the candidate" "$G rollback >/dev/null && [ \"\$(st candidate)\" = d1 ]"
+# the write commands on unmounted partitions (a recovery): mount, write, unmount
+cp $S/state/deploy $W/stU; DU0=$(ls $U/deployments)
+umount $W/udmnt && umount $S
+ok "rollback, nothing mounted before: nothing mounted after" "$G rollback >/dev/null && ! mountpoint -q $S && ! mountpoint -q $W/udmnt"
+ok "reset --yes, nothing mounted before: nothing mounted after" "$G reset --yes >/dev/null && ! mountpoint -q $S && ! mountpoint -q $W/udmnt"
+ok "reset --now --yes, nothing mounted before: nothing mounted after" "$G reset --now --yes >/dev/null && ! mountpoint -q $S && ! mountpoint -q $W/udmnt"
+mount -t btrfs "$SD" $S && mount -t ext4 "$UDEV" $W/udmnt
+cp $W/stU $S/state/deploy
+for d in $(ls $U/deployments); do echo "$DU0" | grep -qx "$d" || rm -rf "$U/deployments/$d"; done
 $G select $N >/dev/null
 
 # --- reset --full, reset --now, replacing a staged one ----------------------------
