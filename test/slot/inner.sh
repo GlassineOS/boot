@@ -42,6 +42,10 @@ ok "set-active: only the two attribute words changed, both tables valid (sgdisk 
 ok "set-active: sgdisk reads the same bits (b: 48 49 50 51 52 53, no 54)" "[ \"\$(attr 3)\" = 003F000000000000 ] && [ \"\$(attr 1)\" = 007A000000000000 ]"
 ok "backup table = primary (sgdisk loads the backup alone)" "sgdisk -b $W/bk $I >/dev/null && dd if=$I bs=512 skip=\$((\$(stat -c %s $I) / 512 - 33)) count=32 2>/dev/null | cmp -s - $W/arr.now"
 
+cp $I $W/keep.img
+ok "set-active a --successful: a priority 3, active, successful; b priority 2" "S set-active a --successful && S status --porcelain && [ \$(field a successful) = 1 ] && [ \$(field a priority) = 3 ] && [ \$(field a active) = 1 ] && [ \$(field b priority) = 2 ] && grep -qx 'next=a' $W/out"
+ok "set-active --bogus: usage" "S set-active a --bogus; [ \$? = 2 ]"
+cp $W/keep.img $I
 cmdline b
 ok "mark-successful (the booted slot b)" "S mark-successful && S status --porcelain && [ \$(field b successful) = 1 ] && [ \$(field b tries) = 7 ]"
 snap

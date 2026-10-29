@@ -6,10 +6,14 @@
  * one is successful (docs/boot.md#slots).
  *
  *   glassine-slot [OPTIONS] status [--porcelain]
- *   glassine-slot [OPTIONS] set-active a|b       boot this slot next: 7 tries, not
+ *   glassine-slot [OPTIONS] set-active a|b [--successful]
+ *                                                boot this slot next: 7 tries, not
  *                                                successful yet (the bootloader's
  *                                                own set_active); the other slot
- *                                                keeps its state, priority 2
+ *                                                keeps its state, priority 2.
+ *                                                --successful: marked successful
+ *                                                at once, for a system that can't
+ *                                                mark itself (no tries counted)
  *   glassine-slot [OPTIONS] mark-successful [a|b] the booted slot (default) works:
  *                                                no more tries counted; no write if
  *                                                it already is
@@ -225,7 +229,7 @@ static void show(const char *name, uint64_t a, int porcelain)
 static void usage(void)
 {
     die(2, "usage: glassine-slot [--disk DEV] [--sector-size N] status [--porcelain] | "
-           "set-active a|b | mark-successful [a|b] | reset-tries [a|b]");
+           "set-active a|b [--successful] | mark-successful [a|b] | reset-tries [a|b]");
 }
 
 static int slot_arg(const char *s)
@@ -262,7 +266,7 @@ int main(int argc, char **argv)
     if (i >= argc)
         usage();
     const char *cmd = argv[i++];
-    int porcelain = 0, target = -1, write_cmd = 1;
+    int porcelain = 0, target = -1, write_cmd = 1, successful = 0;
     if (!strcmp(cmd, "status")) {
         write_cmd = 0;
         if (i < argc && !strcmp(argv[i], "--porcelain"))
@@ -271,6 +275,8 @@ int main(int argc, char **argv)
         if (i >= argc)
             usage();
         target = slot_arg(argv[i++]);
+        if (i < argc && !strcmp(argv[i], "--successful"))
+            successful = 1, i++;
     } else if (!strcmp(cmd, "mark-successful") || !strcmp(cmd, "reset-tries")) {
         if (i < argc)
             target = slot_arg(argv[i++]);
@@ -376,6 +382,8 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "set-active")) {
         uint64_t *t = &nw[target], *o = &nw[!target];
         *t = (*t | PRIO_MASK | ACTIVE | TRIES_MASK) & ~SUCCESS & ~UNBOOTABLE;
+        if (successful)
+            *t |= SUCCESS;
         *o = (*o & ~PRIO_MASK & ~ACTIVE) | (2ULL << PRIO_SHIFT);
     } else {
         if (target < 0 && (target = booted) < 0)
