@@ -19,6 +19,8 @@ Everything specific to one device lives in a board configuration
 | `openrc/glassine-bootimg-promote` | gives the verdict on a test boot |
 | `sbin/glassine-reboot-clean`, `src/glassine-reboot.c` | an orderly reboot with a reboot reason (the way into the test slot) |
 | `conf/board.conf.example` | every board key, documented |
+| `sbin/glassine-deploy`, `lib/glassine-state.sh` | root deployments and their recovery interface (first cut: `status`); the shared state and hibernate-guard helpers |
+| `conf/deploy.conf.example` | where the system partition and userdata are |
 | `test/` | host tests in an Alpine container |
 
 ## Boot roles

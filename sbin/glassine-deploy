@@ -1,0 +1,156 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-deploy: root deployments (bases on the btrfs system partition, one
+# overlay upper per deployment on userdata). The same code runs on the system
+# and in recovery; the recovery's menu only calls it. Design: GlassineOS
+# phase docs, "rootfs and deployments" (§5.14 = this interface).
+#
+#   glassine-deploy status [--porcelain]
+#
+# --porcelain: the first line is "glassine-deploy 1" (the output format
+# version), then one record per line: tab-separated key=value fields, the
+# first one type=<record>. Keys may be added within a version.
+#
+# Exit codes: 0 done, 1 error, 2 usage, 3 the state format on the system
+# partition is newer than this tool (every command refuses; status still
+# prints both versions), 4 hibernated and refused, 5 not enough space,
+# 6 busy.
+#
+# Configuration: /etc/glassine/deploy.conf (conf/deploy.conf.example), or
+# the file named by GLASSINE_DEPLOY_CONF.
+set -u
+CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+LIB=${GLASSINE_DEPLOY_LIB:-/usr/lib/glassine-boot/glassine-state.sh}
+SYSTEM_DEV='' SYSTEM_MNT=/run/glassine/system
+USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata USERDATA_PREFIX=media/glassine
+RUN_DIR=/run/glassine
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+# shellcheck source=../lib/glassine-state.sh
+. "$LIB" || { echo "glassine-deploy: cannot read $LIB" >&2; exit 1; }
+
+PORCELAIN_VERSION=1
+SWAPFILE="$USERDATA_PREFIX/swap/hibernate"
+GUARD="$USERDATA_PREFIX/swap/hibernate.guard"
+MOUNTED_HERE=''
+
+die() { echo "glassine-deploy: $*" >&2; exit 1; }
+usage() { sed -n 's/^#   //p' "$0" >&2; exit 2; }
+
+# is_mounted DIR: busybox mountpoint, or the test hook (a plain directory)
+is_mounted() {
+    [ -n "${GLASSINE_DEPLOY_FAKE_MOUNTS:-}" ] && { [ -d "$1" ]; return; }
+    mountpoint -q "$1" 2>/dev/null
+}
+
+# fstype DEV: the file system type blkid reports, or empty
+fstype() {
+    blkid "$1" 2>/dev/null | sed -n 's/.* TYPE="\([^"]*\)".*/\1/p' | head -n 1
+}
+
+cleanup() {
+    [ -n "$MOUNTED_HERE" ] && umount "$MOUNTED_HERE" 2>/dev/null
+    MOUNTED_HERE=''
+}
+trap cleanup EXIT INT TERM
+
+# system_open: make the system partition's top level readable at SYSTEM_MNT.
+# Sets SYS_FS (btrfs/ext4/…/none) and SYS_DIR (empty if not readable). A
+# btrfs that is not mounted is mounted read-only with rescue=nologreplay
+# (never a log replay: a hibernated system may be resumed later). Anything
+# else is never mounted here (an ext4 read-only mount still replays its
+# journal).
+system_open() {
+    SYS_DIR=''
+    if is_mounted "$SYSTEM_MNT"; then
+        SYS_FS=${GLASSINE_DEPLOY_FAKE_FS:-btrfs}
+        [ -n "${GLASSINE_DEPLOY_FAKE_MOUNTS:-}" ] || SYS_FS=$(fstype "$SYSTEM_DEV")
+        SYS_DIR=$SYSTEM_MNT
+        return 0
+    fi
+    [ -n "$SYSTEM_DEV" ] && [ -e "$SYSTEM_DEV" ] || { SYS_FS=none; return 0; }
+    SYS_FS=$(fstype "$SYSTEM_DEV")
+    [ "$SYS_FS" = btrfs ] || return 0
+    mkdir -p "$SYSTEM_MNT" || return 1
+    mount -t btrfs -o ro,rescue=nologreplay "$SYSTEM_DEV" "$SYSTEM_MNT" || return 1
+    MOUNTED_HERE=$SYSTEM_MNT
+    SYS_DIR=$SYSTEM_MNT
+}
+
+# hibernated: yes / no / unknown, without mounting userdata
+hibernated() {
+    if is_mounted "$USERDATA_MNT"; then
+        _f="$USERDATA_MNT/$SWAPFILE"
+        [ -e "$_f" ] || { echo no; return; }
+        _s=$(gs_sig_file "$_f")
+    elif [ -n "$USERDATA_DEV" ] && [ -e "$USERDATA_DEV" ]; then
+        # debugfs exits 0 for a missing file too: look for the inode line
+        debugfs -R "stat /$SWAPFILE" "$USERDATA_DEV" 2>/dev/null | grep -q '^Inode:' || { echo no; return; }
+        _b=$(gs_dev_block "$USERDATA_DEV" "$SWAPFILE") || { echo unknown; return; }
+        _s=$(gs_sig_dev "$USERDATA_DEV" "$_b")
+    else
+        echo unknown; return
+    fi
+    [ "$_s" = "$GS_SIG_HIBERNATE" ] && echo yes || echo no
+}
+
+# out KEY VALUE…: collect the fields of one record
+REC=''
+out() { REC="$REC$1=$2	"; }
+
+emit() {
+    if [ "$PORC" = 1 ]; then
+        printf '%s\n' "${REC%	}"
+    else
+        printf '%s\n' "${REC%	}" | tr '\t' '\n' | sed -n 's/^type=.*//;t;s/=/: /p'
+    fi
+    REC=''
+}
+
+cmd_status() {
+    system_open || die "cannot mount $SYSTEM_DEV read-only"
+    rc=0
+    fmt=none
+    [ -n "$SYS_DIR" ] && fmt=$(gs_format_version "$SYS_DIR")
+    out type status
+    out format "$fmt"
+    out supported "$GS_FORMAT_SUPPORTED"
+    out system_fs "${SYS_FS:-unknown}"
+    if [ "$fmt" = none ]; then
+        out migrated no
+    elif gs_format_ok "$fmt"; then
+        out migrated yes
+        S="$SYS_DIR/state"
+        out current "$(gs_kv "$S/deploy" current)"
+        out previous "$(gs_kv "$S/deploy" previous)"
+        out candidate "$(gs_kv "$S/deploy" candidate)"
+        out tries "$(gs_kv "$S/deploy" tries)"
+        out kernel_current "$(gs_kv "$S/kernel" current)"
+        out kernel_previous "$(gs_kv "$S/kernel" previous)"
+    else
+        out migrated yes
+        rc=3
+    fi
+    out hibernated "$(hibernated)"
+    out userdata_prefix "$USERDATA_PREFIX"
+    out swapfile "$SWAPFILE"
+    out guard "$GUARD"
+    [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
+    emit
+    [ $rc = 3 ] && echo "glassine-deploy: state format $fmt is newer than this tool ($GS_FORMAT_SUPPORTED); update glassine-deploy" >&2
+    return $rc
+}
+
+[ $# -ge 1 ] || usage
+CMD=$1; shift
+PORC=0
+for a in "$@"; do
+    case "$a" in
+    --porcelain) PORC=1 ;;
+    *) usage ;;
+    esac
+done
+case "$CMD" in
+status) cmd_status ;;
+*) usage ;;
+esac

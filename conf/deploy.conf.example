@@ -1,0 +1,22 @@
+# glassine-deploy configuration: where the system partition and userdata are,
+# and where the deployment files live on userdata. The device package ships
+# the real file as /etc/glassine/deploy.conf; a recovery passes its own with
+# GLASSINE_DEPLOY_CONF. Shell syntax: KEY=value, one per line.
+#
+# This example describes the Onyx Boox Note Air (SDM636, eMMC, A/B slots).
+
+# The system partition (btrfs once migrated: bases, kernels, modules, state/).
+SYSTEM_DEV=/dev/disk/by-partlabel/system_b
+# Where its top level is (or gets) mounted. glassine-deploy mounts it here
+# itself when it is not mounted (read-only, rescue=nologreplay, for reading).
+SYSTEM_MNT=/run/glassine/system
+
+# Userdata (ext4) and where it is mounted when it is mounted. glassine-deploy
+# only reads it unmounted (debugfs) unless a command needs to write.
+USERDATA_DEV=/dev/disk/by-partlabel/userdata
+USERDATA_MNT=/run/glassine/userdata
+# The directory on userdata that holds deployments/, swap/ and the rest.
+USERDATA_PREFIX=media/glassine
+
+# Locks and markers of running operations (a tmpfs).
+RUN_DIR=/run/glassine

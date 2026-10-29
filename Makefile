@@ -18,6 +18,9 @@ initramfs.cpio.gz: initramfs/init build-initramfs.sh
 
 install: glassine-reboot
 	install -Dm755 sbin/glassine-bootimg $(DESTDIR)$(PREFIX)/sbin/glassine-bootimg
+	install -Dm755 sbin/glassine-deploy $(DESTDIR)$(PREFIX)/sbin/glassine-deploy
+	install -Dm644 lib/glassine-state.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-state.sh
+	install -Dm644 conf/deploy.conf.example $(DESTDIR)$(PREFIX)/share/glassine-boot/deploy.conf.example
 	install -Dm755 sbin/glassine-reboot-clean $(DESTDIR)$(PREFIX)/sbin/glassine-reboot-clean
 	install -Dm755 glassine-reboot $(DESTDIR)$(PREFIX)/sbin/glassine-reboot
 	install -Dm755 lib/glassine-bootimg-pack $(DESTDIR)$(PREFIX)/lib/glassine-bootimg/glassine-bootimg-pack
@@ -29,6 +32,7 @@ install: glassine-reboot
 check:
 	sh test/bootimg/test.sh
 	sh test/initramfs/test.sh
+	sh test/deploy/test.sh
 
 clean:
 	rm -f glassine-reboot initramfs.cpio.gz
