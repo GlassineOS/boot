@@ -202,6 +202,14 @@ cp $W/deploy.keep $S/state/deploy
 ok "setup 2:a 2 MiB swap file, swap signature, mode 600" "hn setup 2 && [ \$(stat -c %s $HS) = 2097152 ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && [ \$(stat -c %a $HS) = 600 ]"
 HI=$(stat -c %i $HS); printf 'S1SUSPEND\000' | dd of=$HS bs=1 seek=4086 conv=notrunc 2>/dev/null; echo x > $HS.guard
 ok "setup again, same size: the file kept, an old image + guard invalidated" "hn setup 2 && [ \$(stat -c %i $HS) = $HI ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && [ ! -e $HS.guard ]"
+# recreated = the old content gone (a marker in block 100; the inode number may be reused)
+hmark() { printf OLDFILE | dd of=$HS bs=4096 seek=100 conv=notrunc 2>/dev/null; }
+hmarked() { [ "$(dd if=$HS bs=4096 skip=100 count=1 2>/dev/null | head -c 7)" = OLDFILE ]; }
+rm -f $HS; fallocate -l 2097152 $HS; mkswap $HS >/dev/null 2>&1; hmark
+ok "setup, same size but allocated, not written: recreated without unwritten extents" "filefrag -v $HS | grep -q unwritten && hn setup 2 && ! hmarked && ! filefrag -v $HS | grep -q unwritten && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ]"
+printf '#!/bin/sh\nexit 1\n' > $W/shim/filefrag; chmod +x $W/shim/filefrag; hmark
+ok "setup, the extents can't be read (filefrag fails): recreated" "hn setup 2 && ! hmarked"
+rm -f $W/shim/filefrag; HI=$(stat -c %i $HS)
 ok "setup, more than the free space: exit 3, the file kept" "hn setup 9999; [ \$? = 3 ] && [ \$(stat -c %i $HS) = $HI ] && grep -q 'not enough space' $W/hout"
 ok "setup, size junk: exit 2" "hn setup 2x; [ \$? = 2 ]"
 : > $W/kmsg-ro; mount --bind $W/kmsg-ro /dev/kmsg && mount -o remount,ro,bind /dev/kmsg

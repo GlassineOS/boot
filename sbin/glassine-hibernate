@@ -28,7 +28,8 @@
 # boot, no swap file, block size, no kernel support, no space), 4 busy (a
 # switch is running, the deployment state is locked).
 #
-# Configuration: deploy.conf (SYSTEM_MNT, USERDATA_DEV, USERDATA_MNT,
+# Configuration: deploy.conf (SYSTEM_MNT, USERDATA_DEV, USERDATA_MNT: a real
+# mount point, on another device than its parent directory,
 # USERDATA_PREFIX, RUN_DIR, HIBERNATE_SIZE_MB, HIBERNATE_RESERVE_MB: free
 # space setup leaves on userdata, default 512; HIBERNATE_HOOKS). For the host test:
 # GLASSINE_SYSPOWER (/sys/power), GLASSINE_PROC_SWAPS (/proc/swaps).
@@ -58,6 +59,12 @@ say() {
     return 0
 }
 die() { _c=$1; shift; say "$*"; exit "$_c"; }
+
+# written FILE: no unwritten (allocated, never written) extents; unsure = no
+written() {
+    _w=$(filefrag -v "$1" 2>/dev/null) || return 1
+    case $_w in *unwritten*) return 1 ;; esac
+}
 
 swap_active() { awk -v f="$SWAP" '$1 == f { on = 1 } END { exit !on }' "$SWAPS" 2>/dev/null; }
 
@@ -135,7 +142,9 @@ cmd_setup() {
     case $mib in ''|0|*[!0-9]*) die 2 "size: a number of MiB, not '$mib'" ;; esac
     mountpoint -q "$USERDATA_MNT" || die 3 "userdata is not mounted at $USERDATA_MNT"
     swap_active && die 4 "$SWAP is in use as swap"
-    if [ -f "$SWAP" ] && [ "$(stat -c %s "$SWAP")" = $((mib * 1048576)) ]; then
+    # keep only a file of that size whose blocks are all written: an allocated
+    # (fallocate) one reads as zeros through ext4 only, the image is raw
+    if [ -f "$SWAP" ] && [ "$(stat -c %s "$SWAP")" = $((mib * 1048576)) ] && written "$SWAP"; then
         gs_invalidate_file "$SWAP" || die 1 "cannot invalidate the image in $SWAP"
         [ "$(gs_sig_file "$SWAP")" = "$GS_SIG_SWAP" ] || mkswap "$SWAP" >/dev/null || die 1 "mkswap failed"
         rm -f "$GUARD"; sync
