@@ -181,9 +181,13 @@ cmd_now() {
       echo "kver=$(uname -v)"; } | gs_write "$GUARD" || { undo failed; die 1 "cannot write $GUARD"; }
     { echo "$BLOCK" > "$SYSPOWER/resume_offset" && echo "$MM" > "$SYSPOWER/resume"; } 2>/dev/null ||
         { undo failed; die 1 "cannot point the kernel at the swap file ($MM, block $BLOCK)"; }
+    # without /sys/power/disk the kernel uses its default (it powers off):
+    # fine for shutdown, but --reboot asked for something else
     if [ -e "$SYSPOWER/disk" ]; then
         grep -qw "$mode" "$SYSPOWER/disk" && echo "$mode" > "$SYSPOWER/disk" 2>/dev/null ||
             { undo failed; die 3 "the kernel cannot hibernate with '$mode' (/sys/power/disk: $(cat "$SYSPOWER/disk"))"; }
+    elif [ "$mode" = reboot ]; then
+        undo failed; die 3 "the kernel cannot hibernate with 'reboot' (no $SYSPOWER/disk)"
     fi
     say "hibernating $booted (swap block $BLOCK on $MM, then $mode)"
     wd_stop

@@ -104,7 +104,11 @@ hibernate, switches the swap file on (if it isn't), writes the guard, then
 `disk` to `/sys/power/state`. When the kernel returns (resumed, or it refused), it
 starts the watchdog again with its old arguments, removes the guard, switches the
 swap file off again and makes sure it carries the plain swap signature. `--reboot`
-writes `reboot` instead of `shutdown` (bring-up: a failed resume keeps pstore).
+writes `reboot` instead of `shutdown` (bring-up: a failed resume keeps pstore); a
+kernel without `/sys/power/disk` can only use its default (power off), so `--reboot`
+refuses there (exit 3). The watchdog is restarted directly, not through the init
+system: a watchdog service's pidfile goes stale (the initramfs starts it, so
+nothing reads that pidfile today).
 
 Device steps belong to the board, not to this tool: executables in
 `HIBERNATE_HOOKS` (default `/etc/glassine/hibernate.d`) run in name order with `pre`

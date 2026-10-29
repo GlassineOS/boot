@@ -247,6 +247,10 @@ hpow
 ok "now --reboot: disk=reboot" "hn now --reboot && [ \"\$(cat $HP/disk)\" = reboot ]"
 hpow; echo '[shutdown] test' > $HP/disk; : > $HL
 ok "now --reboot, the kernel offers no reboot: exit 3, guard gone, swap off, post failed" "hn now --reboot; [ \$? = 3 ] && [ ! -e $HS.guard ] && [ \"\$(cat $HC | tr '\n' ' ')\" = 'swapon swapoff ' ] && [ \"\$(cat $HP/state)\" = 'freeze mem disk' ] && tail -n 1 $HL | grep -qx '10-a post failed'"
+hpow; rm $HP/disk; : > $HL
+ok "now --reboot without /sys/power/disk: exit 3, guard gone, swap off, no hibernate" "hn now --reboot; [ \$? = 3 ] && [ ! -e $HS.guard ] && [ \"\$(cat $HC | tr '\n' ' ')\" = 'swapon swapoff ' ] && [ \"\$(cat $HP/state)\" = 'freeze mem disk' ]"
+hpow; rm $HP/disk
+ok "now without /sys/power/disk: the kernel default (power off), hibernates" "hn now && [ \"\$(cat $HP/state)\" = disk ]"
 ok "now --bogus: usage" "hn now --bogus; [ \$? = 2 ]"
 rm -rf $W/hooks
 hpow; mkdir $HP/resume_offset
