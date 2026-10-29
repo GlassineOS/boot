@@ -117,6 +117,39 @@ order with `post resumed` or `post failed` when the kernel returns or after a ca
 A post hook must cope with a pre step that did not run. It never shuts
 down or reboots by itself and never runs the shutdown switch.
 
+## Slots
+
+On a dual-boot device the bootloader's A/B slots hold two systems (the Note Air:
+A = Android, B = GlassineOS), not two copies of one. The bootloader's tries are then
+the fallback between them, below the deployment tries of one system: a slot that
+never reaches a working system (a broken kernel or initramfs) runs out of tries and
+the bootloader boots the other slot.
+
+`glassine-slot` (`src/glassine-slot.c`) reads and writes that state in the GPT
+attributes of `boot_a`/`boot_b`, in the scheme of Qualcomm's bootloader (ABL): bits
+48-49 priority, 50 active, 51-53 tries, 54 successful, 55 unbootable. ABL boots the
+active slot with the highest priority; it counts one try per boot while the slot is
+not successful, and with no tries left it marks it unbootable and boots the other
+slot **only if that one is successful**. So a fallback target must have been marked
+successful by its own system.
+
+| Command | Does |
+|---|---|
+| `status [--porcelain]` | both slots, the booted one (`androidboot.slot_suffix`), and the one ABL boots next |
+| `set-active a\|b` | ABL's own `set_active`: the slot gets priority 3, 7 tries, not successful; the other keeps its state with priority 2 |
+| `mark-successful [a\|b]` | the booted slot (default) works: successful, no tries counted; no write when it already is |
+| `reset-tries [a\|b]` | not successful again with 7 tries: after a kernel update in that slot |
+
+Only the two attribute words change; when the two GPT copies differ elsewhere it
+refuses (exit 3). It writes the backup copy first, then the primary, each with
+fsync, and reads both back. A cut between the writes leaves the primary (what ABL
+reads) on the old state; a broken copy is rebuilt from the valid one on the next
+write. Exit codes: 0, 1 I/O, 2 usage, 3 refused, 6 busy (`flock` on the disk).
+
+Who marks a slot successful: GlassineOS's accept service, once a boot is healthy,
+whichever deployment booted. A system without a marker (the Note Air's Android
+today) must stay marked successful by hand, or each of its boots uses up a try.
+
 ## Files in the image
 
 `build-initramfs.sh` adds `e2fsck`, `dumpe2fs` and `debugfs` (with their libraries)
