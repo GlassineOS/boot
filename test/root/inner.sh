@@ -203,6 +203,18 @@ ok "gr_carry: mounts under /run/glassine, booted recorded, lock released" "gr_ca
 ok "after the carry: / still read-only, /etc writable" "ro $R/usr/bin/x && echo c > $R/etc/carried && [ -e $R/run/glassine/userdata/$P/deployments/$CUR/switch/etc/carried ]"
 sed -e "s|^SYSTEM_MNT=.*|SYSTEM_MNT=$R/run/glassine/system|" -e "s|^USERDATA_MNT=.*|USERDATA_MNT=$R/run/glassine/userdata|" -e "s|^RUN_DIR=.*|RUN_DIR=$R/run/glassine|" $W/deploy.conf > $W/deploy3.conf
 ok "the system's glassine-deploy works on the carried mounts (select = a state write)" "GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G select d1 >/dev/null && [ \"\$(gs_kv $R/run/glassine/system/state/deploy candidate)\" = d1 ] && GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G select $CUR >/dev/null"
+# the shutdown switch in the running system: OpenRC's localmount has unmounted
+# /run/glassine/*; a mount on top of / must not leak into the carried state
+GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G reset --yes >/dev/null; LS=$(gs_kv $R/run/glassine/system/state/deploy staged)
+echo live > $R/etc/na1/eink.conf
+mount -t tmpfs tmpfs $R/var/lib/bluetooth && echo submount > $R/var/lib/bluetooth/fromsubmount
+umount $R/run/glassine/root $R/run/glassine/userdata $R/run/glassine/system
+ok "switch in the running deployment: carries from its live root, selects, leaves nothing mounted" "GLASSINE_DEPLOY_CONF=$W/deploy3.conf GLASSINE_DEPLOY_ROOT=$R $G switch >/dev/null && LSW=$U/deployments/$LS/switch && mount -t ext4 $UDEV $W/udmnt && [ \"\$(cat $W/udmnt/$P/deployments/$LS/switch/etc/na1/eink.conf)\" = live ] && ! grep -q 'view\.' /proc/mounts"
+ok "switch in the running deployment: a mount on top of / is not carried" "[ -e $W/udmnt/$P/deployments/$LS/switch/var/lib/bluetooth/k ] && [ ! -e $W/udmnt/$P/deployments/$LS/switch/var/lib/bluetooth/fromsubmount ]"
+umount $W/udmnt $R/var/lib/bluetooth
+mkdir -p $R/run/glassine/system $R/run/glassine/userdata && mount -t btrfs $SD $R/run/glassine/system && mount -t ext4 $UDEV $R/run/glassine/userdata
+ok "after the switch: the staged one is the candidate" "[ \"\$(gs_kv $R/run/glassine/system/state/deploy candidate)\" = $LS ]"
+GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G select $CUR >/dev/null; rm -rf $R/run/glassine/userdata/$P/deployments/$LS
 mkdir -p $R/run/glassine/userdata/$P/deployments/dz && echo base=gone > $R/run/glassine/userdata/$P/deployments/dz/meta
 gs_update $R/run/glassine/system/state/deploy candidate=dz tries=2
 gr_boot_umount $R

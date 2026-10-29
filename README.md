@@ -21,6 +21,7 @@ Everything specific to one device lives in a board configuration
 | `conf/board.conf.example` | every board key, documented |
 | `sbin/glassine-deploy`, `lib/glassine-state.sh` | root deployments and their recovery interface (`status`, `list`, `select`, `rollback`, `hibernate-invalidate`, `reset`, `switch`, `accept`); the shared state and hibernate-guard helpers |
 | `lib/glassine-root.sh` | assembling a deployment's root: btrfs base + build layer + live upper (overlayfs), `/` read-only with writable `/etc`, `/var`, `/usr/local`, `/opt`; the interim try counter; the initramfs boot steps for `ROOT_LAYOUT=deployments` (hibernation resume or invalidate, pick + assemble with fallbacks, mounts carried to `/run/glassine/`) |
+| `sbin/glassine-switch-hook`, `openrc/glassine-switch` | the shutdown switch: a staged deployment is carried and selected at a shutdown the user started (`--user-shutdown` from the power menu) with the charger or enough battery; a service of the OpenRC shutdown runlevel |
 | `conf/deploy.conf.example` | where the system partition and userdata are |
 | `test/` | host tests in an Alpine container |
 

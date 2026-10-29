@@ -1,0 +1,71 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-switch-hook: the shutdown switch (A22, A25). A staged deployment
+# (a reset, later an update) is carried and selected only at a shutdown or
+# reboot that the user started, with the charger connected or enough battery;
+# otherwise it stays staged for the next one. Runs from the OpenRC shutdown
+# runlevel (openrc/glassine-switch): after every other service has stopped
+# and the processes are killed, before / is remounted read-only. A hibernate
+# never gets here (it powers off in the kernel, §5.3 rule 11).
+#
+#   glassine-switch-hook --user-shutdown   the power menu, right before it
+#                                          shuts down or reboots: this shutdown
+#                                          may switch
+#   glassine-switch-hook                   the shutdown step
+#
+# Configuration: deploy.conf (RUN_DIR; SWITCH_MIN_CAPACITY, default 30: the
+# battery percent without a charger). Never fails a shutdown: exit 0 unless
+# the switch itself failed (then glassine-deploy's exit code; the deployment
+# stays staged).
+set -u
+CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+DEPLOY=${GLASSINE_DEPLOY:-/usr/sbin/glassine-deploy}
+PSDIR=${GLASSINE_POWER_SUPPLY:-/sys/class/power_supply}
+RUN_DIR=/run/glassine SWITCH_MIN_CAPACITY=30
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+MARK=$RUN_DIR/user-shutdown
+
+say() {
+    echo "glassine-switch: $*"
+    { [ -w /dev/kmsg ] && echo "<5>glassine-switch: $*" > /dev/kmsg; } 2>/dev/null
+}
+
+if [ "${1:-}" = --user-shutdown ]; then
+    mkdir -p "$RUN_DIR" && : > "$MARK"
+    exit
+fi
+[ $# = 0 ] || { echo "usage: glassine-switch-hook [--user-shutdown]" >&2; exit 2; }
+
+# power_ok: a charger online, or a battery at SWITCH_MIN_CAPACITY or more;
+# no battery at all (a board without one) = ok. Sets WHY.
+power_ok() {
+    bat=''
+    for p in "$PSDIR"/*; do
+        [ -r "$p/type" ] || continue
+        case $(cat "$p/type") in
+        Mains|USB|USB_*|Wireless) [ "$(cat "$p/online" 2>/dev/null)" = 1 ] && { WHY="charger ${p##*/}"; return 0; } ;;
+        Battery) bat=$(cat "$p/capacity" 2>/dev/null) ;;
+        esac
+    done
+    [ -n "$bat" ] || { WHY="no battery"; return 0; }
+    case $bat in *[!0-9]*) WHY="battery capacity unreadable"; return 1 ;; esac
+    WHY="battery $bat %"
+    [ "$bat" -ge "$SWITCH_MIN_CAPACITY" ]
+}
+
+staged=$("$DEPLOY" status --porcelain 2>/dev/null | sed -n 2p | tr '\t' '\n' | sed -n 's/^staged=//p')
+[ -n "$staged" ] || exit 0
+if [ ! -e "$MARK" ]; then
+    say "$staged stays staged: this shutdown was not started by the user"
+    exit 0
+fi
+if ! power_ok; then
+    say "$staged stays staged: $WHY, below $SWITCH_MIN_CAPACITY % without a charger"
+    exit 0
+fi
+say "switching to $staged ($WHY)"
+"$DEPLOY" switch; rc=$?
+[ $rc = 0 ] && say "$staged boots next" || say "switch failed (exit $rc): $staged stays staged"
+rm -f "$MARK"
+exit $rc

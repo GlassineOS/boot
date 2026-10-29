@@ -380,8 +380,13 @@ cmd_hibernate_invalidate() {
 ud_open_rw() {
     if ! ud_mounted; then
         ud_dev || die "no userdata ($USERDATA_DEV)"
-        e2fsck -p "$USERDATA_DEV" >/dev/null 2>&1
-        [ $? -lt 4 ] || die "e2fsck found errors on $USERDATA_DEV it cannot fix; run it by hand"
+        # booted by the deployments initramfs: userdata is the live upper (the
+        # overlay holds it even where nothing shows it mounted, as at shutdown
+        # after OpenRC's unmounts): never a fsck of a file system in use
+        if [ ! -e "$RUN_DIR/booted" ]; then
+            e2fsck -p "$USERDATA_DEV" >/dev/null 2>&1
+            [ $? -lt 4 ] || die "e2fsck found errors on $USERDATA_DEV it cannot fix; run it by hand"
+        fi
         mkdir -p "$USERDATA_MNT" || die "cannot create $USERDATA_MNT"
         mount -t ext4 "$USERDATA_DEV" "$USERDATA_MNT" || die "cannot mount $USERDATA_DEV"
         UD_MOUNTED_HERE=$USERDATA_MNT
@@ -466,16 +471,27 @@ do_switch() {
     none) ;;
     migrate)
         [ -n "$cur" ] || die "no current deployment to carry from"
+        # the running deployment (the shutdown hook): a plain bind of its own
+        # root (the merged overlay without what is mounted on top; a second
+        # overlay on a live upper is undefined in overlayfs, and OpenRC has
+        # unmounted RUN_DIR/root by then); otherwise (recovery) a read-only view
         TMP_VIEW=$RUN_DIR/view.$$
-        gr_merged_ro "$SYSTEM_MNT" "$UD/deployments/$cur" "$TMP_VIEW" || die "cannot open deployment $cur read-only"
+        mkdir -p "$TMP_VIEW" || die "cannot create $TMP_VIEW"
+        if [ "$(cat "$RUN_DIR/booted" 2>/dev/null)" = "$cur" ]; then
+            mount --bind "${GLASSINE_DEPLOY_ROOT:-/}" "$TMP_VIEW" && mount -o remount,bind,ro "$TMP_VIEW" ||
+                die "cannot bind the running root"
+        else
+            gr_merged_ro "$SYSTEM_MNT" "$UD/deployments/$cur" "$TMP_VIEW" || die "cannot open deployment $cur read-only"
+        fi
+        view=$TMP_VIEW
         need=1024
-        for p in $(migrate_paths "$TMP_VIEW"); do
-            [ -e "$TMP_VIEW$p" ] && need=$((need + $(du -sk "$TMP_VIEW$p" | cut -f 1)))
+        for p in $(migrate_paths "$view"); do
+            [ -e "$view$p" ] && need=$((need + $(du -sk "$view$p" | cut -f 1)))
         done
         avail=$(df -Pk "$USERDATA_MNT" | awk 'NR == 2 { print $4 }')
         [ "${avail:-0}" -gt "$need" ] || fail 5 "not enough space on userdata: ${need} KiB needed, ${avail:-?} KiB free; $id stays staged"
-        for p in $(migrate_paths "$TMP_VIEW"); do
-            copy_path "$TMP_VIEW" "$nd/switch" "$p" || die "copying $p failed; $id stays staged"
+        for p in $(migrate_paths "$view"); do
+            copy_path "$view" "$nd/switch" "$p" || die "copying $p failed; $id stays staged"
         done
         umount "$TMP_VIEW" && rmdir "$TMP_VIEW"; TMP_VIEW=''
         ;;

@@ -17,6 +17,33 @@ CONF
 export GLASSINE_DEPLOY_CONF=$W/deploy.conf GLASSINE_DEPLOY_LIB=/p/lib/glassine-state.sh
 st() { $G status --porcelain | sed -n 2p | tr '\t' '\n' | sed -n "s/^$1=//p"; }
 
+# --- the shutdown hook (glassine-switch-hook), on a stub glassine-deploy --------
+H=/p/sbin/glassine-switch-hook
+HW=$W/hook; mkdir -p $HW/ps $HW/run
+printf '#!/bin/sh\ncase $1 in\nstatus) printf "v\\tx\\n%%s\\n" "$(cat %s/status)" ;;\nswitch) echo switch >> %s/calls; exit $(cat %s/rc) ;;\nesac\n' $HW $HW $HW > $HW/deploy; chmod +x $HW/deploy
+printf 'RUN_DIR=%s/run\nSWITCH_MIN_CAPACITY=30\n' $HW > $HW/conf
+hook() { : > $HW/calls; GLASSINE_DEPLOY_CONF=$HW/conf GLASSINE_DEPLOY=$HW/deploy GLASSINE_POWER_SUPPLY=$HW/ps sh $H "$@" > $HW/out 2>&1; }
+psu() { rm -rf $HW/ps/*; for x in "$@"; do n=${x%%:*}; mkdir -p $HW/ps/$n; v=${x#*:}; echo ${v%%=*} > $HW/ps/$n/type; [ "${v%%=*}" = Battery ] && echo ${v#*=} > $HW/ps/$n/capacity || echo ${v#*=} > $HW/ps/$n/online; done; }
+echo 0 > $HW/rc
+printf 'system_fs=btrfs\tstaged=\n' > $HW/status; psu bat:Battery=80
+ok "hook: nothing staged: no switch" "hook && [ ! -s $HW/calls ]"
+printf 'system_fs=btrfs\tstaged=r1\n' > $HW/status
+ok "hook: staged, shutdown not started by the user: stays staged" "hook && [ ! -s $HW/calls ] && grep -q 'not started by the user' $HW/out"
+ok "hook --user-shutdown: marks this shutdown" "hook --user-shutdown && [ -e $HW/run/user-shutdown ]"
+psu bat:Battery=20 usb:USB=0
+ok "hook: user shutdown, battery 20 %, no charger: stays staged, mark kept" "hook && [ ! -s $HW/calls ] && grep -q 'battery 20 %, below 30' $HW/out && [ -e $HW/run/user-shutdown ]"
+psu bat:Battery=20 usb:USB=1
+ok "hook: battery 20 % but the charger online: switches" "hook && grep -qx switch $HW/calls && grep -q 'charger usb' $HW/out && [ ! -e $HW/run/user-shutdown ]"
+hook --user-shutdown; psu bat:Battery=30 ac:Mains=0
+ok "hook: battery at the threshold: switches" "hook && grep -qx switch $HW/calls"
+hook --user-shutdown; psu
+ok "hook: no battery (a board without one): switches" "hook && grep -qx switch $HW/calls && grep -q 'no battery' $HW/out"
+hook --user-shutdown; psu bat:Battery=x
+ok "hook: unreadable capacity: stays staged" "hook && [ ! -s $HW/calls ]"
+psu bat:Battery=90; echo 5 > $HW/rc
+ok "hook: the switch fails: its exit code, said" "hook; [ \$? = 5 ] && grep -q 'switch failed (exit 5): r1 stays staged' $HW/out"
+ok "hook: a stray argument: usage, exit 2" "hook --now; [ \$? = 2 ]"
+
 # --- the library -------------------------------------------------------------
 printf 'a=1\nb=2\n' > $W/kv
 ok "gs_kv reads a key" "[ \"\$(gs_kv $W/kv b)\" = 2 ]"

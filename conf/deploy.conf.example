@@ -20,3 +20,8 @@ USERDATA_PREFIX=media/glassine
 
 # Locks and markers of running operations (a tmpfs).
 RUN_DIR=/run/glassine
+
+# The shutdown switch (glassine-switch-hook): without a charger, only at this
+# battery percent or more (the threshold is a0's, Phase 12 W10 / R3; 30 until
+# then).
+SWITCH_MIN_CAPACITY=30
