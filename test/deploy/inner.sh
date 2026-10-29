@@ -74,6 +74,15 @@ sleep 1
 ok "accept: waits while uptime < ACCEPT_AFTER" "[ ! -s $AW/calls ] && kill -0 $ap"
 echo '130.0 1.0' > $AW/uptime
 ok "accept: then accepts once it is up long enough" "wait $ap && grep -qx 'accept c1' $AW/calls"
+printf '#!/bin/sh\ncase $1 in\nstatus) printf "v\\tx\\n%%s\\n" "$(cat %s/status)" ;;\naccept) echo "accept $2" >> %s/calls; [ -e %s/busy ] && exit 6; exit 0 ;;\nesac\n' $AW $AW $AW > $AW/deploy
+: > $AW/busy; acc & ap=$!
+sleep 1
+ok "accept: busy (exit 6): keeps trying" "kill -0 $ap && grep -qx 'accept c1' $AW/calls"
+rm $AW/busy
+ok "accept: busy, then free: accepted" "wait $ap && [ \$(grep -c 'accept c1' $AW/calls) -ge 2 ]"
+printf 'ACCEPT_BUSY_S=0\n' >> $AW/conf; : > $AW/busy
+ok "accept: busy past ACCEPT_BUSY_S: not accepted, logged" "! acc && grep -q 'accept c1 failed (exit 6)' $AW/out"
+rm $AW/busy
 
 # --- the library -------------------------------------------------------------
 printf 'a=1\nb=2\n' > $W/kv

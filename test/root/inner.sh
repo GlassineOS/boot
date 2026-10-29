@@ -191,12 +191,22 @@ hpow
 ok "hibernate: not a deployments boot (no booted): exit 3" "hn check; [ \$? = 3 ] && grep -q 'not a deployments boot' $W/hout"
 echo bare:b1 > $W/run/booted
 ok "hibernate: a bare boot: exit 3" "hn check; [ \$? = 3 ] && grep -q 'a bare boot' $W/hout"
-echo d1 > $W/run/booted
-ok "setup 2: a 2 MiB swap file, swap signature, mode 600" "hn setup 2 && [ \$(stat -c %s $HS) = 2097152 ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && [ \$(stat -c %a $HS) = 600 ]"
+HD=$(gr_would_pick $S/state)      # the deployment booted = the one the state boots next
+cp $S/state/deploy $W/deploy.keep
+echo dX > $W/run/booted
+ok "hibernate: the state would boot another deployment next: exit 3" "hn check; [ \$? = 3 ] && grep -q 'next boot would be $HD, not dX' $W/hout"
+echo "$HD" > $W/run/booted
+gs_update $S/state/deploy candidate="$HD" tries=0 current=dZ
+ok "hibernate: the booted candidate on its last try (next boot = current): exit 3" "hn check; [ \$? = 3 ] && grep -q 'next boot would be dZ, not $HD' $W/hout"
+cp $W/deploy.keep $S/state/deploy
+ok "setup 2:a 2 MiB swap file, swap signature, mode 600" "hn setup 2 && [ \$(stat -c %s $HS) = 2097152 ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && [ \$(stat -c %a $HS) = 600 ]"
 HI=$(stat -c %i $HS); printf 'S1SUSPEND\000' | dd of=$HS bs=1 seek=4086 conv=notrunc 2>/dev/null; echo x > $HS.guard
 ok "setup again, same size: the file kept, an old image + guard invalidated" "hn setup 2 && [ \$(stat -c %i $HS) = $HI ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && [ ! -e $HS.guard ]"
 ok "setup, more than the free space: exit 3, the file kept" "hn setup 9999; [ \$? = 3 ] && [ \$(stat -c %i $HS) = $HI ] && grep -q 'not enough space' $W/hout"
 ok "setup, size junk: exit 2" "hn setup 2x; [ \$? = 2 ]"
+: > $W/kmsg-ro; mount --bind $W/kmsg-ro /dev/kmsg && mount -o remount,ro,bind /dev/kmsg
+ok "setup without a writable /dev/kmsg: still exit 0" "hn setup 2"
+umount /dev/kmsg
 HB=$(gs_dev_block $UDEV $P/swap/hibernate)
 HMM=$(stat -L -c '%t %T' $UDEV); HMM=$(printf '%d:%d' 0x${HMM% *} 0x${HMM#* })
 ok "check: ready, the block the initramfs finds" "hn check && grep -q \"swap block $HB on $HMM\" $W/hout"
@@ -210,7 +220,7 @@ hpow; : > $W/wdlog; $W/wdbin/watchdog -t 5 -T 20 /dev/null & sleep 0.3
 ok "now: resumed (exit 0), the resume files, disk=shutdown, the watchdog stopped + started with its arguments" "hn now && sleep 0.5 && [ \"\$(cat $HP/resume_offset)\" = $HB ] && [ \"\$(cat $HP/resume)\" = $HMM ] && [ \"\$(cat $HP/disk)\" = shutdown ] && [ \"\$(cat $HP/state)\" = disk ] && [ \"\$(cat $W/wdlog | tr '\n' ' ')\" = 'start -t 5 -T 20 /dev/null stop start -t 5 -T 20 /dev/null ' ]"
 ok "now: the restarted watchdog does not hold the state lock" "flock -n $S/state/.lock true"
 pkill -f "$W/wdbin/watchdog" 2>/dev/null
-{ gs_guard_mounts $UDEV; echo deployment=d1; echo "krel=$(uname -r)"; echo "kver=$(uname -v)"; } > $W/guard-want
+{ gs_guard_mounts $UDEV; echo "deployment=$HD"; echo "krel=$(uname -r)"; echo "kver=$(uname -v)"; } > $W/guard-want
 ok "now: the guard as the initramfs reads it (rule 4 + 7), removed after the resume" "cmp -s $W/guard-seen $W/guard-want && [ ! -e $HS.guard ]"
 ok "now: swapon before, swapoff after, the signature plain swap" "[ \"\$(cat $HC | tr '\n' ' ')\" = 'swapon swapoff ' ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && ! grep -q \"^$HS \" $W/swaps"
 hpow; echo "$HS file 0 0 -2" >> $W/swaps

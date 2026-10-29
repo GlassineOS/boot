@@ -24,6 +24,7 @@
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 LIB=${GLASSINE_DEPLOY_LIB:-/usr/lib/glassine-boot/glassine-state.sh}
+ROOTLIB=${GLASSINE_ROOT_LIB:-${LIB%/*}/glassine-root.sh}
 SYSPOWER=${GLASSINE_SYSPOWER:-/sys/power}
 SWAPS=${GLASSINE_PROC_SWAPS:-/proc/swaps}
 SYSTEM_MNT=/run/glassine/system USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata
@@ -32,6 +33,8 @@ USERDATA_PREFIX=media/glassine RUN_DIR=/run/glassine HIBERNATE_SIZE_MB='' HIBERN
 [ -r "$CONF" ] && . "$CONF"
 # shellcheck source=../lib/glassine-state.sh
 . "$LIB" || { echo "glassine-hibernate: cannot read $LIB" >&2; exit 3; }
+# shellcheck source=../lib/glassine-root.sh
+. "$ROOTLIB" || { echo "glassine-hibernate: cannot read $ROOTLIB" >&2; exit 3; }
 
 REL=$USERDATA_PREFIX/swap/hibernate
 SWAP=$USERDATA_MNT/$REL
@@ -40,6 +43,7 @@ GUARD=$SWAP.guard
 say() {
     echo "glassine-hibernate: $*" >&2
     { [ -w /dev/kmsg ] && echo "<5>glassine-hibernate: $*" > /dev/kmsg; } 2>/dev/null
+    return 0
 }
 die() { _c=$1; shift; say "$*"; exit "$_c"; }
 
@@ -54,6 +58,12 @@ ready() {
     bare:*) die 3 "a bare boot ($booted): no deployment to resume into" ;;
     esac
     [ -d "$SYSTEM_MNT/state" ] || die 3 "no deployment state at $SYSTEM_MNT/state"
+    # the initramfs resumes only into the deployment the state would boot next
+    # (docs/boot.md rule 3): a candidate on its last try, or another one
+    # selected since this boot, would make it cancel the image = lose the session
+    next=$(gr_would_pick "$SYSTEM_MNT/state")
+    [ "$next" = "$booted" ] ||
+        die 3 "the next boot would be ${next:-nothing}, not $booted: the image would be cancelled (accept or select $booted first)"
     grep -qw disk "$SYSPOWER/state" 2>/dev/null || die 3 "the kernel cannot hibernate (no 'disk' in $SYSPOWER/state)"
     [ -b "$USERDATA_DEV" ] || die 3 "USERDATA_DEV is not a block device: '$USERDATA_DEV'"
     mountpoint -q "$USERDATA_MNT" || die 3 "userdata is not mounted at $USERDATA_MNT"

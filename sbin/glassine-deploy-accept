@@ -50,6 +50,14 @@ if [ -n "$bad" ]; then
     say "$booted not accepted: $bad (tries left: $(field tries))"
     exit 1
 fi
-"$DEPLOY" accept "$booted" || { say "accept $booted failed"; exit 1; }
+# busy (exit 6: another writer, or a hibernate holding the state lock across
+# the sleep): try again for up to ACCEPT_BUSY_S seconds
+n=0
+while :; do
+    "$DEPLOY" accept "$booted" && break
+    rc=$?
+    [ $rc = 6 ] && [ $n -lt "${ACCEPT_BUSY_S:-600}" ] || { say "accept $booted failed (exit $rc)"; exit 1; }
+    sleep 5; n=$((n + 5))
+done
 say "$booted accepted after ${ACCEPT_AFTER}s healthy"
 exit 0

@@ -95,7 +95,9 @@ glassine-hibernate now           hibernate; returns after the resume
 
 `now` refuses while a switch runs (`switching`) or `glassine-deploy` holds the state
 lock (exit 4), on a bare boot, without the swap file, a 4096-byte first block or
-`disk` in `/sys/power/state` (exit 3). Otherwise it holds the state lock across the
+`disk` in `/sys/power/state`, and when the state would boot another deployment next
+(a candidate on its last try, or one selected since this boot), because the initramfs
+would then cancel the image (exit 3). Otherwise it holds the state lock across the
 hibernate, switches the swap file on (if it isn't), writes the guard, then
 `resume_offset` and `resume` (the same block and device the initramfs will use),
 `shutdown` to `/sys/power/disk`, stops the watchdog daemon (magic close) and writes
