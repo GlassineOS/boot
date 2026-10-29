@@ -15,8 +15,8 @@
  *                                                at once, for a system that can't
  *                                                mark itself (no tries counted)
  *   glassine-slot [OPTIONS] mark-successful [a|b] the booted slot (default) works:
- *                                                no more tries counted; no write if
- *                                                it already is
+ *                                                no more tries counted (tries back
+ *                                                to 7); no write if it already is
  *   glassine-slot [OPTIONS] reset-tries [a|b]     not successful again, 7 tries
  *                                                (after a kernel update in that slot)
  * OPTIONS: --disk DEV (default: the disk holding boot_a), --sector-size N (for
@@ -216,6 +216,8 @@ static char *default_disk(void)
 
 static void show(const char *name, uint64_t a, int porcelain)
 {
+    if (!porcelain)
+        printf("slot %s: 0x%016llx\n", name, (unsigned long long)a);
     if (porcelain)
         printf("slot=%s\tpriority=%llu\tactive=%d\ttries=%llu\tsuccessful=%d\tunbootable=%d\n", name,
                (unsigned long long)prio(a), !!(a & ACTIVE), (unsigned long long)tries(a),
@@ -429,7 +431,10 @@ int main(int argc, char **argv)
     if (wr(pri.hdr, ssz, 1) || fsync(fd))
         die(1, "writing the primary header failed");
 
-    /* read back: both copies valid, equal, with the new attributes */
+    /* read back: both copies valid, equal, with the new attributes. From the
+     * disk, not the page cache: drop the cached blocks first */
+    if (S_ISBLK(st.st_mode) ? ioctl(fd, BLKFLSBUF, 0) : posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED))
+        die(1, "cannot drop the cached blocks before the read-back");
     struct gpt p2, b2;
     const char *c = getenv("GLASSINE_SLOT_TEST_CUT");
     if (c && !strcmp(c, "readback"))  /* the test of the mismatch path */

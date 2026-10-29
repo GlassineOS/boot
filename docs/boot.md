@@ -137,7 +137,7 @@ successful by its own system.
 |---|---|
 | `status [--porcelain]` | both slots, the booted one (`androidboot.slot_suffix`), and the one ABL boots next |
 | `set-active a\|b [--successful]` | ABL's own `set_active`: the slot gets priority 3, 7 tries, not successful; the other keeps its state with priority 2. `--successful`: marked successful at once, for a system that can't mark itself |
-| `mark-successful [a\|b]` | the booted slot (default) works: successful, no tries counted; no write when it already is |
+| `mark-successful [a\|b]` | the booted slot (default) works: successful, no tries counted (tries back to 7); no write when it already is |
 | `reset-tries [a\|b]` | not successful again with 7 tries: after a kernel update in that slot |
 
 Only the two attribute words change; when the two GPT copies differ elsewhere it
