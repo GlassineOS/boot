@@ -169,6 +169,61 @@ printf '#!/bin/sh\n: > %s/debugfs-used\nexit 1\n' $W > $W/shim/debugfs; chmod +x
 ok "userdata mounted elsewhere: found, read through the mount (no debugfs)" "[ \"\$(GLASSINE_DEPLOY_CONF=$W/deploy2.conf PATH=$W/shim:\$PATH $G status --porcelain | tr '\t' '\n' | sed -n 's/^hibernated=//p')\" = yes ] && [ ! -e $W/debugfs-used ]"
 ok "invalidate through that mount: no raw write" "GLASSINE_DEPLOY_CONF=$W/deploy2.conf PATH=$W/shim:\$PATH $G hibernate-invalidate --yes >/dev/null && [ \"\$(gs_sig_file $U/swap/hibernate)\" = SWAPSPACE2 ] && [ ! -e $W/debugfs-used ] && [ ! -e $W/notmounted ]"
 
+# --- the hibernate step (glassine-hibernate), on the real mounts ------------------
+# The kernel side is plain files: GLASSINE_SYSPOWER (a write to state "returns"
+# = the session resumed), GLASSINE_PROC_SWAPS + swapon/swapoff stubs (never
+# the host's swap), a stand-in watchdog daemon named watchdog.
+H=/p/sbin/glassine-hibernate
+rm -f $W/shim/debugfs
+HP=$W/hpower; mkdir -p $HP; HC=$W/hcalls; printf 'Filename\tType\n' > $W/swaps
+printf '#!/bin/sh\necho swapon >> %s\necho "$1 file 0 0 -2" >> %s\n' $HC $W/swaps > $W/shim/swapon
+printf '#!/bin/sh\necho swapoff >> %s\ngrep -v "^$1 " %s > %s.n; mv %s.n %s\n' $HC $W/swaps $W/swaps $W/swaps $W/swaps > $W/shim/swapoff
+# sync: also keeps a copy of the guard while it exists (the wrapper removes it after the resume)
+printf '#!/bin/sh\n[ -f %s ] && cp %s %s\nexec /bin/sync\n' $U/swap/hibernate.guard $U/swap/hibernate.guard $W/guard-seen > $W/shim/sync
+mkdir -p $W/wdbin
+printf '#!/bin/sh\necho "start $*" >> %s\ntrap "echo stop >> %s; exit 0" TERM\nwhile :; do sleep 0.1; done\n' $W/wdlog $W/wdlog > $W/wdbin/watchdog
+chmod +x $W/shim/swapon $W/shim/swapoff $W/shim/sync $W/wdbin/watchdog
+hpow() { rm -rf "${HP:?}"/*; echo 'freeze mem disk' > $HP/state; echo 'platform [shutdown] reboot' > $HP/disk; : > $HC; rm -f $W/guard-seen; }
+echo HIBERNATE_RESERVE_MB=8 >> $W/deploy.conf
+hn() { GLASSINE_SYSPOWER=$HP GLASSINE_PROC_SWAPS=$W/swaps PATH=$W/shim:$PATH $H "$@" >$W/hout 2>&1; }
+HS=$U/swap/hibernate
+hpow
+ok "hibernate: not a deployments boot (no booted): exit 3" "hn check; [ \$? = 3 ] && grep -q 'not a deployments boot' $W/hout"
+echo bare:b1 > $W/run/booted
+ok "hibernate: a bare boot: exit 3" "hn check; [ \$? = 3 ] && grep -q 'a bare boot' $W/hout"
+echo d1 > $W/run/booted
+ok "setup 2: a 2 MiB swap file, swap signature, mode 600" "hn setup 2 && [ \$(stat -c %s $HS) = 2097152 ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && [ \$(stat -c %a $HS) = 600 ]"
+HI=$(stat -c %i $HS); printf 'S1SUSPEND\000' | dd of=$HS bs=1 seek=4086 conv=notrunc 2>/dev/null; echo x > $HS.guard
+ok "setup again, same size: the file kept, an old image + guard invalidated" "hn setup 2 && [ \$(stat -c %i $HS) = $HI ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && [ ! -e $HS.guard ]"
+ok "setup, more than the free space: exit 3, the file kept" "hn setup 9999; [ \$? = 3 ] && [ \$(stat -c %i $HS) = $HI ] && grep -q 'not enough space' $W/hout"
+ok "setup, size junk: exit 2" "hn setup 2x; [ \$? = 2 ]"
+HB=$(gs_dev_block $UDEV $P/swap/hibernate)
+HMM=$(stat -L -c '%t %T' $UDEV); HMM=$(printf '%d:%d' 0x${HMM% *} 0x${HMM#* })
+ok "check: ready, the block the initramfs finds" "hn check && grep -q \"swap block $HB on $HMM\" $W/hout"
+: > $W/run/switching
+ok "now, a switch running: exit 4, nothing touched" "hn now; [ \$? = 4 ] && [ ! -s $HC ] && [ ! -e $HP/resume ]"
+rm $W/run/switching
+ok "now, the state locked by glassine-deploy: exit 4, nothing touched" "flock $S/state/.lock sh -c 'GLASSINE_SYSPOWER=$HP GLASSINE_PROC_SWAPS=$W/swaps PATH=$W/shim:\$PATH $H now' >$W/hout 2>&1; [ \$? = 4 ] && [ ! -s $HC ] && [ ! -e $HP/resume ]"
+echo 'freeze mem' > $HP/state
+ok "now, a kernel without hibernation: exit 3" "hn now; [ \$? = 3 ] && [ ! -s $HC ]"
+hpow; : > $W/wdlog; $W/wdbin/watchdog -t 5 -T 20 /dev/null & sleep 0.3
+ok "now: resumed (exit 0), the resume files, disk=shutdown, the watchdog stopped + started with its arguments" "hn now && sleep 0.5 && [ \"\$(cat $HP/resume_offset)\" = $HB ] && [ \"\$(cat $HP/resume)\" = $HMM ] && [ \"\$(cat $HP/disk)\" = shutdown ] && [ \"\$(cat $HP/state)\" = disk ] && [ \"\$(cat $W/wdlog | tr '\n' ' ')\" = 'start -t 5 -T 20 /dev/null stop start -t 5 -T 20 /dev/null ' ]"
+ok "now: the restarted watchdog does not hold the state lock" "flock -n $S/state/.lock true"
+pkill -f "$W/wdbin/watchdog" 2>/dev/null
+{ gs_guard_mounts $UDEV; echo deployment=d1; echo "krel=$(uname -r)"; echo "kver=$(uname -v)"; } > $W/guard-want
+ok "now: the guard as the initramfs reads it (rule 4 + 7), removed after the resume" "cmp -s $W/guard-seen $W/guard-want && [ ! -e $HS.guard ]"
+ok "now: swapon before, swapoff after, the signature plain swap" "[ \"\$(cat $HC | tr '\n' ' ')\" = 'swapon swapoff ' ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && ! grep -q \"^$HS \" $W/swaps"
+hpow; echo "$HS file 0 0 -2" >> $W/swaps
+ok "now, the swap file already on: not switched on or off" "hn now && [ ! -s $HC ] && grep -q \"^$HS \" $W/swaps"
+grep -v "^$HS " $W/swaps > $W/swaps.n; mv $W/swaps.n $W/swaps
+hpow; mount -o bind $HP/state $HP/state && mount -o remount,ro,bind $HP/state
+ok "now, the kernel refuses (state write fails): exit 1, guard gone, swap off" "hn now; [ \$? = 1 ] && grep -q 'did not hibernate' $W/hout && [ ! -e $HS.guard ] && [ \"\$(cat $HC | tr '\n' ' ')\" = 'swapon swapoff ' ]"
+umount $HP/state
+hpow; mkdir $HP/resume_offset
+ok "now, the resume files cannot be written: exit 1, no hibernate, guard gone, swap off" "hn now; [ \$? = 1 ] && [ \"\$(cat $HP/state)\" = 'freeze mem disk' ] && [ ! -e $HS.guard ] && [ \"\$(cat $HC | tr '\n' ' ')\" = 'swapon swapoff ' ]"
+sed -i '/^HIBERNATE_RESERVE_MB=/d' $W/deploy.conf
+rm -f $W/run/booted $W/shim/swapon $W/shim/swapoff $W/shim/sync
+
 # --- the boot steps (initramfs): resume or invalidate, boot, carry ---------------
 CUR=$(gr_would_pick $S/state)
 debugfs_w() { printf "$1" > $W/dbg; debugfs -w -f $W/dbg $UDEV >/dev/null 2>&1; }

@@ -85,8 +85,24 @@ it ([format](deployments.md#the-hibernate-guard)). The rules:
    device, followed by `sync` and `blockdev --flushbufs`. It is the only write before
    the mounts. If that fails, nothing is mounted and the boot stops.
 
-The hibernate step itself (writing the guard, then `echo disk`) is separate work and
-not in this repository yet. Until it exists, every boot that finds an image cancels it.
+The hibernate step is `glassine-hibernate` (the running system):
+
+```
+glassine-hibernate setup [MIB]   create the swap file (default: half the RAM)
+glassine-hibernate check         would `now` hibernate? exit 0 = yes
+glassine-hibernate now           hibernate; returns after the resume
+```
+
+`now` refuses while a switch runs (`switching`) or `glassine-deploy` holds the state
+lock (exit 4), on a bare boot, without the swap file, a 4096-byte first block or
+`disk` in `/sys/power/state` (exit 3). Otherwise it holds the state lock across the
+hibernate, switches the swap file on (if it isn't), writes the guard, then
+`resume_offset` and `resume` (the same block and device the initramfs will use),
+`shutdown` to `/sys/power/disk`, stops the watchdog daemon (magic close) and writes
+`disk` to `/sys/power/state`. When the kernel returns (resumed, or it refused), it
+starts the watchdog again with its old arguments, removes the guard, switches the
+swap file off again and makes sure it carries the plain swap signature. It never shuts
+down or reboots by itself and never runs the shutdown switch.
 
 ## Files in the image
 

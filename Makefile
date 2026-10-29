@@ -20,6 +20,7 @@ install: glassine-reboot
 	install -Dm755 sbin/glassine-bootimg $(DESTDIR)$(PREFIX)/sbin/glassine-bootimg
 	install -Dm755 sbin/glassine-deploy $(DESTDIR)$(PREFIX)/sbin/glassine-deploy
 	install -Dm755 sbin/glassine-switch-hook $(DESTDIR)$(PREFIX)/sbin/glassine-switch-hook
+	install -Dm755 sbin/glassine-hibernate $(DESTDIR)$(PREFIX)/sbin/glassine-hibernate
 	install -Dm755 openrc/glassine-switch $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-switch
 	install -Dm755 sbin/glassine-deploy-accept $(DESTDIR)$(PREFIX)/sbin/glassine-deploy-accept
 	install -Dm755 openrc/glassine-deploy-accept $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-deploy-accept

@@ -1,0 +1,160 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-hibernate: the hibernate step of the deployments layout (the resume
+# step is gr_resume in lib/glassine-root.sh, docs/boot.md#hibernation). Writes
+# the guard the initramfs checks, points the kernel at the swap file and
+# hibernates; when the session comes back (or the kernel refuses), it undoes
+# what it set up. Never shuts down or reboots by itself, never runs the
+# shutdown switch (a staged deployment stays staged).
+#
+#   glassine-hibernate setup [MIB]   create the swap file (<prefix>/swap/hibernate,
+#                                    default: half the RAM, HIBERNATE_SIZE_MB)
+#   glassine-hibernate check         would `now` hibernate? exit 0 = yes
+#   glassine-hibernate now           hibernate; returns after the resume
+#
+# Exit: 0 done (resumed; setup: the file is ready), 1 failed (the kernel did
+# not hibernate, a write failed), 2 usage, 3 not possible here (no deployments
+# boot, no swap file, block size, no kernel support, no space), 4 busy (a
+# switch is running, the deployment state is locked).
+#
+# Configuration: deploy.conf (SYSTEM_MNT, USERDATA_DEV, USERDATA_MNT,
+# USERDATA_PREFIX, RUN_DIR, HIBERNATE_SIZE_MB, HIBERNATE_RESERVE_MB: free
+# space setup leaves on userdata, default 512). For the host test:
+# GLASSINE_SYSPOWER (/sys/power), GLASSINE_PROC_SWAPS (/proc/swaps).
+set -u
+CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+LIB=${GLASSINE_DEPLOY_LIB:-/usr/lib/glassine-boot/glassine-state.sh}
+SYSPOWER=${GLASSINE_SYSPOWER:-/sys/power}
+SWAPS=${GLASSINE_PROC_SWAPS:-/proc/swaps}
+SYSTEM_MNT=/run/glassine/system USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata
+USERDATA_PREFIX=media/glassine RUN_DIR=/run/glassine HIBERNATE_SIZE_MB='' HIBERNATE_RESERVE_MB=512
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+# shellcheck source=../lib/glassine-state.sh
+. "$LIB" || { echo "glassine-hibernate: cannot read $LIB" >&2; exit 3; }
+
+REL=$USERDATA_PREFIX/swap/hibernate
+SWAP=$USERDATA_MNT/$REL
+GUARD=$SWAP.guard
+
+say() {
+    echo "glassine-hibernate: $*" >&2
+    { [ -w /dev/kmsg ] && echo "<5>glassine-hibernate: $*" > /dev/kmsg; } 2>/dev/null
+}
+die() { _c=$1; shift; say "$*"; exit "$_c"; }
+
+swap_active() { awk -v f="$SWAP" '$1 == f { on = 1 } END { exit !on }' "$SWAPS" 2>/dev/null; }
+
+# ready: every refusal of `now` before anything is written; sets BLOCK and MM
+ready() {
+    [ -e "$RUN_DIR/switching" ] && die 4 "a deployment switch is running"
+    booted=$(cat "$RUN_DIR/booted" 2>/dev/null)
+    case $booted in
+    '') die 3 "not a deployments boot ($RUN_DIR/booted missing)" ;;
+    bare:*) die 3 "a bare boot ($booted): no deployment to resume into" ;;
+    esac
+    [ -d "$SYSTEM_MNT/state" ] || die 3 "no deployment state at $SYSTEM_MNT/state"
+    grep -qw disk "$SYSPOWER/state" 2>/dev/null || die 3 "the kernel cannot hibernate (no 'disk' in $SYSPOWER/state)"
+    [ -b "$USERDATA_DEV" ] || die 3 "USERDATA_DEV is not a block device: '$USERDATA_DEV'"
+    mountpoint -q "$USERDATA_MNT" || die 3 "userdata is not mounted at $USERDATA_MNT"
+    [ -f "$SWAP" ] || die 3 "no swap file: run glassine-hibernate setup"
+    # the block the initramfs will find (debugfs, on disk): the file is old and
+    # synced, so the mounted file system and the disk agree on it
+    sync
+    BLOCK=$(gs_dev_block "$USERDATA_DEV" "$REL") || die 3 "the swap file has no 4096-byte first block on $USERDATA_DEV"
+    MM=$(stat -L -c '%t %T' "$USERDATA_DEV") && MM=$(printf '%d:%d' 0x${MM% *} 0x${MM#* }) ||
+        die 3 "cannot read the device number of $USERDATA_DEV"
+}
+
+# The SoC watchdog can't wait out an image write or load (docs/boot.md): stop
+# the busybox watchdog daemon (its magic close on SIGTERM), start it again with
+# the same arguments when the kernel returns.
+WD_ARGS=''
+wd_stop() {
+    for p in /proc/[0-9]*; do
+        [ "$(cat "$p/comm" 2>/dev/null)" = watchdog ] || continue
+        WD_ARGS=$(tr '\000' ' ' < "$p/cmdline" 2>/dev/null)
+        kill "${p#/proc/}" 2>/dev/null
+        _n=0
+        while [ -d "$p" ] && [ $_n -lt 30 ]; do sleep 0.1; _n=$((_n + 1)); done
+        [ -d "$p" ] && say "the watchdog (${p#/proc/}) did not stop"
+        say "watchdog stopped"
+    done
+}
+wd_start() {
+    [ -n "$WD_ARGS" ] || return 0
+    # in the background (busybox's daemon forks anyway, one started with -F
+    # under a supervisor must not hold this up), without the state lock (fd 9)
+    # shellcheck disable=SC2086  # the saved argument words
+    $WD_ARGS </dev/null >/dev/null 2>&1 9>&- &
+    say "watchdog started again"
+}
+
+cmd_setup() {
+    mib=${1:-$HIBERNATE_SIZE_MB}
+    if [ -z "$mib" ]; then
+        kb=$(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' /proc/meminfo)
+        mib=$(( (kb + 2047) / 2048 ))
+    fi
+    case $mib in ''|0|*[!0-9]*) die 2 "size: a number of MiB, not '$mib'" ;; esac
+    mountpoint -q "$USERDATA_MNT" || die 3 "userdata is not mounted at $USERDATA_MNT"
+    swap_active && die 4 "$SWAP is in use as swap"
+    if [ -f "$SWAP" ] && [ "$(stat -c %s "$SWAP")" = $((mib * 1048576)) ]; then
+        gs_invalidate_file "$SWAP" || die 1 "cannot invalidate the image in $SWAP"
+        [ "$(gs_sig_file "$SWAP")" = "$GS_SIG_SWAP" ] || mkswap "$SWAP" >/dev/null || die 1 "mkswap failed"
+        rm -f "$GUARD"; sync
+        say "$SWAP ready ($mib MiB)"
+        return 0
+    fi
+    d=${SWAP%/*}
+    mkdir -p "$d" || die 1 "cannot create $d"
+    have=$(( $(df -kP "$d" | awk 'NR == 2 { print $4 }') / 1024 ))
+    old=0; [ -f "$SWAP" ] && old=$(( $(stat -c %s "$SWAP") / 1048576 ))
+    [ $((have + old)) -ge $((mib + HIBERNATE_RESERVE_MB)) ] ||
+        die 3 "not enough space for $mib MiB on userdata ($((have + old)) MiB free, $HIBERNATE_RESERVE_MB kept)"
+    rm -f "$SWAP" "$GUARD"
+    # written, not allocated: a swap file must have no holes
+    (umask 077; dd if=/dev/zero of="$SWAP.new" bs=1048576 count="$mib" conv=fsync 2>/dev/null) &&
+        mkswap "$SWAP.new" >/dev/null && mv -f "$SWAP.new" "$SWAP" && sync ||
+        { rm -f "$SWAP.new"; die 1 "cannot write $SWAP"; }
+    say "$SWAP created ($mib MiB)"
+}
+
+cmd_now() {
+    ready
+    gs_lock "$SYSTEM_MNT/state" || die 4 "the deployment state is locked (glassine-deploy is running)"
+    on=no
+    if ! swap_active; then
+        swapon "$SWAP" || die 1 "swapon $SWAP failed"
+        on=yes
+    fi
+    undo() {
+        rm -f "$GUARD"
+        [ $on = no ] || swapoff "$SWAP" || say "swapoff $SWAP failed"
+        # the resumed kernel already put SWAPSPACE2 back; a refused one never wrote S1SUSPEND
+        swap_active || gs_invalidate_file "$SWAP" || say "cannot invalidate $SWAP"
+        sync
+    }
+    { gs_guard_mounts "$USERDATA_DEV"
+      echo "deployment=$booted"
+      echo "krel=$(uname -r)"
+      echo "kver=$(uname -v)"; } | gs_write "$GUARD" || { undo; die 1 "cannot write $GUARD"; }
+    { echo "$BLOCK" > "$SYSPOWER/resume_offset" && echo "$MM" > "$SYSPOWER/resume"; } 2>/dev/null ||
+        { undo; die 1 "cannot point the kernel at the swap file ($MM, block $BLOCK)"; }
+    [ -w "$SYSPOWER/disk" ] && echo shutdown > "$SYSPOWER/disk" 2>/dev/null
+    say "hibernating $booted (swap block $BLOCK on $MM)"
+    wd_stop
+    sync
+    if echo disk > "$SYSPOWER/state" 2>/dev/null; then rc=0; else rc=1; fi
+    wd_start
+    undo
+    [ $rc = 0 ] || die 1 "the kernel did not hibernate"
+    say "resumed $booted"
+}
+
+case ${1:-} in
+setup) [ $# -le 2 ] || exit 2; shift; cmd_setup "$@" ;;
+check) [ $# = 1 ] || exit 2; ready; echo "ready: $booted, swap block $BLOCK on $MM" ;;
+now) [ $# = 1 ] || exit 2; cmd_now ;;
+*) echo "usage: glassine-hibernate setup [MIB] | check | now" >&2; exit 2 ;;
+esac
