@@ -32,7 +32,9 @@ SWITCH_MIN_CAPACITY=30
 ACCEPT_AFTER=120
 ACCEPT_HEALTH_DIR=/etc/glassine-bootimg/health.d
 
-# Hibernation (glassine-hibernate setup): the swap file's size in MiB (empty =
-# half the RAM) and the free space it leaves on userdata.
+# Hibernation (glassine-hibernate): the swap file's size in MiB (empty = half
+# the RAM), the free space setup leaves on userdata, and the board's hook
+# directory (pre/post steps around a hibernate, docs/boot.md).
 HIBERNATE_SIZE_MB=
 HIBERNATE_RESERVE_MB=512
+HIBERNATE_HOOKS=/etc/glassine/hibernate.d

@@ -184,7 +184,7 @@ mkdir -p $W/wdbin
 printf '#!/bin/sh\necho "start $*" >> %s\ntrap "echo stop >> %s; exit 0" TERM\nwhile :; do sleep 0.1; done\n' $W/wdlog $W/wdlog > $W/wdbin/watchdog
 chmod +x $W/shim/swapon $W/shim/swapoff $W/shim/sync $W/wdbin/watchdog
 hpow() { rm -rf "${HP:?}"/*; echo 'freeze mem disk' > $HP/state; echo 'platform [shutdown] reboot' > $HP/disk; : > $HC; rm -f $W/guard-seen; }
-echo HIBERNATE_RESERVE_MB=8 >> $W/deploy.conf
+printf 'HIBERNATE_RESERVE_MB=8\nHIBERNATE_HOOKS=%s/hooks\n' $W >> $W/deploy.conf
 hn() { GLASSINE_SYSPOWER=$HP GLASSINE_PROC_SWAPS=$W/swaps PATH=$W/shim:$PATH $H "$@" >$W/hout 2>&1; }
 HS=$U/swap/hibernate
 hpow
@@ -229,9 +229,26 @@ grep -v "^$HS " $W/swaps > $W/swaps.n; mv $W/swaps.n $W/swaps
 hpow; mount -o bind $HP/state $HP/state && mount -o remount,ro,bind $HP/state
 ok "now, the kernel refuses (state write fails): exit 1, guard gone, swap off" "hn now; [ \$? = 1 ] && grep -q 'did not hibernate' $W/hout && [ ! -e $HS.guard ] && [ \"\$(cat $HC | tr '\n' ' ')\" = 'swapon swapoff ' ]"
 umount $HP/state
+# device hooks: pre in name order, post in reverse, a failing pre cancels
+mkdir -p $W/hooks; HL=$W/hooklog
+printf '#!/bin/sh\necho "10-a $*" >> %s\n' $HL > $W/hooks/10-a
+printf '#!/bin/sh\necho "20-b $*" >> %s\n[ "$1" != pre ] || [ ! -e %s/hookfail ]\n' $HL $W > $W/hooks/20-b
+chmod +x $W/hooks/10-a $W/hooks/20-b
+echo 'not run' > $W/hooks/30-not-executable
+hpow; : > $HL
+ok "now, device hooks: pre in name order, post resumed in reverse" "hn now && [ \"\$(cat $HL | tr '\n' ,)\" = '10-a pre,20-b pre,20-b post resumed,10-a post resumed,' ]"
+hpow; : > $HL; : > $W/hookfail
+ok "now, a pre hook fails: exit 1, nothing switched on or written, post failed for all" "hn now; [ \$? = 1 ] && grep -q 'hook 20-b pre failed' $W/hout && [ ! -s $HC ] && [ ! -e $HP/resume ] && [ ! -e $HS.guard ] && [ \"\$(cat $HL | tr '\n' ,)\" = '10-a pre,20-b pre,20-b post failed,10-a post failed,' ]"
+rm -f $W/hookfail
+hpow
+ok "now --reboot: disk=reboot" "hn now --reboot && [ \"\$(cat $HP/disk)\" = reboot ]"
+hpow; echo '[shutdown] test' > $HP/disk; : > $HL
+ok "now --reboot, the kernel offers no reboot: exit 3, guard gone, swap off, post failed" "hn now --reboot; [ \$? = 3 ] && [ ! -e $HS.guard ] && [ \"\$(cat $HC | tr '\n' ' ')\" = 'swapon swapoff ' ] && [ \"\$(cat $HP/state)\" = 'freeze mem disk' ] && tail -n 1 $HL | grep -qx '10-a post failed'"
+ok "now --bogus: usage" "hn now --bogus; [ \$? = 2 ]"
+rm -rf $W/hooks
 hpow; mkdir $HP/resume_offset
 ok "now, the resume files cannot be written: exit 1, no hibernate, guard gone, swap off" "hn now; [ \$? = 1 ] && [ \"\$(cat $HP/state)\" = 'freeze mem disk' ] && [ ! -e $HS.guard ] && [ \"\$(cat $HC | tr '\n' ' ')\" = 'swapon swapoff ' ]"
-sed -i '/^HIBERNATE_RESERVE_MB=/d' $W/deploy.conf
+sed -i '/^HIBERNATE_/d' $W/deploy.conf
 rm -f $W/run/booted $W/shim/swapon $W/shim/swapoff $W/shim/sync
 
 # --- the boot steps (initramfs): resume or invalidate, boot, carry ---------------

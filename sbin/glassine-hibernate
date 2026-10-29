@@ -10,7 +10,17 @@
 #   glassine-hibernate setup [MIB]   create the swap file (<prefix>/swap/hibernate,
 #                                    default: half the RAM, HIBERNATE_SIZE_MB)
 #   glassine-hibernate check         would `now` hibernate? exit 0 = yes
-#   glassine-hibernate now           hibernate; returns after the resume
+#   glassine-hibernate now [--reboot]
+#                                    hibernate; returns after the resume.
+#                                    --reboot: the kernel reboots after writing
+#                                    the image instead of powering off (a failed
+#                                    resume then keeps pstore: for bring-up)
+#
+# Device steps (the board's adapter): executables in HIBERNATE_HOOKS (default
+# /etc/glassine/hibernate.d), run in name order with `pre` before anything is
+# written (a failure cancels the hibernate), and in reverse order with
+# `post resumed` or `post failed` after the kernel returns, or after a cancel.
+# A post hook must cope with a pre step that did not run.
 #
 # Exit: 0 done (resumed; setup: the file is ready), 1 failed (the kernel did
 # not hibernate, a write failed), 2 usage, 3 not possible here (no deployments
@@ -19,7 +29,7 @@
 #
 # Configuration: deploy.conf (SYSTEM_MNT, USERDATA_DEV, USERDATA_MNT,
 # USERDATA_PREFIX, RUN_DIR, HIBERNATE_SIZE_MB, HIBERNATE_RESERVE_MB: free
-# space setup leaves on userdata, default 512). For the host test:
+# space setup leaves on userdata, default 512; HIBERNATE_HOOKS). For the host test:
 # GLASSINE_SYSPOWER (/sys/power), GLASSINE_PROC_SWAPS (/proc/swaps).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
@@ -29,6 +39,7 @@ SYSPOWER=${GLASSINE_SYSPOWER:-/sys/power}
 SWAPS=${GLASSINE_PROC_SWAPS:-/proc/swaps}
 SYSTEM_MNT=/run/glassine/system USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata
 USERDATA_PREFIX=media/glassine RUN_DIR=/run/glassine HIBERNATE_SIZE_MB='' HIBERNATE_RESERVE_MB=512
+HIBERNATE_HOOKS=/etc/glassine/hibernate.d
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
 # shellcheck source=../lib/glassine-state.sh
@@ -100,6 +111,20 @@ wd_start() {
     say "watchdog started again"
 }
 
+# hooks pre | hooks post resumed|failed
+hooks() {
+    [ -d "$HIBERNATE_HOOKS" ] || return 0
+    _l=$(find "$HIBERNATE_HOOKS" -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -perm -u+x | sort)
+    [ "$1" = pre ] || _l=$(printf '%s\n' "$_l" | sort -r)
+    for _h in $_l; do
+        if [ "$1" = pre ]; then
+            "$_h" pre || { say "hook ${_h##*/} pre failed"; return 1; }
+        else
+            "$_h" post "$2" || say "hook ${_h##*/} post failed"
+        fi
+    done
+}
+
 cmd_setup() {
     mib=${1:-$HIBERNATE_SIZE_MB}
     if [ -z "$mib" ]; then
@@ -131,40 +156,46 @@ cmd_setup() {
 }
 
 cmd_now() {
+    mode=shutdown
+    case ${1:-} in --reboot) mode=reboot ;; '') ;; *) exit 2 ;; esac
     ready
     gs_lock "$SYSTEM_MNT/state" || die 4 "the deployment state is locked (glassine-deploy is running)"
     on=no
-    if ! swap_active; then
-        swapon "$SWAP" || die 1 "swapon $SWAP failed"
-        on=yes
-    fi
     undo() {
         rm -f "$GUARD"
         [ $on = no ] || swapoff "$SWAP" || say "swapoff $SWAP failed"
         # the resumed kernel already put SWAPSPACE2 back; a refused one never wrote S1SUSPEND
         swap_active || gs_invalidate_file "$SWAP" || say "cannot invalidate $SWAP"
         sync
+        hooks post "$1"
     }
+    hooks pre || { undo failed; die 1 "a device hook refused the hibernate"; }
+    if ! swap_active; then
+        swapon "$SWAP" || { undo failed; die 1 "swapon $SWAP failed"; }
+        on=yes
+    fi
     { gs_guard_mounts "$USERDATA_DEV"
       echo "deployment=$booted"
       echo "krel=$(uname -r)"
-      echo "kver=$(uname -v)"; } | gs_write "$GUARD" || { undo; die 1 "cannot write $GUARD"; }
+      echo "kver=$(uname -v)"; } | gs_write "$GUARD" || { undo failed; die 1 "cannot write $GUARD"; }
     { echo "$BLOCK" > "$SYSPOWER/resume_offset" && echo "$MM" > "$SYSPOWER/resume"; } 2>/dev/null ||
-        { undo; die 1 "cannot point the kernel at the swap file ($MM, block $BLOCK)"; }
-    [ -w "$SYSPOWER/disk" ] && echo shutdown > "$SYSPOWER/disk" 2>/dev/null
-    say "hibernating $booted (swap block $BLOCK on $MM)"
+        { undo failed; die 1 "cannot point the kernel at the swap file ($MM, block $BLOCK)"; }
+    if [ -e "$SYSPOWER/disk" ]; then
+        grep -qw "$mode" "$SYSPOWER/disk" && echo "$mode" > "$SYSPOWER/disk" 2>/dev/null ||
+            { undo failed; die 3 "the kernel cannot hibernate with '$mode' (/sys/power/disk: $(cat "$SYSPOWER/disk"))"; }
+    fi
+    say "hibernating $booted (swap block $BLOCK on $MM, then $mode)"
     wd_stop
     sync
     if echo disk > "$SYSPOWER/state" 2>/dev/null; then rc=0; else rc=1; fi
     wd_start
-    undo
-    [ $rc = 0 ] || die 1 "the kernel did not hibernate"
+    if [ $rc = 0 ]; then undo resumed; else undo failed; die 1 "the kernel did not hibernate"; fi
     say "resumed $booted"
 }
 
 case ${1:-} in
 setup) [ $# -le 2 ] || exit 2; shift; cmd_setup "$@" ;;
 check) [ $# = 1 ] || exit 2; ready; echo "ready: $booted, swap block $BLOCK on $MM" ;;
-now) [ $# = 1 ] || exit 2; cmd_now ;;
-*) echo "usage: glassine-hibernate setup [MIB] | check | now" >&2; exit 2 ;;
+now) [ $# -le 2 ] || exit 2; shift; cmd_now "$@" ;;
+*) echo "usage: glassine-hibernate setup [MIB] | check | now [--reboot]" >&2; exit 2 ;;
 esac
