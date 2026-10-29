@@ -19,7 +19,8 @@ Everything specific to one device lives in a board configuration
 | `openrc/glassine-bootimg-promote` | gives the verdict on a test boot |
 | `sbin/glassine-reboot-clean`, `src/glassine-reboot.c` | an orderly reboot with a reboot reason (the way into the test slot) |
 | `conf/board.conf.example` | every board key, documented |
-| `sbin/glassine-deploy`, `lib/glassine-state.sh` | root deployments and their recovery interface (`status`, `list`, `select`, `rollback`, `hibernate-invalidate`); the shared state and hibernate-guard helpers |
+| `sbin/glassine-deploy`, `lib/glassine-state.sh` | root deployments and their recovery interface (`status`, `list`, `select`, `rollback`, `hibernate-invalidate`, `reset`, `accept`); the shared state and hibernate-guard helpers |
+| `lib/glassine-root.sh` | assembling a deployment's root: btrfs base + build layer + live upper (overlayfs), `/` read-only with writable `/etc`, `/var`, `/usr/local`, `/opt`; the interim try counter (prototype, not used by the initramfs yet) |
 | `conf/deploy.conf.example` | where the system partition and userdata are |
 | `test/` | host tests in an Alpine container |
 

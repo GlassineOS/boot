@@ -1,0 +1,150 @@
+#!/bin/sh
+set -u
+W=/w; mkdir -p $W && mount -t tmpfs -o size=640m tmpfs $W
+G=/p/sbin/glassine-deploy
+. /p/lib/glassine-state.sh
+. /p/lib/glassine-root.sh
+fails=0
+ok() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
+P=media/glassine
+LOOPS=''
+# loop FILE: attach it, LOOP = the device. A loop device the kernel creates after
+# the container started has no node in its /dev (a copy of the host's): make it.
+loop() {
+    LOOP=$(losetup -f) || return 1
+    [ -b "$LOOP" ] || mknod "$LOOP" b 7 "${LOOP#/dev/loop}" || return 1
+    losetup "$LOOP" "$1" && LOOPS="$LOOPS $LOOP"
+}
+finish() {
+    gr_umount $W/root 2>/dev/null
+    umount $W/udmnt $W/sysmnt 2>/dev/null
+    for l in $LOOPS; do losetup -d "$l" 2>/dev/null; done
+    cd /; umount $W 2>/dev/null
+}
+# (no EXIT trap: this busybox ash runs it in every $(...) subshell too)
+
+# --- the partitions ----------------------------------------------------------
+truncate -s 256M $W/sys.img; mkfs.btrfs -q $W/sys.img
+truncate -s 160M $W/ud.img; mke2fs -q -F -t ext4 -b 4096 $W/ud.img
+loop $W/sys.img; SD=$LOOP; loop $W/ud.img; UDEV=$LOOP
+mkdir -p $W/sysmnt $W/udmnt
+mount -t btrfs "$SD" $W/sysmnt && mount -t ext4 "$UDEV" $W/udmnt || { echo "FAIL cannot mount the loop devices"; finish; exit 1; }
+S=$W/sysmnt
+mkdir -p $S/bases $S/modules $S/state
+btrfs -q subvolume create $S/bases/b1
+B=$S/bases/b1
+mkdir -p $B/etc/apk $B/etc/na1 $B/usr/bin $B/usr/local $B/opt $B/var/lib $B/lib/modules/7.3.0 $B/usr/share/glassine
+echo alpine-base > $B/etc/apk/world
+echo glassine > $B/etc/hostname
+echo welcome > $B/etc/motd
+echo '@stagger_ctl=3' > $B/etc/na1/eink.conf
+echo 'root:x:0:0:root:/root:/bin/sh' > $B/etc/passwd
+printf '#!/bin/sh\necho hello\n' > $B/usr/bin/hello; chmod 755 $B/usr/bin/hello
+printf '# shipped\n/etc/na1/\n/etc/hostname\n/etc/passwd\n/var/lib/bluetooth/\n../escape\nrelative/path\n' > $B/usr/share/glassine/migrate.list
+btrfs property set -ts $B ro true
+btrfs -q subvolume create $S/modules/7.3.0
+mkdir -p $S/modules/7.3.0/kernel; echo ko > $S/modules/7.3.0/kernel/x.ko
+btrfs property set -ts $S/modules/7.3.0 ro true
+echo version=1 > $S/state/format
+printf 'current=d1\nprevious=\ncandidate=\ntries=0\n' > $S/state/deploy
+U=$W/udmnt/$P
+mkdir -p $U/deployments/d1/build $U/deployments/d1/switch $U/deployments/d1/work
+printf 'base=b1\nkind=install\n' > $U/deployments/d1/meta
+basesum() { find $B -print0 | sort -z | xargs -0 ls -ld --full-time 2>/dev/null | md5sum; find $B -type f -exec cat {} + | md5sum; }
+SUM0=$(basesum)
+R=$W/root
+ro() { ! sh -c "echo x > $1" 2>/dev/null; }
+
+# --- a deployment's root, locked ---------------------------------------------
+ok "gr_assemble d1" "gr_assemble $S $U d1 $R 7.3.0"
+ok "/ is read-only: /usr, a new file in /" "ro $R/usr/bin/new && ro $R/newfile"
+ok "/etc, /var, /usr/local, /opt are writable" "echo edited > $R/etc/na1/eink.conf && echo myhost > $R/etc/hostname && mkdir -p $R/var/lib/bluetooth && echo pair > $R/var/lib/bluetooth/k && echo l > $R/usr/local/x && echo o > $R/opt/y"
+ok "the writes go through the overlay: copy-up into d1's switch layer" "[ \"\$(cat $U/deployments/d1/switch/etc/na1/eink.conf)\" = edited ] && [ -e $U/deployments/d1/switch/usr/local/x ]"
+rm $R/etc/motd
+ok "a deletion in /etc: a whiteout in the switch layer, the base keeps the file" "[ ! -e $R/etc/motd ] && [ -c $U/deployments/d1/switch/etc/motd ] && [ \"\$(cat $B/etc/motd)\" = welcome ]"
+ok "rename-replace in /etc works (passwd-style)" "echo 'root:x:0:0:root:/root:/bin/ash' > $R/etc/passwd.new && mv $R/etc/passwd.new $R/etc/passwd && grep -q ash $R/etc/passwd"
+ok "modules: on /lib/modules/7.3.0, read-only" "[ \"\$(cat $R/lib/modules/7.3.0/kernel/x.ko)\" = ko ] && ro $R/lib/modules/7.3.0/kernel/y.ko"
+ok "unlock: / writable" "gr_unlock $R && echo new > $R/usr/bin/new && [ -e $U/deployments/d1/switch/usr/bin/new ]"
+ok "lock: / read-only again" "gr_lock $R && ro $R/usr/bin/new2"
+ok "the base is unchanged" "[ \"\$(basesum)\" = \"\$SUM0\" ]"
+gr_umount $R
+ok "gr_umount: nothing left mounted" "! grep -q \" $R\" /proc/mounts"
+ok "persistence: reassembled, edits still there" "gr_assemble $S $U d1 $R 7.3.0 && [ \"\$(cat $R/etc/na1/eink.conf)\" = edited ] && [ ! -e $R/etc/motd ] && [ -e $R/usr/bin/new ] && ro $R/usr/bin/x"
+gr_umount $R
+ok "a kernel without modules: boots, says so" "gr_assemble $S $U d1 $R 9.9.9 2>$W/err && grep -q 'no modules for 9.9.9' $W/err && [ -z \"\$(ls $R/lib/modules/7.3.0)\" ]"
+gr_umount $R
+ok "a deployment whose base is missing: refused, nothing mounted" "mkdir -p $U/deployments/dx && echo base=gone > $U/deployments/dx/meta && ! gr_assemble $S $U dx $R 2>/dev/null && ! grep -q \" $R\" /proc/mounts"
+rm -rf $U/deployments/dx
+
+# --- no userdata: the base + a tmpfs upper ---------------------------------------
+ok "gr_assemble_bare: the base, writable /etc" "gr_assemble_bare $S b1 $R && [ \"\$(cat $R/etc/motd)\" = welcome ] && echo t > $R/etc/motd && ro $R/usr/bin/z"
+gr_umount $R
+ok "bare: nothing kept, base unchanged" "[ \"\$(basesum)\" = \"\$SUM0\" ] && gr_assemble_bare $S b1 $R && [ \"\$(cat $R/etc/motd)\" = welcome ]"
+gr_umount $R
+
+# --- gr_pick --------------------------------------------------------------------
+cp $S/state/deploy $W/st0
+ok "gr_pick, no candidate: current" "[ \"\$(gr_pick $S/state)\" = d1 ] && cmp -s $S/state/deploy $W/st0"
+gs_update $S/state/deploy current= previous=d0
+ok "gr_pick, no current: previous" "[ \"\$(gr_pick $S/state)\" = d0 ]"
+cp $W/st0 $S/state/deploy
+
+# --- reset (the tool, on the real mounts) ---------------------------------------
+cat > $W/deploy.conf <<CONF
+SYSTEM_DEV=$SD
+SYSTEM_MNT=$S
+USERDATA_DEV=$UDEV
+USERDATA_MNT=$W/udmnt
+USERDATA_PREFIX=$P
+RUN_DIR=$W/run
+CONF
+mkdir -p $W/run
+export GLASSINE_DEPLOY_CONF=$W/deploy.conf GLASSINE_DEPLOY_LIB=/p/lib/glassine-state.sh
+st() { gs_kv $S/state/deploy "$1"; }
+ok "status sees the btrfs system" "$G status --porcelain | grep -q 'system_fs=btrfs	migrated=yes	current=d1'"
+gr_assemble $S $U d1 $R && mkdir -p $R/etc/wireguard $R/etc/glassine/migrate.d && echo wg > $R/etc/wireguard/wg0.conf && chmod 700 $R/etc/wireguard &&
+    echo /etc/wireguard/ > $R/etc/glassine/migrate.d/user.list && echo junk > $R/etc/junk && gr_umount $R
+ok "reset without --yes, no terminal: refused, nothing built" "$G reset 2>/dev/null </dev/null; [ \$? = 1 ] && [ \$(ls $U/deployments | wc -l) = 1 ] && cmp -s $S/state/deploy $W/st0"
+ok "reset --yes: a new candidate with 2 tries" "$G reset --yes >/dev/null && [ -n \"\$(st candidate)\" ] && [ \"\$(st tries)\" = 2 ] && [ \"\$(st current)\" = d1 ]"
+N=$(st candidate); NB=$U/deployments/$N/build
+ok "reset: meta = base b1, kind reset, from d1" "grep -qx base=b1 $U/deployments/$N/meta && grep -qx kind=reset $U/deployments/$N/meta && grep -qx from=d1 $U/deployments/$N/meta"
+ok "reset carries the migrate list (shipped + the user's)" "[ \"\$(cat $NB/etc/na1/eink.conf)\" = edited ] && [ \"\$(cat $NB/etc/hostname)\" = myhost ] && [ -e $NB/var/lib/bluetooth/k ] && [ -e $NB/etc/wireguard/wg0.conf ] && grep -q ash $NB/etc/passwd"
+ok "reset keeps modes (0700 wireguard)" "[ \$(stat -c %a $NB/etc/wireguard) = 700 ]"
+ok "reset drops the rest (edits, packages, /usr/local, whiteouts)" "[ ! -e $NB/etc/junk ] && [ ! -e $NB/usr/bin/new ] && [ ! -e $NB/usr/local/x ] && [ ! -e $NB/etc/motd ] && [ ! -e $NB/escape ] && [ -z \"\$(ls -A $U/deployments/$N/switch)\" ]"
+ok "reset left nothing mounted" "! grep -q '$W/run' /proc/mounts"
+ok "gr_pick: the candidate, tries 2 -> 1" "[ \"\$(gr_pick $S/state)\" = $N ] && [ \"\$(st tries)\" = 1 ]"
+ok "the candidate's root: carried state, base files back, user edits gone" "gr_assemble $S $U $N $R && [ \"\$(cat $R/etc/na1/eink.conf)\" = edited ] && [ \"\$(cat $R/etc/motd)\" = welcome ] && [ ! -e $R/usr/bin/new ] && [ ! -e $R/etc/junk ]"
+gr_umount $R
+ok "list: the candidate" "$G list --porcelain | grep -q \"id=$N	state=candidate\""
+ok "gr_pick: tries 1 -> 0, still the candidate" "[ \"\$(gr_pick $S/state)\" = $N ] && [ \"\$(st tries)\" = 0 ]"
+ok "gr_pick: no tries left -> failed, current boots" "[ \"\$(gr_pick $S/state)\" = d1 ] && [ -z \"\$(st candidate)\" ] && [ \"\$(st failed)\" = $N ]"
+ok "list: failed" "$G list --porcelain | grep -q \"id=$N	state=failed\""
+ok "accept of a non-candidate: refused" "$G accept $N 2>/dev/null; [ \$? = 1 ] && [ \"\$(st current)\" = d1 ]"
+$G select $N >/dev/null
+ok "accept the candidate: current, previous = d1" "$G accept $N >/dev/null && [ \"\$(st current)\" = $N ] && [ \"\$(st previous)\" = d1 ] && [ -z \"\$(st candidate)\" ]"
+ok "accept of the current one: no-op" "$G accept $N >/dev/null && [ \"\$(st current)\" = $N ]"
+ok "rollback: back to d1 as the candidate" "$G rollback >/dev/null && [ \"\$(st candidate)\" = d1 ]"
+$G select $N >/dev/null
+
+# --- reset --full ---------------------------------------------------------------
+ok "reset --full: nothing carried" "$G reset --full --yes >/dev/null && F=\$(st candidate) && [ \"\$F\" != $N ] && [ -z \"\$(ls -A $U/deployments/\$F/build)\" ] && grep -qx kind=reset-full $U/deployments/\$F/meta"
+$G select $N >/dev/null
+
+# --- reset failures leave nothing behind -----------------------------------------
+cp $S/state/deploy $W/st1; n0=$(ls $U/deployments | wc -l)
+mkdir -p $W/shim; printf '#!/bin/sh\nexit 1\n' > $W/shim/cp; chmod +x $W/shim/cp
+ok "a cut copy: exit 1, no half-built deployment, state unchanged, nothing mounted" "PATH=$W/shim:\$PATH $G reset --yes 2>/dev/null; [ \$? = 1 ] && [ \$(ls $U/deployments | wc -l) = $n0 ] && cmp -s $S/state/deploy $W/st1 && ! grep -q '$W/run' /proc/mounts"
+mkdir -p $U/deployments/$N/switch/var/lib/bluetooth; dd if=/dev/zero of=$U/deployments/$N/switch/var/lib/bluetooth/big bs=1M count=24 2>/dev/null
+dd if=/dev/zero of=$W/udmnt/fill bs=1M count=$(( $(df -Pk $W/udmnt | awk 'NR==2{print $4}') / 1024 - 10 )) 2>/dev/null
+ok "not enough space: exit 5, nothing left behind" "$G reset --yes 2>/dev/null; [ \$? = 5 ] && [ \$(ls $U/deployments | wc -l) = $n0 ] && cmp -s $S/state/deploy $W/st1"
+rm -f $W/udmnt/fill $U/deployments/$N/switch/var/lib/bluetooth/big
+
+# --- the hibernation gate on real mounts -------------------------------------------
+mkdir -p $U/swap; head -c 1048576 /dev/zero > $U/swap/hibernate; mkswap $U/swap/hibernate >/dev/null 2>&1
+printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/dev/null
+ok "hibernated: reset refuses (exit 4), nothing built" "$G reset --yes 2>/dev/null; [ \$? = 4 ] && [ \$(ls $U/deployments | wc -l) = $n0 ]"
+ok "base unchanged after everything" "[ \"\$(basesum)\" = \"\$SUM0\" ]"
+
+finish
+echo "$fails failed"
+[ $fails = 0 ]
