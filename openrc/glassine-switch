@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# The shutdown switch (glassine-switch-hook): a service of the shutdown
+# runlevel (rc-update add glassine-switch shutdown), so it runs after every
+# other service has stopped and killprocs ended the rest, while / can still
+# be written; before mount-ro. It decides by itself whether this shutdown
+# may switch, and never stops the shutdown.
+# shellcheck disable=SC2034  # read by openrc-run
+description="glassine: carry and select a staged deployment at shutdown"
+
+depend() {
+	after killprocs
+	before mount-ro
+}
+
+start() {
+	ebegin "glassine-switch: staged deployment"
+	/usr/sbin/glassine-switch-hook
+	eend 0
+}

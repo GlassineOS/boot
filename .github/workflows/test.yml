@@ -11,6 +11,10 @@ jobs:
         run: sh test/bootimg/test.sh
       - name: initramfs USB gate
         run: sh test/initramfs/test.sh
+      - name: glassine-deploy (fake mounts) + the shutdown hook
+        run: sh test/deploy/test.sh
+      - name: deployments on real btrfs/ext4/overlayfs (privileged)
+        run: sh test/root/test.sh
   build:
     runs-on: ubuntu-24.04-arm
     steps:
@@ -18,7 +22,7 @@ jobs:
       - name: build twice, compare (reproducible), no board/hooks unless asked, install
         run: |
           docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh -euc '
-            apk add -q build-base linux-headers busybox-static busybox-extras e2fsprogs cpio gzip
+            apk add -q build-base linux-headers busybox-static busybox-extras e2fsprogs e2fsprogs-extra cpio gzip
             sh build-initramfs.sh /tmp/a.cpio.gz; sh build-initramfs.sh /tmp/b.cpio.gz
             cmp /tmp/a.cpio.gz /tmp/b.cpio.gz
             zcat /tmp/a.cpio.gz | cpio -t --quiet | grep -E "^(etc/glassine-boot|lib/glassine-boot/(hooks.d|extra))" && exit 1
@@ -38,11 +42,11 @@ jobs:
       - name: no board-specific names outside the example board.conf
         run: |
           set -e
-          git grep -n -i -w -E 'l[a]b|l[a]bnet|n[a]1|on[y]x|system[_]b|boot[_]b' -- . ':!conf/board.conf.example' && exit 1
-          git grep -n -E '/l[a]b/|172\.16' -- . ':!conf/board.conf.example' && exit 1
+          git grep -n -i -w -E 'l[a]b|l[a]bnet|n[a]1|on[y]x|system[_]b|boot[_]b' -- . ':!conf/board.conf.example' ':!conf/deploy.conf.example' && exit 1
+          git grep -n -E '/l[a]b/|172\.16' -- . ':!conf/board.conf.example' ':!conf/deploy.conf.example' && exit 1
           echo clean
   shellcheck:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - run: shellcheck -s sh -S warning -e SC3043 sbin/glassine-bootimg sbin/glassine-reboot-clean build-initramfs.sh initramfs/init openrc/glassine-bootimg-promote test/*/*.sh
+      - run: shellcheck -s sh -S warning -e SC3043 sbin/glassine-bootimg sbin/glassine-reboot-clean sbin/glassine-deploy sbin/glassine-switch-hook sbin/glassine-deploy-accept sbin/glassine-hibernate lib/glassine-state.sh lib/glassine-root.sh build-initramfs.sh initramfs/init openrc/glassine-bootimg-promote openrc/glassine-switch openrc/glassine-deploy-accept test/*/*.sh

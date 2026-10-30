@@ -108,6 +108,17 @@ printf 'ROOT_PART=rootfs\n' > /nodev.conf
 run o-noaddr "panic=5 rdinit=/init glassine.return=3 glassine.devmode=usb" /nodev.conf
 ok "board without DEVMODE_ADDR: devmode refused, no listeners" "! listens o-noaddr && grep -q 'no DEVMODE_ADDR' /kmsg.o-noaddr"
 
+# --- the deployments layout ---
+printf 'ROOT_PART=rootfs\nROOT_FSTYPE=btrfs\nROOT_LAYOUT=deployments\nUSERDATA_PART=userdata\n' > /dep.conf
+run dep-nolib "panic=5 rdinit=/init glassine.return=3 _kip_initramfs" /dep.conf
+ok "deployments layout, no library: said, no root" "grep -q 'has no glassine-root.sh' /kmsg.dep-nolib && grep -q 'none configured' /kmsg.dep-nolib"
+export GLASSINE_INIT_LIB=/m/lib
+run dep "panic=5 rdinit=/init glassine.return=3 _kip_initramfs" /dep.conf
+ok "deployments layout: library sourced, looks for its root partition" "! grep -q 'glassine-root.sh' /kmsg.dep && grep -q 'root partition rootfs not found' /kmsg.dep"
+run dep-img "panic=5 rdinit=/init glassine.return=3 glassine.test glassine.img=0123456789abcdef" /dep.conf
+ok "deployments layout: no staged-image peek (it would come before the resume step)" "grep -q 'no staged-image test boot in the deployments layout' /kmsg.dep-img"
+unset GLASSINE_INIT_LIB
+
 # --- no board config ---
 run noboard "panic=5 rdinit=/init glassine.return=3 glassine.devmode=usb" /does-not-exist
 ok "no board config: said, no listeners, no root to boot: powers off" "grep -q 'no board config' /kmsg.noboard && ! listens noboard && grep -q 'none configured' /kmsg.noboard && grep -q '^poweroff -f' /calls.noboard"

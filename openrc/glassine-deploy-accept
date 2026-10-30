@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# Accepts the booted deployment candidate after a healthy boot
+# (glassine-deploy-accept). A one-shot job in the background, so it never holds
+# up the boot; the service stays "started".
+# shellcheck disable=SC2034  # read by openrc-run
+description="glassine: accept the booted deployment candidate after a healthy boot"
+
+JOBPID=/run/glassine-deploy-accept.job
+
+depend() {
+	after *
+}
+
+start() {
+	ebegin "glassine-deploy-accept: checking the booted deployment after it settles"
+	setsid /bin/sh -c 'echo $$ > '"$JOBPID"'
+		/usr/sbin/glassine-deploy-accept
+		rm -f '"$JOBPID" </dev/null >/dev/null 2>&1 &
+	eend 0
+}
+
+stop() {
+	if [ -s "$JOBPID" ]; then
+		kill "$(cat "$JOBPID")" 2>/dev/null
+		rm -f "$JOBPID"
+	fi
+	return 0
+}

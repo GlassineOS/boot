@@ -1,0 +1,92 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-deploy-accept: the boot-success step of a deployment candidate. When
+# the booted deployment (/run/glassine/booted) is the candidate, wait until the
+# system has been up ACCEPT_AFTER seconds (deploy.conf, default 120), check its
+# health, and accept it (glassine-deploy accept). Unhealthy or never reached:
+# not accepted, so the next boot uses the candidate's next try, and after the
+# last one the old deployment boots again.
+#
+# Health = the same checks as a kernel test boot (one definition of a healthy
+# system): no crashed OpenRC service, and every executable in
+# ACCEPT_HEALTH_DIR (default /etc/glassine-bootimg/health.d; the device and
+# desktop packages ship them) exits 0 within 60 s; a non-zero exit = unhealthy,
+# its first output line = the reason.
+#
+#   glassine-deploy-accept          run by the OpenRC service glassine-deploy-accept
+# Boot slot (dual-boot boards, SLOT_TOOL = the path of glassine-slot, empty =
+# off): a healthy boot also marks the booted bootloader slot successful, for any
+# deployment (candidate, current or a fallback), since the slot itself works.
+# Without that the bootloader counts a try per boot after a kernel update and
+# ends up in the other system. A bare boot (userdata broken) does not mark it.
+#
+# Exit: 0 accepted or nothing to accept, 1 not accepted (logged).
+set -u
+CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+DEPLOY=${GLASSINE_DEPLOY:-/usr/sbin/glassine-deploy}
+UPTIME=${GLASSINE_ACCEPT_UPTIME:-/proc/uptime}
+RUN_DIR=/run/glassine ACCEPT_AFTER=120 ACCEPT_HEALTH_DIR=/etc/glassine-bootimg/health.d SLOT_TOOL=
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+say() {
+    echo "glassine-deploy-accept: $*"
+    { [ -w /dev/kmsg ] && echo "<5>glassine-deploy-accept: $*" > /dev/kmsg; } 2>/dev/null
+    return 0
+}
+field() { "$DEPLOY" status --porcelain 2>/dev/null | sed -n 2p | tr '\t' '\n' | sed -n "s/^$1=//p"; }
+
+# the booted slot, when it is not marked successful yet (else nothing to do)
+slot_todo() {
+    [ -n "$SLOT_TOOL" ] || return 1
+    st=$("$SLOT_TOOL" status --porcelain 2>/dev/null) || return 1
+    b=$(echo "$st" | sed -n 's/^booted=//p')
+    [ -n "$b" ] && echo "$st" | grep "^slot=$b	" | grep -q "	successful=0"
+}
+
+booted=$(cat "$RUN_DIR/booted" 2>/dev/null)
+case $booted in ''|bare:*) exit 0 ;; esac
+cand=0 slot=0
+[ "$booted" = "$(field candidate)" ] && cand=1
+slot_todo && slot=1
+[ $cand = 1 ] || [ $slot = 1 ] || exit 0
+
+while [ "$(cut -d. -f1 "$UPTIME")" -lt "$ACCEPT_AFTER" ]; do sleep 5; done
+
+bad=''
+crashed=$(rc-status --crashed 2>/dev/null | tr '\n' ' ')
+[ -z "${crashed% }" ] || bad="crashed: ${crashed% }"
+for h in "$ACCEPT_HEALTH_DIR"/*; do
+    [ -x "$h" ] || continue
+    why=$(timeout 60 "$h" 2>/dev/null </dev/null) && continue
+    case $? in 124|143) why="${h##*/}: timed out" ;; esac
+    why=$(echo "$why" | head -n 1)
+    bad="$bad${bad:+; }${why:-${h##*/}}"
+done
+if [ -n "$bad" ]; then
+    if [ $cand = 1 ]; then
+        say "$booted not accepted: $bad (tries left: $(field tries))"
+    else
+        say "boot slot not marked successful: $bad"
+    fi
+    exit 1
+fi
+if [ $slot = 1 ]; then
+    if "$SLOT_TOOL" mark-successful >/dev/null; then
+        say "boot slot marked successful"
+    else
+        say "marking the boot slot successful failed (exit $?)"
+    fi
+fi
+[ $cand = 1 ] || exit 0
+# busy (exit 6: another writer, or a hibernate holding the state lock across
+# the sleep): try again for up to ACCEPT_BUSY_S seconds
+n=0
+while :; do
+    "$DEPLOY" accept "$booted" && break
+    rc=$?
+    [ $rc = 6 ] && [ $n -lt "${ACCEPT_BUSY_S:-600}" ] || { say "accept $booted failed (exit $rc)"; exit 1; }
+    sleep 5; n=$((n + 5))
+done
+say "$booted accepted after ${ACCEPT_AFTER}s healthy"
+exit 0

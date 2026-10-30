@@ -13,6 +13,16 @@
 # checks it with fsck.$ROOT_FSTYPE -p and mounts it read-write.
 ROOT_PART=system_b
 ROOT_FSTYPE=ext4
+# How the root is built: plain (ROOT_PART is the root file system, as above)
+# or deployments (ROOT_PART is a btrfs with bases/, modules/ and state/; the
+# deployment's layers are on USERDATA_PART under USERDATA_PREFIX, the same
+# values as glassine-deploy's deploy.conf; lib/glassine-root.sh). The
+# deployments layout also runs the hibernation step: a hibernated session on
+# userdata is resumed or, if anything does not match, invalidated before
+# anything is mounted.
+ROOT_LAYOUT=plain
+USERDATA_PART=userdata
+USERDATA_PREFIX=media/glassine
 # The slot the bootloader boots normally (the default slot) and the slot it
 # boots only when asked (the test slot: a one-shot boot of a new image).
 DEFAULT_DEV=/dev/disk/by-partlabel/boot_b
