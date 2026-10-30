@@ -179,6 +179,13 @@ ok "list: header + 4 records" "[ \"\$($G list --porcelain | head -n 1)\" = 'glas
 ok "list: states current/previous/failed/kept" "[ \"\$(lst d2 state)\" = current ] && [ \"\$(lst d1 state)\" = previous ] && [ \"\$(lst d3 state)\" = failed ] && [ \"\$(lst d4 state)\" = kept ]"
 ok "list: meta fields + size" "[ \"\$(lst d4 base)\" = v3.22.4 ] && [ \"\$(lst d4 created)\" = 2026-10-24 ] && [ -n \"\$(lst d4 size_kib)\" ]"
 ok "list: human table" "$G list | grep -q '^d4 *kept'"
+mkdir -p $W/sysmnt/bases/v3.22.2
+ok "list: base_present yes for d2, no for d4" "[ \"\$(lst d2 base_present)\" = yes ] && [ \"\$(lst d4 base_present)\" = no ]"
+rmdir $W/sysmnt/bases/v3.22.2; rmdir $W/sysmnt/bases 2>/dev/null || :
+echo failed=d1 >> $W/sysmnt/state/deploy
+ok "list: a failed deployment that is also previous shows failed" "[ \"\$(lst d1 state)\" = failed ]"
+ok "status: failed=" "$G status --porcelain | grep -q '	failed=d1'"
+sed -i '/^failed=d1$/d' $W/sysmnt/state/deploy
 $G select d4 >/dev/null
 ok "select d4: candidate=d4 tries=2, current kept, other keys kept" "[ \"\$(gs_kv \$D candidate)\" = d4 ] && [ \"\$(gs_kv \$D tries)\" = 2 ] && [ \"\$(gs_kv \$D current)\" = d2 ] && [ \"\$(gs_kv \$D extra)\" = keep ]"
 ok "list: d4 is the candidate" "[ \"\$(lst d4 state)\" = candidate ]"
