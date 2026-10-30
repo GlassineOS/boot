@@ -144,7 +144,7 @@ ok "reset --yes, nothing mounted before: nothing mounted after" "$G reset --yes 
 ok "reset --now --yes, nothing mounted before: nothing mounted after" "$G reset --now --yes >/dev/null && ! mountpoint -q $S && ! mountpoint -q $W/udmnt"
 mount -t btrfs "$SD" $S && mount -t ext4 "$UDEV" $W/udmnt
 cp $W/stU $S/state/deploy
-for d in $(ls $U/deployments); do echo "$DU0" | grep -qx "$d" || rm -rf "$U/deployments/$d"; done
+for d in "$U"/deployments/*; do echo "$DU0" | grep -qx "${d##*/}" || rm -rf "$d"; done
 $G select $N >/dev/null
 
 # --- reset --full, reset --now, replacing a staged one ----------------------------
