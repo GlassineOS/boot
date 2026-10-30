@@ -1,5 +1,11 @@
 #!/bin/sh
 set -u
+# Own PID namespace: the hibernate step finds the watchdog daemon by name, so on a
+# device (or any system with a watchdog daemon) it would stop and restart the real one.
+if [ -z "${GLASSINE_TEST_PIDNS:-}" ]; then
+    command -v unshare >/dev/null || { echo "FAIL unshare is needed (own PID namespace)"; exit 1; }
+    GLASSINE_TEST_PIDNS=1 exec unshare -fp --mount-proc sh "$0" "$@"
+fi
 W=/w; mkdir -p $W && mount -t tmpfs -o size=640m tmpfs $W
 G=/p/sbin/glassine-deploy
 . /p/lib/glassine-state.sh

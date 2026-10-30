@@ -354,9 +354,18 @@ cmd_list() {
     done
 }
 
+# require_migrated: dies unless the system partition holds state/ (read-only look)
+require_migrated() {
+    system_open || die "cannot mount $SYSTEM_DEV read-only"
+    format_check
+    [ "$FMT" = none ] && die "the system partition is not migrated (no state/)"
+}
+
 # do_select ID: ID becomes the candidate (2 tries); the current one cancels it
 do_select() {
     case "$1" in ''|.*|*[!A-Za-z0-9._-]*) fail 2 "not a deployment id: $1" ;; esac
+    require_migrated
+    cleanup
     ud_dirs deployments | grep -qx -- "$1" || die "no deployment $1 on userdata"
     state_open_rw
     cur=$(gs_kv "$S/deploy" current)
@@ -372,9 +381,7 @@ do_select() {
 cmd_select() { do_select "$ARG"; }
 
 cmd_rollback() {
-    system_open || die "cannot mount $SYSTEM_DEV read-only"
-    format_check
-    [ "$FMT" = none ] && die "the system partition is not migrated (no state/)"
+    require_migrated
     prev=$(gs_kv "$SYS_DIR/state/deploy" previous)
     cleanup
     [ -n "$prev" ] || die "there is no previous deployment"
