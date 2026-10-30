@@ -274,7 +274,7 @@ AUTOTEST=0
 IMG_ID=$(sed -n 's/.*glassine[._]img=\([0-9a-f]*\).*/\1/p' "$CMDF")
 if [ $DEFAULT = 0 ] && [ -n "$IMG_ID" ] && [ "$ROOT_LAYOUT" = deployments ]; then
     # the pending record is inside a deployment on userdata; reading it would
-    # come before the hibernation step (test slot paused since A30 anyway)
+    # come before the hibernation step (and the deployments layout has no test slot)
     log "image $IMG_ID: no staged-image test boot in the deployments layout"
 elif [ $DEFAULT = 0 ] && [ -n "$IMG_ID" ]; then
     P=$(find_root)

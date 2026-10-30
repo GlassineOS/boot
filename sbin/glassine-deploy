@@ -533,7 +533,8 @@ do_switch() {
 }
 
 # switch: the shutdown hook's step (after services stop; the hook decides
-# whether this shutdown may switch: started by the user, battery, A25)
+# whether this shutdown may switch: started by the user, on the charger or
+# with enough battery; docs/deployments.md)
 cmd_switch() {
     state_open_rw
     [ -n "$(gs_kv "$S/deploy" staged)" ] || { echo "glassine-deploy: nothing staged"; return 0; }

@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-or-later
-# glassine-switch-hook: the shutdown switch (A22, A25). A staged deployment
+# glassine-switch-hook: the shutdown switch (docs/deployments.md). A staged deployment
 # (a reset, later an update) is carried and selected only at a shutdown or
 # reboot that the user started, with the charger connected or enough battery;
 # otherwise it stays staged for the next one. Runs from the OpenRC shutdown

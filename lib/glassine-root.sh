@@ -20,9 +20,9 @@
 GR_RW_DIRS='etc var usr/local opt'
 
 # gr_pick STATEDIR: the deployment to boot, and the state update that goes with
-# it (interim, until the loader does it, A14): a candidate with tries left uses
-# one; a candidate with none left is failed (state failed=<id>) and current
-# boots; no current: previous. Prints the id (empty: nothing to boot). Writes
+# it (done here in the initramfs until a boot loader takes over the try counter,
+# docs/deployments.md): a candidate with tries left uses one; a candidate with
+# none left is failed (state failed=<id>) and current boots; no current: previous. Prints the id (empty: nothing to boot). Writes
 # state/deploy, so the caller has the system partition read-write and locked.
 gr_pick() {
     _gr_s=$1/deploy
