@@ -298,6 +298,7 @@ cmd_status() {
         out previous "$(gs_kv "$S/deploy" previous)"
         out candidate "$(gs_kv "$S/deploy" candidate)"
         out staged "$(gs_kv "$S/deploy" staged)"
+        out failed "$(gs_kv "$S/deploy" failed)"
         out tries "$(gs_kv "$S/deploy" tries)"
         out kernel_current "$(gs_kv "$S/kernel" current)"
         out kernel_previous "$(gs_kv "$S/kernel" previous)"
@@ -338,13 +339,16 @@ cmd_list() {
         if [ "$id" = "$cur" ]; then st=current
         elif [ "$id" = "$cand" ]; then st=candidate
         elif [ "$id" = "$staged" ]; then st=staged
-        elif [ "$id" = "$prev" ]; then st=previous
         elif [ "$(meta_kv "$m" failed)" = 1 ] || [ "$id" = "$failed" ]; then st=failed
+        elif [ "$id" = "$prev" ]; then st=previous
         else st=kept
         fi
         if [ "$PORC" = 1 ]; then
             out type deployment; out id "$id"; out state "$st"
-            out base "$(meta_kv "$m" base)"; out kernel "$(meta_kv "$m" kernel)"
+            b=$(meta_kv "$m" base) bp=''
+            # base_present: is the deployment's base on this system partition
+            if [ -n "$b" ] && [ -n "$SYS_DIR" ]; then bp=no; [ -d "$SYS_DIR/bases/$b" ] && bp=yes; fi
+            out base "$b"; out base_present "$bp"; out kernel "$(meta_kv "$m" kernel)"
             out created "$(meta_kv "$m" created)"; out size_kib "$(ud_size_kib "deployments/$id")"
             emit
         else
