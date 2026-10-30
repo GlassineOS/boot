@@ -226,7 +226,8 @@ ok "invalidate --yes (unmounted, raw): hibernated=no" "[ \"\$(st hibernated)\" =
 debugfs -w -R "mkdir /$P/deployments" $W/userdata.img 2>/dev/null
 for d in d1 d2; do debugfs -w -R "mkdir /$P/deployments/$d" $W/userdata.img 2>/dev/null; debugfs -w -R "write $U/deployments/$d/meta /$P/deployments/$d/meta" $W/userdata.img >/dev/null 2>&1; done
 ok "list (debugfs): 2 records, meta read, no size" "[ \$($G list --porcelain | grep -c '^type=deployment	') = 2 ] && [ \"\$(lst d2 base)\" = v3.22.2 ] && [ -z \"\$(lst d2 size_kib)\" ]"
-ok "select on an ext4 (unmigrated) system: exit 1" "$G select d1 2>/dev/null; [ \$? = 1 ]"
+ok "select on an ext4 (unmigrated) system: exit 1, says not migrated" "$G select d1 2>$W/err; [ \$? = 1 ] && grep -q 'not migrated' $W/err"
+ok "select an unknown id on an unmigrated system: says not migrated" "$G select d9 2>$W/err; [ \$? = 1 ] && grep -q 'not migrated' $W/err"
 
 echo "$fails failed"
 [ $fails = 0 ]
