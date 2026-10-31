@@ -4,8 +4,8 @@
 #                    (unchanged, plus a test shim that loads the virt kernel's
 #                    modules first), the base tree (Alpine + OpenRC + this
 #                    repository installed) and the modules tree, as tar files
-#   build.sh disk    privileged native container (btrfs ioctls don't pass
-#                    arm64 user emulation): a GPT disk with a btrfs "system"
+#   build.sh disk    privileged container of the host's own architecture
+#                    (btrfs ioctls don't pass user emulation): a GPT disk with a btrfs "system"
 #                    partition (base b1, modules subvolume, state/) and an ext4
 #                    "userdata" partition (deployment d1)
 # Output in $OUT: Image, initramfs.cpio.gz, disk.img.
@@ -110,7 +110,7 @@ fi
 # --- the system partition (disk step) --------------------------------------------
 KREL=$(cat $OUT/krel)
 truncate -s 1400M $W/sys.img; mkfs.btrfs -q -L system $W/sys.img
-mkdir -p $W/sys && mount -o loop $W/sys.img $W/sys
+mkdir -p $W/sys && mount -t btrfs -o loop $W/sys.img $W/sys
 mkdir -p $W/sys/bases $W/sys/modules $W/sys/state
 btrfs -q subvolume create $W/sys/bases/b1
 tar -C $W/sys/bases/b1 --numeric-owner --xattrs -xf $OUT/base.tar
@@ -124,7 +124,7 @@ umount $W/sys
 
 # --- userdata -----------------------------------------------------------------
 truncate -s 900M $W/ud.img; mke2fs -q -F -t ext4 -b 4096 -L userdata $W/ud.img
-mkdir -p $W/ud && mount -o loop $W/ud.img $W/ud
+mkdir -p $W/ud && mount -t ext4 -o loop $W/ud.img $W/ud
 D=$W/ud/media/glassine/deployments/d1; mkdir -p $D/build $D/switch $D/work
 printf 'base=b1\nkind=install\ncreated=qtest\n' > $D/meta
 mkdir -p $W/ud/qtest && echo 0 > $W/ud/qtest/stage

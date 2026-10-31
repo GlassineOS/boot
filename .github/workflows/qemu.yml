@@ -1,0 +1,32 @@
+name: qemu
+# The end-to-end boot test (test/qemu): four emulated boots, about half an hour.
+# Runs when the boot path changes, weekly, and by hand.
+on:
+  pull_request:
+    paths: [initramfs/**, lib/**, sbin/**, openrc/**, build-initramfs.sh, test/qemu/**, .github/workflows/qemu.yml]
+  push:
+    branches: [main]
+    paths: [initramfs/**, lib/**, sbin/**, openrc/**, build-initramfs.sh, test/qemu/**, .github/workflows/qemu.yml]
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: qemu-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  qemu:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: four boots of the deployments layout
+        run: sh test/qemu/test.sh "$RUNNER_TEMP/qemu"
+      - name: boot logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qemu-logs
+          path: ${{ runner.temp }}/qemu/boot*.log
+          if-no-files-found: ignore
