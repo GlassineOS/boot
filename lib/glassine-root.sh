@@ -211,6 +211,7 @@ gr_resume() {
 # userdata (UDDEV empty or not mountable) or any deployment: bare, on the
 # current deployment's base or else the last base by name. A state format
 # newer than this code, or a held lock: the state is read, never written.
+# A hibernate guard left on userdata (the image was invalidated) is removed.
 # Sets GR_BOOTED (the id, or bare:<base>). 1 = nothing bootable, nothing left
 # mounted.
 gr_boot() {
@@ -225,6 +226,8 @@ gr_boot() {
         e2fsck -p "$2" >/dev/null 2>&1; _gr_rc=$?
         [ $_gr_rc -lt 4 ] || gr_log "e2fsck -p $2: exit $_gr_rc (mounting anyway)"
         if mkdir -p "$_gr_um" && mount -t ext4 -o rw,noatime "$2" "$_gr_um"; then _gr_ud=$_gr_um/$3
+            # gr_resume left no image: a guard still here belongs to none
+            rm -f "$_gr_ud/swap/hibernate.guard"
         else gr_log "userdata does not mount: bare boot"; fi
     fi
     _gr_st=$_gr_sm/state/deploy

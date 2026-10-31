@@ -181,13 +181,19 @@ Keys may be added within a version, so readers ignore keys they don't know.
 
 ```
 glassine-deploy 1
-type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previous=…	candidate=…	staged=…	tries=…	kernel_current=…	kernel_previous=…	hibernated=no	userdata_prefix=media/glassine	twrp_keep=yes	swapfile=…	guard=…
+type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previous=…	candidate=…	staged=…	failed=…	tries=…	kernel_current=…	kernel_previous=…	hibernated=no	userdata_prefix=media/glassine	twrp_keep=yes	swapfile=…	guard=…
 ```
 
 ```
 glassine-deploy 1
-type=deployment	id=…	state=current	base=…	kernel=…	created=…	size_kib=…
+type=deployment	id=…	state=current	base=…	base_present=yes	kernel=…	created=…	size_kib=…
 ```
+
+`state` is one of current, candidate, staged, failed, previous, kept (the first that
+applies, so a failed deployment that is also previous shows failed). `base_present` is
+`yes` when the deployment's base is a subvolume under the system partition's `bases/`,
+`no` when it is not, empty when the system partition is not readable or the meta names
+no base. `status`'s `failed` is the last deployment that ran out of tries.
 
 ### Exit codes
 

@@ -1,5 +1,11 @@
 #!/bin/sh
 set -u
+# Own PID namespace: the hibernate step finds the watchdog daemon by name, so on a
+# device (or any system with a watchdog daemon) it would stop and restart the real one.
+if [ -z "${GLASSINE_TEST_PIDNS:-}" ]; then
+    command -v unshare >/dev/null || { echo "FAIL unshare is needed (own PID namespace)"; exit 1; }
+    GLASSINE_TEST_PIDNS=1 exec unshare -fp --mount-proc sh "$0" "$@"
+fi
 W=/w; mkdir -p $W && mount -t tmpfs -o size=640m tmpfs $W
 G=/p/sbin/glassine-deploy
 . /p/lib/glassine-state.sh
@@ -309,7 +315,9 @@ MM=$(stat -L -c '%t %T' $UDEV); MM=$(printf '%d:%d' 0x${MM% *} 0x${MM#* })
 ok "resume step, every check passes: resume_offset + resume written, watchdog stopped around it" "res resume && [ \"\$(cat $GR_SYSPOWER/resume_offset)\" = $SWB ] && [ \"\$(cat $GR_SYSPOWER/resume)\" = $MM ] && [ \"\$(cat $WD | tr '\n' ' ')\" = 'stop start ' ]"
 ok "resume step: the kernel returned (refused image): invalidated" "[ \"\$(sig)\" = SWAPSPACE2 ] && grep -q 'did not resume it' $W/rlog"
 
+ok "the invalidated image's guard is still on userdata before the boot" "debugfs -R 'stat /$P/swap/hibernate.guard' $UDEV 2>/dev/null | grep -q '^Inode:'"
 ok "gr_boot: the current deployment, system + userdata mounted, state locked" "gr_boot $SD $UDEV $P $R 7.3.0 2>$W/blog && [ \"\$GR_BOOTED\" = $CUR ] && mountpoint -q $R.sys && mountpoint -q $R.ud && ro $R/usr/bin/x && ! flock -n $R.sys/state/.lock true"
+ok "gr_boot: the stale hibernate guard removed" "[ ! -e $R.ud/$P/swap/hibernate.guard ]"
 ok "gr_carry: mounts under /run/glassine, booted recorded, lock released" "gr_carry $R && mountpoint -q $R/run/glassine/system && mountpoint -q $R/run/glassine/userdata && mountpoint -q $R/run/glassine/root && ! mountpoint -q $R.sys && [ \"\$(cat $R/run/glassine/booted)\" = $CUR ] && flock -n $R/run/glassine/system/state/.lock true"
 ok "after the carry: / still read-only, /etc writable" "ro $R/usr/bin/x && echo c > $R/etc/carried && [ -e $R/run/glassine/userdata/$P/deployments/$CUR/switch/etc/carried ]"
 sed -e "s|^SYSTEM_MNT=.*|SYSTEM_MNT=$R/run/glassine/system|" -e "s|^USERDATA_MNT=.*|USERDATA_MNT=$R/run/glassine/userdata|" -e "s|^RUN_DIR=.*|RUN_DIR=$R/run/glassine|" $W/deploy.conf > $W/deploy3.conf
