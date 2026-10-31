@@ -26,6 +26,7 @@ install: glassine-reboot
 	install -Dm755 openrc/glassine-deploy-accept $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-deploy-accept
 	install -Dm644 lib/glassine-state.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-state.sh
 	install -Dm644 lib/glassine-root.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-root.sh
+	install -Dm644 lib/glassine-accounts.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-accounts.sh
 	install -Dm644 conf/deploy.conf.example $(DESTDIR)$(PREFIX)/share/glassine-boot/deploy.conf.example
 	install -Dm755 sbin/glassine-reboot-clean $(DESTDIR)$(PREFIX)/sbin/glassine-reboot-clean
 	install -Dm755 glassine-reboot $(DESTDIR)$(PREFIX)/sbin/glassine-reboot
