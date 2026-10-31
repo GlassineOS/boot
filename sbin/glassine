@@ -1,0 +1,131 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine: the lock of a deployment's root, and the apk wrapper.
+#
+#   glassine status
+#   glassine unlock
+#   glassine lock
+#   glassine apk [APK ARGUMENTS…]
+#
+# In a system booted from a deployment (/run/glassine/booted), / is read-only;
+# /etc, /var, /usr/local and /opt stay writable. unlock makes / writable until
+# lock or the next boot (arbitrary edits: they stay in this deployment but are
+# not carried to a new base). apk runs apk-tools: a command that changes
+# packages (add, del, fix, upgrade, cache) gets / writable for its run only,
+# then / is locked again (unless unlocked by hand). Packages are recorded
+# without bookkeeping: glassine-deploy packages derives them from the world
+# and the installed database against the base's, and a later base replays
+# them; manual edits are not replayed. The first change asks once to
+# acknowledge that (GLASSINE_APK_ACK=1 for scripts).
+#
+# The package installs this script as /usr/sbin/apk too (before /sbin/apk on
+# PATH); called as "apk" it is "glassine apk". On a system not booted from a
+# deployment it runs apk-tools unchanged.
+#
+# Exit codes: apk's own for apk; 0 done, 1 error, 2 usage, 6 busy (another
+# package change holds the lock).
+set -u
+CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+RUN_DIR=/run/glassine
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+ROOT=${GLASSINE_ROOT:-/}
+APK=${GLASSINE_APK:-/sbin/apk}
+ACK=${GLASSINE_APK_ACK_FILE:-$ROOT/etc/glassine/apk-acknowledged}
+UNLOCKED=$RUN_DIR/unlocked
+
+say() { echo "glassine: $*" >&2; }
+die() { say "$*"; exit 1; }
+usage() { sed -n 's/^#   //p' "$0" >&2; exit 2; }
+
+booted() { [ -e "$RUN_DIR/booted" ]; }
+
+# root_rw: is the / mount read-write (its own mount flags in /proc/mounts)
+root_rw() {
+    awk -v r="$ROOT" '$2 == r { o = $4 } END { exit !(o ~ /^rw(,|$)/) }' "${GLASSINE_MOUNTS:-/proc/mounts}"
+}
+unlock() { mount -o remount,bind,rw "$ROOT"; }
+lock() { mount -o remount,bind,ro "$ROOT"; }
+
+cmd_status() {
+    if ! booted; then echo "layout: plain (not booted from a deployment)"; return 0; fi
+    echo "deployment: $(cat "$RUN_DIR/booted")"
+    if root_rw; then
+        [ -e "$UNLOCKED" ] && echo "root: unlocked (glassine lock locks it)" || echo "root: writable (a package change is running, or one was cut off)"
+    else
+        echo "root: locked"
+    fi
+}
+
+cmd_unlock() {
+    booted || die "not booted from a deployment: / is not locked"
+    mkdir -p "$RUN_DIR" && : > "$UNLOCKED" || die "cannot create $UNLOCKED"
+    root_rw || unlock || { rm -f "$UNLOCKED"; die "cannot make / writable"; }
+    say "/ is writable until 'glassine lock' or the next boot; these edits are not carried to a new base"
+}
+
+cmd_lock() {
+    booted || die "not booted from a deployment: / is not locked"
+    rm -f "$UNLOCKED"
+    root_rw || { say "/ is locked"; return 0; }
+    lock || die "cannot make / read-only (a file open for writing under /?); it stays writable"
+    say "/ is locked"
+}
+
+# changes: does this apk command line change packages (an applet in it)
+changes() {
+    for _a in "$@"; do
+        case "$_a" in add|del|fix|upgrade|cache) return 0 ;; esac
+    done
+    return 1
+}
+
+acknowledge() {
+    [ -e "$ACK" ] && return 0
+    if [ "${GLASSINE_APK_ACK:-}" != 1 ]; then
+        [ -t 0 ] || die "packages you add or remove are replayed on a new base, manual edits of the system are not; to go on, run this once on a terminal or set GLASSINE_APK_ACK=1"
+        printf '%s\n%s ' "Packages you add or remove are recorded and replayed on a new base; manual edits of the system (glassine unlock) are not." \
+            "Go on? [y/N]" >&2
+        read -r _r || _r=''
+        case "$_r" in y|Y|yes) ;; *) die cancelled ;; esac
+    fi
+    mkdir -p "${ACK%/*}" && : > "$ACK" || say "cannot record the acknowledgement in $ACK"
+}
+
+cmd_apk() {
+    booted && changes "$@" || exec "$APK" "$@"
+    acknowledge
+    mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
+    exec 8>>"$RUN_DIR/apk.lock" || die "cannot open $RUN_DIR/apk.lock"
+    flock -n 8 || { say "waiting for another package change"; flock 8; } || exit 6
+    opened=''
+    if ! root_rw; then
+        unlock || die "cannot make / writable"
+        opened=1
+    fi
+    trap 'relock; exit 130' INT TERM HUP
+    "$APK" "$@"; rc=$?
+    relock
+    exit $rc
+}
+
+# relock: back to read-only, unless unlocked by hand in the meantime
+relock() {
+    [ -n "$opened" ] || return 0
+    opened=''
+    [ -e "$UNLOCKED" ] && return 0
+    lock || say "cannot make / read-only again (a file open for writing under /?); run 'glassine lock'"
+}
+
+case "${0##*/}" in
+apk) cmd_apk "$@" ;;
+esac
+[ $# -ge 1 ] || usage
+c=$1; shift
+case "$c:$#" in
+status:0) cmd_status ;;
+unlock:0) cmd_unlock ;;
+lock:0) cmd_lock ;;
+apk:*) cmd_apk "$@" ;;
+*) usage ;;
+esac

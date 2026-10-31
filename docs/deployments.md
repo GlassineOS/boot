@@ -142,6 +142,7 @@ glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation]
 glassine-deploy stage BASE [--now] [--yes] [--discard-hibernation]
 glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
 glassine-deploy bases [--porcelain]
+glassine-deploy packages [ID] [--porcelain]
 glassine-deploy switch [--discard-hibernation]
 glassine-deploy accept ID
 ```
@@ -156,6 +157,7 @@ glassine-deploy accept ID
 | `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Home is never touched. |
 | `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. |
 | `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. The only verb that needs btrfs-progs (and zstd for `.zst`). |
+| `packages [ID]` | how a deployment's packages (current by default) differ from its base's, derived each time (no bookkeeping): world entries `added` and `removed` (constraints and tags as written), packages installed in another version: `raised`/`lowered` (`apk version -t`; `changed` where apk is missing). A deployment that is not running needs userdata mounted. The replay input of a later base. |
 | `bases` | one record per subvolume under `bases/` and `modules/`, with the deployments whose meta names it |
 | `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), merges the accounts (below), syncs, then sets `candidate=<id> tries=2 staged=`. Interrupted = nothing selected, redone in full next time. |
 | `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous. Refuses a non-candidate; accepting current is a no-op. |
@@ -190,6 +192,26 @@ exist afterwards, `subuid`/`subgid` ranges by name. They replace any carried cop
 owner, modes kept. Accounts the new base has no row for are not carried; the switch
 lists them.
 
+## The root lock and the apk wrapper: `glassine`
+
+```
+glassine status | unlock | lock
+glassine apk [APK ARGUMENTS…]      (also installed as /usr/sbin/apk)
+```
+
+In a system booted from a deployment (`/run/glassine/booted`), `/` is a read-only
+bind; `/etc`, `/var`, `/usr/local`, `/opt` stay writable. `unlock` makes `/` writable
+until `lock` or the next boot (marker `RUN_DIR/unlocked`); such edits stay in the
+deployment but are not carried to a new base. `glassine apk` runs apk-tools
+(`GLASSINE_APK`, default `/sbin/apk`, which `/usr/sbin/apk` precedes on PATH): a
+command line with `add`, `del`, `fix`, `upgrade` or `cache` takes `RUN_DIR/apk.lock`
+(a second one waits), makes `/` writable for that run and read-only again after it
+(left writable when unlocked by hand). The first change asks once to acknowledge that
+packages are replayed and manual edits are not (`/etc/glassine/apk-acknowledged`;
+`GLASSINE_APK_ACK=1` for scripts, refused without a terminal otherwise). Other apk
+commands, and every command outside a deployment, run apk-tools unchanged. Programs
+that link libapk themselves (e.g. a package-manager daemon) do not go through it.
+
 ### Porcelain (format 1)
 
 `--porcelain` prints `glassine-deploy 1` on the first line, then one record per line.
@@ -210,6 +232,12 @@ type=deployment	id=…	state=current	base=…	base_present=yes	kernel=…	create
 glassine-deploy 1
 type=base	kind=base	name=…	used_by=<id>,<id>
 type=base	kind=module	name=7.3.0-…	used_by=
+```
+
+```
+glassine-deploy 1
+type=package	change=added	entry=retroarch
+type=package	change=raised	name=musl	version=1.2.5-r11	base_version=1.2.5-r10
 ```
 
 `state` is one of current, candidate, staged, failed, previous, kept (the first that
