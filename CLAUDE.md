@@ -13,3 +13,7 @@ Boot initramfs and on-device kernel update tools (see `README.md`). Every change
 - Specs: Spec Kit 1.1.0 with the org preset (`.specify/`, setup in
   `.glassine/org/SPECS.md`); features go in `specs/###-name/`. The repository principles
   are the last section of `.specify/memory/constitution.md`.
+- Organization guidance for coding agents, including the project knowledge search
+  (run `git submodule update --init` if the import below is missing):
+
+@.glassine/org/AGENTS.md
