@@ -236,5 +236,47 @@ ok "list (debugfs): 2 records, meta read, no size" "[ \$($G list --porcelain | g
 ok "select on an ext4 (unmigrated) system: exit 1, says not migrated" "$G select d1 2>$W/err; [ \$? = 1 ] && grep -q 'not migrated' $W/err"
 ok "select an unknown id on an unmigrated system: says not migrated" "$G select d9 2>$W/err; [ \$? = 1 ] && grep -q 'not migrated' $W/err"
 
+# --- the account merge (lib/glassine-accounts.sh) -----------------------------
+. /p/lib/glassine-accounts.sh
+AO=$W/acct/old AN=$W/acct/new AT=$W/acct/out; mkdir -p $AO $AN $AT
+printf 'root:x:0:0:root:/root:/bin/sh\nmessagebus:x:100:101::/:/sbin/nologin\npolkitd:x:101:102::/:/sbin/nologin\navahi:x:102:103::/:/sbin/nologin\nuser:x:1000:1000::/home/user:/bin/ash\nguest:x:1001:1001::/home/guest:/bin/ash\n' > $AO/passwd
+printf 'root:x:0:root\nwheel:x:10:root,user\nvideo:x:27:user,avahi\nmessagebus:x:101:\npolkitd:x:102:\navahi:x:103:\nuser:x:1000:\nguest:x:1001:\n' > $AO/group
+printf 'root:$6$rootpw:1::::::\nuser:$6$userpw:1::::::\nguest:$6$guestpw:1::::::\nmessagebus:!old:1::::::\n' > $AO/shadow
+printf 'user:100000:65536\n' > $AO/subuid
+printf 'root:x:0:0:root:/root:/bin/sh\nmessagebus:x:101:102::/:/sbin/nologin\npolkitd:x:100:101::/:/sbin/nologin\n' > $AN/passwd
+printf 'root:x:0:root\nwheel:x:10:root\nvideo:x:27\nmessagebus:x:102:\npolkitd:x:101:\nsambashare:x:1001:\nshadow:x:42:\n' > $AN/group
+printf 'root:*:1::::::\nmessagebus:!:1::::::\npolkitd:!:1::::::\n' > $AN/shadow; chown 0:42 $AN/shadow; chmod 640 $AN/shadow
+echo 'carried:x:1:1::/:/bin/false' > $AT/passwd
+ga_merge $AO $AN $AT $W/acct/map > $W/acct/report
+pw() { awk -F: -v n="$1" '$1 == n' $AT/passwd; }
+gr() { awk -F: -v n="$1" '$1 == n' $AT/group; }
+sh_() { awk -F: -v n="$1" '$1 == n { print $2 }' $AT/shadow; }
+ok "merge: the new base's system accounts, as the base has them" "[ \"\$(pw messagebus)\" = 'messagebus:x:101:102::/:/sbin/nologin' ] && [ \"\$(pw polkitd)\" = 'polkitd:x:100:101::/:/sbin/nologin' ]"
+ok "merge: user kept with its uid and gid" "[ \"\$(pw user)\" = 'user:x:1000:1000::/home/user:/bin/ash' ] && [ \"\$(gr user)\" = 'user:x:1000:' ]"
+ok "merge: a gid taken in the new base: the next free one, the primary group follows" "[ \"\$(gr guest)\" = 'guest:x:1002:' ] && [ \"\$(pw guest)\" = 'guest:x:1001:1002::/home/guest:/bin/ash' ]"
+ok "merge: memberships carried for users that exist (avahi is gone)" "[ \"\$(gr wheel)\" = 'wheel:x:10:root,user' ] && [ \"\$(gr video)\" = 'video:x:27:user' ]"
+ok "merge: a system account the new base lacks is not carried, and reported" "[ -z \"\$(pw avahi)\" ] && [ -z \"\$(gr avahi)\" ] && grep -q 'not carried.* avahi' $W/acct/report"
+ok "merge: the carried passwd copy is replaced" "! grep -q '^carried:' $AT/passwd"
+ok "merge: passwords by name (old first, else the base's)" "[ \"\$(sh_ root)\" = '\$6\$rootpw' ] && [ \"\$(sh_ user)\" = '\$6\$userpw' ] && [ \"\$(sh_ messagebus)\" = '!old' ] && [ \"\$(sh_ polkitd)\" = '!' ] && [ \$(wc -l < $AT/shadow) = \$(wc -l < $AT/passwd) ]"
+ok "merge: shadow keeps the base's owner and mode, passwd/group 0644 root" "[ \"\$(stat -c '%u:%g %a' $AT/shadow)\" = '0:42 640' ] && [ \"\$(stat -c '%u:%g %a' $AT/passwd)\" = '0:0 644' ] && [ \"\$(stat -c '%u:%g %a' $AT/group)\" = '0:0 644' ]"
+ok "merge: subuid carried" "[ \"\$(cat $AT/subuid)\" = 'user:100000:65536' ] && [ ! -e $AT/subgid ]"
+ok "merge: the ID map (swapped system IDs, the moved group)" "[ \"\$(tr '\n' ,  < $W/acct/map)\" = 'g 1001 1002,g 101 102,g 102 101,u 100 101,u 101 100,' ]"
+ok "merge: no temp files left" "[ -z \"\$(ls $AT | grep '\.ga')\" ]"
+R2=$W/acct/tree; mkdir -p $R2/d
+echo a > $R2/d/mb; chown 100:101 $R2/d/mb
+echo b > $R2/d/pk; chown 101:102 $R2/d/pk
+echo c > $R2/d/us; chown 1000:1000 $R2/d/us
+echo d > "$R2/d/with space"; chown 1001:1001 "$R2/d/with space"
+echo e > $R2/d/suid; chown 100:101 $R2/d/suid; chmod 4755 $R2/d/suid
+ln -s mb $R2/d/link; chown -h 101:102 $R2/d/link
+ga_remap $W/acct/map $R2 > $W/acct/rep2
+own() { stat -c %u:%g "$R2/d/$1"; }
+ok "remap: by the map in one pass (swapped IDs stay right)" "[ \$(own mb) = 101:102 ] && [ \$(own pk) = 100:101 ] && [ \$(own us) = 1000:1000 ]"
+ok "remap: names with spaces, links themselves" "[ \"\$(own 'with space')\" = 1001:1002 ] && [ \$(own link) = 100:101 ] && [ \$(own mb) = 101:102 ]"
+ok "remap: setuid kept" "[ \$(stat -c %a $R2/d/suid) = 4755 ] && [ \$(own suid) = 101:102 ]"
+ok "remap: count" "grep -q 'owners remapped: 5' $W/acct/rep2"
+ok "remap with an empty map: nothing" ": > $W/acct/empty && ga_remap $W/acct/empty $R2 | grep -q 'remapped: 0'"
+ok "merge: a base without passwd: refused" "! ga_merge $AO $W/acct/none $W/acct/o2 $W/acct/m2 2>/dev/null"
+
 echo "$fails failed"
 [ $fails = 0 ]

@@ -7,4 +7,4 @@
 set -eu
 D=$(cd "$(dirname "$0")" && pwd)
 P=$(cd "$D/../.." && pwd)
-docker run --rm --privileged -v "$P":/p:ro alpine:3.22 sh -c 'apk add -q btrfs-progs e2fsprogs e2fsprogs-extra >/dev/null 2>&1; sh /p/test/root/inner.sh'
+docker run --rm --privileged -v "$P":/p:ro alpine:3.22 sh -c 'apk add -q btrfs-progs e2fsprogs e2fsprogs-extra zstd >/dev/null 2>&1; sh /p/test/root/inner.sh'

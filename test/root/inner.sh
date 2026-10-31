@@ -125,7 +125,8 @@ echo leftover > $NS/leftover; cp $S/state/deploy $W/stS
 ok "an interrupted switch (cut copy): exit 1, still staged, nothing selected, marker gone, nothing mounted" "PATH=$W/shim:\$PATH $G switch 2>/dev/null; [ \$? = 1 ] && cmp -s $S/state/deploy $W/stS && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
 : > $W/run/switching
 ok "switch: a stale marker does not block it; redone from scratch; selected with 2 tries" "$G switch >/dev/null 2>&1 && [ \"\$(st candidate)\" = $N ] && [ \"\$(st tries)\" = 2 ] && [ -z \"\$(st staged)\" ] && [ ! -e $NS/leftover ] && [ ! -e $W/run/switching ]"
-ok "switch carries the migrate list (shipped + the user's), with the change made after the reset" "[ \"\$(cat $NS/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $NS/etc/hostname)\" = myhost ] && [ -e $NS/var/lib/bluetooth/k ] && [ -e $NS/etc/wireguard/wg0.conf ] && grep -q ash $NS/etc/passwd"
+ok "switch carries the migrate list (shipped + the user's), with the change made after the reset" "[ \"\$(cat $NS/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $NS/etc/hostname)\" = myhost ] && [ -e $NS/var/lib/bluetooth/k ] && [ -e $NS/etc/wireguard/wg0.conf ]"
+ok "switch: the carried passwd is replaced by the merge (root from the base)" "grep -qx 'root:x:0:0:root:/root:/bin/sh' $NS/etc/passwd && [ -e $NS/etc/shadow ]"
 ok "switch keeps modes (0700 wireguard)" "[ \$(stat -c %a $NS/etc/wireguard) = 700 ]"
 ok "switch drops the rest (edits, packages, /usr/local, whiteouts)" "[ ! -e $NS/etc/junk ] && [ ! -e $NS/usr/bin/new ] && [ ! -e $NS/usr/local/x ] && [ ! -e $NS/etc/motd ] && [ ! -e $NS/escape ]"
 ok "switch left nothing mounted" "! grep -q '$W/run' /proc/mounts"
@@ -174,6 +175,60 @@ dd if=/dev/zero of=$W/udmnt/fill bs=1M count=$(( $(df -Pk $W/udmnt | awk 'NR==2{
 ok "switch, not enough space: exit 5, stays staged, nothing selected" "$G switch 2>/dev/null; [ \$? = 5 ] && cmp -s $S/state/deploy $W/st2 && [ \"\$(st staged)\" = \$A3 ]"
 rm -f $W/udmnt/fill $U/deployments/$N/switch/var/lib/bluetooth/big
 gs_update $S/state/deploy staged=; rm -rf $U/deployments/$A3
+
+# --- receive, bases, stage: a base update ------------------------------------------
+# the new base b2 on a scratch btrfs (the build host's), sent as streams
+truncate -s 128M $W/src.img; mkfs.btrfs -q $W/src.img; loop $W/src.img; SRC=$LOOP
+mkdir -p $W/src && mount -t btrfs "$SRC" $W/src
+btrfs -q subvolume create $W/src/b2; B2=$W/src/b2
+mkdir -p $B2/etc/apk $B2/etc/eink $B2/usr/bin $B2/usr/share/glassine $B2/var/lib
+cp $B/usr/share/glassine/migrate.list $B2/usr/share/glassine/; echo glassine > $B2/etc/hostname
+echo two > $B2/etc/motd; echo '@stagger_ctl=4' > $B2/etc/eink/eink.conf
+printf 'root:x:0:0:root:/root:/bin/sh\nbluetooth:x:101:101::/:/sbin/nologin\n' > $B2/etc/passwd
+printf 'root:x:0:root\nwheel:x:10:root\nbluetooth:x:101:\nshadow:x:42:\n' > $B2/etc/group
+printf 'root:*:1::::::\nbluetooth:!:1::::::\n' > $B2/etc/shadow; chown 0:42 $B2/etc/shadow; chmod 640 $B2/etc/shadow
+btrfs property set -ts $B2 ro true
+btrfs -q subvolume snapshot $B2 $W/src/b3; echo three > $W/src/b3/etc/motd; btrfs property set -ts $W/src/b3 ro true
+btrfs -q send -f $W/b2.stream $B2; zstd -q $W/b2.stream -o $W/b2.stream.zst
+btrfs -q send -f $W/b3.inc -p $B2 $W/src/b3
+btrfs -q send -f $W/two.stream $B2 $W/src/b3
+head -c 4096 $W/b2.stream > $W/cut.stream
+SHA2=$(sha256sum $W/b2.stream.zst | cut -d ' ' -f 1)
+# the current deployment: a user account, its group, a file the bluetooth daemon owns
+CUR=$(st current); NB=$(gs_kv $U/deployments/$CUR/meta base)
+gr_assemble $S $U $CUR $R && printf 'root:x:0:0:root:/root:/bin/sh\nbluetooth:x:100:100::/:/sbin/nologin\nuser:x:1000:1000::/home/user:/bin/ash\n' > $R/etc/passwd &&
+    printf 'root:x:0:root\nwheel:x:10:root,user\nbluetooth:x:100:\nuser:x:1000:\n' > $R/etc/group &&
+    printf 'root:$6$r:1::::::\nuser:$6$u:1::::::\n' > $R/etc/shadow && mkdir -p $R/var/lib/bluetooth/AA &&
+    echo key > $R/var/lib/bluetooth/AA/info && chown -R 100:100 $R/var/lib/bluetooth/AA && gr_umount $R
+noleft() { [ -z "$(btrfs subvolume list $S | grep -v ' path \(bases/b1\|modules/7.3.0\|bases/b2\|bases/b3\|modules/m9\|bases/bad\)$')" ]; }
+ok "receive: a wrong --sha256: refused before anything is written" "$G receive $W/b2.stream.zst --sha256 00 2>$W/err; [ \$? = 1 ] && grep -q 'expected 00' $W/err && [ ! -e $S/bases/b2 ] && noleft"
+ok "receive: a cut stream: exit 1, nothing kept" "$G receive $W/cut.stream 2>/dev/null; [ \$? = 1 ] && [ ! -e $S/bases/b2 ] && noleft"
+ok "receive: two subvolumes in one stream: exit 1, nothing kept" "$G receive $W/two.stream 2>/dev/null; [ \$? = 1 ] && [ ! -e $S/bases/b2 ] && [ ! -e $S/bases/b3 ] && noleft"
+ok "receive: .zst with the right --sha256: bases/b2, read-only, a received UUID" "$G receive $W/b2.stream.zst --sha256 $SHA2 >/dev/null && [ \"\$(btrfs property get -ts $S/bases/b2 ro)\" = ro=true ] && btrfs subvolume show $S/bases/b2 | grep -q 'Received UUID:[[:space:]]*[0-9a-f]' && [ \"\$(cat $S/bases/b2/etc/motd)\" = two ] && noleft"
+ok "receive: the same name again: exit 1, the first one kept" "$G receive $W/b2.stream 2>$W/err; [ \$? = 1 ] && [ \"\$(cat $S/bases/b2/etc/motd)\" = two ] && noleft"
+ok "receive: an incremental stream (stdin) onto the received base" "$G receive - < $W/b3.inc >/dev/null && [ \"\$(cat $S/bases/b3/etc/motd)\" = three ] && [ \"\$(btrfs property get -ts $S/bases/b3 ro)\" = ro=true ]"
+ok "receive --modules: into modules/" "btrfs -q subvolume snapshot -r $W/src/b3 $W/src/m9 && btrfs -q send $W/src/m9 | $G receive - --modules >/dev/null && [ -d $S/modules/m9 ] && [ ! -e $S/bases/m9 ]"
+ok "receive: --sha256 with stdin: usage" "$G receive - --sha256 00 </dev/null 2>/dev/null; [ \$? = 2 ]"
+ok "bases: each subvolume with its users" "$G bases --porcelain | grep -q \"kind=base	name=$NB	used_by=.*$CUR\" && $G bases --porcelain | grep -q 'kind=base	name=b2	used_by=$' && $G bases --porcelain | grep -q 'kind=module	name=m9'"
+ok "stage: an unknown base: exit 1, nothing staged" "$G stage nope --yes 2>$W/err; [ \$? = 1 ] && grep -q 'no base nope' $W/err && [ -z \"\$(st staged)\" ]"
+ok "stage: a bad name: exit 2" "$G stage ../b2 --yes 2>/dev/null; [ \$? = 2 ]"
+ok "stage --full: usage" "$G stage b2 --full --yes 2>/dev/null; [ \$? = 2 ] && [ -z \"\$(st staged)\" ]"
+ok "stage b2: staged, kind update, carry migrate, base b2" "$G stage b2 --yes >/dev/null && SB=\$(st staged) && grep -qx base=b2 $U/deployments/\$SB/meta && grep -qx kind=update $U/deployments/\$SB/meta && grep -qx carry=migrate $U/deployments/\$SB/meta && grep -qx from=$CUR $U/deployments/\$SB/meta && [ \"\$(st current)\" = $CUR ]"
+SB=$(st staged); SW=$U/deployments/$SB/switch
+ok "bases: the staged deployment uses b2" "$G bases --porcelain | grep -q 'name=b2	used_by=$SB'"
+ok "switch: the staged update is the candidate" "$G switch >$W/swout 2>&1 && [ \"\$(st candidate)\" = $SB ] && [ -z \"\$(st staged)\" ]"
+ok "switch: accounts merged (user + its password + wheel membership; bluetooth at the new base's ID)" "grep -qx 'user:x:1000:1000::/home/user:/bin/ash' $SW/etc/passwd && grep -qx 'bluetooth:x:101:101::/:/sbin/nologin' $SW/etc/passwd && grep -q '^user:\$6\$u:' $SW/etc/shadow && grep -qx 'wheel:x:10:root,user' $SW/etc/group && grep -qx 'user:x:1000:' $SW/etc/group"
+ok "switch: carried files follow the moved bluetooth ID" "[ \"\$(stat -c %u:%g $SW/var/lib/bluetooth/AA/info)\" = 101:101 ] && [ \"\$(stat -c %u:%g $SW/var/lib/bluetooth/AA)\" = 101:101 ]"
+ok "switch: reports the merge" "grep -q 'user user kept' $W/swout && grep -q 'uid 100 -> 101' $W/swout && [ ! -e $U/deployments/$SB/idmap ]"
+ok "the candidate's root: the new base with the carried settings" "gr_assemble $S $U $SB $R && [ \"\$(cat $R/etc/motd)\" = two ] && [ \"\$(cat $R/etc/hostname)\" = myhost ] && [ \"\$(cat $R/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $R/var/lib/bluetooth/AA/info)\" = key ] && grep -q '^user:' $R/etc/passwd"
+gr_umount $R
+# a base without /etc/passwd: the switch refuses, stays staged
+btrfs -q subvolume create $W/src/bad; mkdir $W/src/bad/etc; btrfs property set -ts $W/src/bad ro true
+btrfs -q send $W/src/bad | $G receive - >/dev/null
+ok "stage: a base without /etc/passwd: refused" "$G stage bad --yes 2>$W/err; [ \$? = 1 ] && grep -q 'no /etc/passwd' $W/err"
+gs_update $S/state/deploy candidate= tries=0; rm -rf $U/deployments/$SB
+for v in bases/b2 bases/b3 bases/bad modules/m9; do btrfs property set -fts $S/$v ro false 2>/dev/null; btrfs -q subvolume delete $S/$v; done
+umount $W/src
 
 # --- the hibernation gate on real mounts -------------------------------------------
 mkdir -p $U/swap; head -c 1048576 /dev/zero > $U/swap/hibernate; mkswap $U/swap/hibernate >/dev/null 2>&1
