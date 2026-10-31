@@ -14,6 +14,7 @@
 #   glassine-deploy stage BASE [--now] [--yes] [--discard-hibernation]
 #   glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
 #   glassine-deploy bases [--porcelain]
+#   glassine-deploy packages [ID] [--porcelain]
 #   glassine-deploy switch [--discard-hibernation]
 #   glassine-deploy accept ID
 #
@@ -24,7 +25,12 @@
 # a new deployment on the current one's base; the next switch fills it and
 # selects it. stage BASE does the same on another base (a base update);
 # receive puts a btrfs send stream (full or incremental, .zst by its name) under
-# bases/ (or modules/), read-only; bases lists them with their users. switch runs at shutdown (the hook's job, after services stop) or
+# bases/ (or modules/), read-only; bases lists them with their users.
+# packages lists how a deployment's packages differ from its base's (current
+# by default): added and removed world entries, packages installed in another
+# version (raised/lowered, by apk version -t when apk is there, else changed);
+# derived each time from the world and the installed database, no bookkeeping.
+# switch runs at shutdown (the hook's job, after services stop) or
 # at once with reset --now (the recovery): it starts the staged deployment's
 # switch layer afresh, carries the migrate list of the current deployment
 # (/usr/share/glassine/migrate.list + /etc/glassine/migrate.d/*.list) into it,
@@ -683,6 +689,56 @@ cmd_bases() {
     done
 }
 
+# pkg_db FILE: "name version" per package of an apk installed database
+pkg_db() { awk -F: '$1 == "P" { p = $2 } $1 == "V" && p != "" { print p " " $2; p = "" }' "$1" 2>/dev/null | sort; }
+# pkg_world FILE: the world entries, one per line, sorted
+pkg_world() { tr ' ' '\n' < "$1" 2>/dev/null | sed '/^$/d' | sort -u; }
+
+cmd_packages() {
+    require_migrated
+    id=$ARG; [ -n "$id" ] || id=$(gs_kv "$SYS_DIR/state/deploy" current)
+    valid_name "$id" || fail 2 "not a deployment id: $id"
+    base=$(meta_kv "$(ud_cat "deployments/$id/meta")" base)
+    [ -n "$base" ] || die "no deployment $id on userdata (or its meta names no base)"
+    bd=$SYS_DIR/bases/$base
+    [ -d "$bd" ] || die "deployment $id: base $base is missing"
+    # the deployment's merged root: the running one itself, else a read-only view
+    if [ "$(cat "$RUN_DIR/booted" 2>/dev/null)" = "$id" ]; then
+        view=${GLASSINE_DEPLOY_ROOT:-/}
+    else
+        ud_mounted || die "userdata is not mounted; packages of a deployment that is not running need it mounted"
+        TMP_VIEW=$RUN_DIR/view.$$
+        mkdir -p "$TMP_VIEW" && gr_merged_ro "$SYS_DIR" "$USERDATA_MNT/$USERDATA_PREFIX/deployments/$id" "$TMP_VIEW" ||
+            die "cannot open deployment $id read-only"
+        view=$TMP_VIEW
+    fi
+    t=${TMPDIR:-/tmp}/glassine-pkg.$$
+    mkdir -p "$t" || die "cannot create $t"
+    pkg_world "$bd/etc/apk/world" > "$t/bw"; pkg_world "$view/etc/apk/world" > "$t/vw"
+    pkg_db "$bd/lib/apk/db/installed" > "$t/bi"; pkg_db "$view/lib/apk/db/installed" > "$t/vi"
+    apk=${GLASSINE_DEPLOY_APK:-/sbin/apk}; [ -x "$apk" ] || apk=''
+    [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
+    awk 'f == 1 { b[$0] = 1; next } !($0 in b)' f=1 "$t/bw" f=2 "$t/vw" | while read -r e; do
+        if [ "$PORC" = 1 ]; then out type package; out change added; out entry "$e"; emit; else echo "added    $e"; fi
+    done
+    awk 'f == 1 { v[$0] = 1; next } !($0 in v)' f=1 "$t/vw" f=2 "$t/bw" | while read -r e; do
+        if [ "$PORC" = 1 ]; then out type package; out change removed; out entry "$e"; emit; else echo "removed  $e"; fi
+    done
+    awk 'f == 1 { b[$1] = $2; next } ($1 in b) && b[$1] != $2 { print $1, $2, b[$1] }' f=1 "$t/bi" f=2 "$t/vi" |
+    while read -r n v bv; do
+        c=changed
+        if [ -n "$apk" ]; then
+            case $("$apk" version -t "$v" "$bv" 2>/dev/null) in '>') c=raised ;; '<') c=lowered ;; esac
+        fi
+        if [ "$PORC" = 1 ]; then
+            out type package; out change "$c"; out name "$n"; out version "$v"; out base_version "$bv"; emit
+        else
+            printf '%-8s %s %s (base %s)\n' "$c" "$n" "$v" "$bv"
+        fi
+    done
+    rm -rf "$t"
+}
+
 cmd_accept() {
     case "$ARG" in ''|.*|*[!A-Za-z0-9._-]*) fail 2 "not a deployment id: $ARG" ;; esac
     state_open_rw
@@ -721,6 +777,7 @@ reset:0) cmd_reset ;;
 stage:1) cmd_stage ;;
 receive:1) cmd_receive ;;
 bases:0) cmd_bases ;;
+packages:0|packages:1) cmd_packages ;;
 switch:0) cmd_switch ;;
 accept:1) cmd_accept ;;
 *) usage ;;

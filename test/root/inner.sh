@@ -176,6 +176,30 @@ ok "switch, not enough space: exit 5, stays staged, nothing selected" "$G switch
 rm -f $W/udmnt/fill $U/deployments/$N/switch/var/lib/bluetooth/big
 gs_update $S/state/deploy staged=; rm -rf $U/deployments/$A3
 
+# --- glassine: lock, unlock, the apk wrapper (on a real locked root) --------------
+GL=/p/sbin/glassine
+gr_assemble $S $U d1 $R
+mkdir -p $W/run2; echo d1 > $W/run2/booted
+printf 'RUN_DIR=%s/run2\n' $W > $W/gl.conf
+printf '#!/bin/sh\necho "$*" >> %s/apk-calls\ncase " $* " in *" add "*) echo pkg > %s/usr/bin/pkgfile || exit 9 ;; esac\nexit ${APK_RC:-0}\n' $W $R > $W/apk; chmod +x $W/apk
+gl() { GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apk sh $GL "$@"; }
+ok "glassine status: locked" "gl status | grep -qx 'root: locked'"
+ok "apk without the acknowledgement, no terminal: refused, nothing run" "gl apk add foo </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'GLASSINE_APK_ACK=1' $W/err && [ ! -e $W/apk-calls ]"
+ok "apk search (no change): runs, / stays read-only, no acknowledgement needed" "gl apk search foo </dev/null && grep -qx 'search foo' $W/apk-calls && ro $R/usr/bin/t1"
+ok "apk add: / writable for the run (the package lands), read-only after" "GLASSINE_APK_ACK=1 gl apk add foo && [ \"\$(cat $R/usr/bin/pkgfile)\" = pkg ] && ro $R/usr/bin/t2 && [ -e $R/etc/glassine/apk-acknowledged ]"
+ok "apk: the change lands in the deployment's upper" "[ -e $U/deployments/d1/switch/usr/bin/pkgfile ]"
+ok "apk: acknowledged once, then no more question; apk's exit code passed on" "APK_RC=3 gl apk del foo </dev/null; [ \$? = 3 ] && ro $R/usr/bin/t3"
+ok "apk while another change holds the lock: waits, then runs" "( exec 8>>$W/run2/apk.lock; flock 8; sleep 2 ) & sleep 0.5; gl apk fix 2>$W/err && grep -q 'waiting' $W/err && ro $R/usr/bin/t4"
+wait
+ok "unlock: / writable, status says so" "gl unlock 2>/dev/null && echo x > $R/usr/bin/manual && gl status | grep -q 'root: unlocked'"
+ok "apk while unlocked: stays unlocked after" "gl apk add bar && echo y > $R/usr/bin/manual2"
+ok "lock: read-only again" "gl lock 2>/dev/null && ro $R/usr/bin/t5 && gl status | grep -qx 'root: locked'"
+ok "called as apk: the wrapper" "mkdir -p $W/bin && ln -sf $GL $W/bin/apk && GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apk $W/bin/apk add baz && ro $R/usr/bin/t6 && grep -qx 'add baz' $W/apk-calls"
+rm -f $W/run2/booted
+ok "not booted from a deployment: apk-tools unchanged (no unlock: the stub's write fails)" "gl apk add qux </dev/null 2>/dev/null; [ \$? = 9 ] && grep -qx 'add qux' $W/apk-calls && gl status | grep -q 'plain'"
+ok "unlock refused when not booted from a deployment" "gl unlock 2>/dev/null; [ \$? = 1 ]"
+gr_umount $R
+
 # --- receive, bases, stage: a base update ------------------------------------------
 # the new base b2 on a scratch btrfs (the build host's), sent as streams
 truncate -s 128M $W/src.img; mkfs.btrfs -q $W/src.img; loop $W/src.img; SRC=$LOOP

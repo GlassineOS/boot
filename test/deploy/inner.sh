@@ -278,5 +278,27 @@ ok "remap: count" "grep -q 'owners remapped: 5' $W/acct/rep2"
 ok "remap with an empty map: nothing" ": > $W/acct/empty && ga_remap $W/acct/empty $R2 | grep -q 'remapped: 0'"
 ok "merge: a base without passwd: refused" "! ga_merge $AO $W/acct/none $W/acct/o2 $W/acct/m2 2>/dev/null"
 
+# --- packages: derived from world + installed db against the base ---------------
+export GLASSINE_DEPLOY_FAKE_MOUNTS=1
+PB=$W/sysmnt/bases/pb; PV=$W/pview
+mkdir -p $PB/etc/apk $PB/lib/apk/db $PV/etc/apk $PV/lib/apk/db $U/deployments/pk
+echo base=pb > $U/deployments/pk/meta
+printf 'alpine-base sway\nfirefox\n' > $PB/etc/apk/world
+printf 'alpine-base\nsway\nretroarch\nvim>=9.1\n' > $PV/etc/apk/world
+printf 'P:sway\nV:1.10-r0\nA:aarch64\n\nP:musl\nV:1.2.5-r10\n\nP:mesa\nV:25.1.9-r106\n\nP:firefox\nV:142.0-r0\n\n' > $PB/lib/apk/db/installed
+printf 'P:sway\nV:1.10-r0\n\nP:musl\nV:1.2.5-r11\n\nP:mesa\nV:25.1.9-r100\n\nP:retroarch\nV:1.21-r0\n\n' > $PV/lib/apk/db/installed
+printf '#!/bin/sh\n[ "$1" = version ] || exit 1\ncase "$3:$4" in 1.2.5-r11:1.2.5-r10) echo ">" ;; 25.1.9-r100:25.1.9-r106) echo "<" ;; *) echo "=" ;; esac\n' > $W/apkstub; chmod +x $W/apkstub
+echo pk > $W/run/booted
+pk() { GLASSINE_DEPLOY_ROOT=$PV GLASSINE_DEPLOY_APK=$W/apkstub $G packages pk --porcelain; }
+ok "packages: header, added world entries (constraints kept)" "pk > $W/pk && head -n 1 $W/pk | grep -qx 'glassine-deploy 1' && grep -qx 'type=package	change=added	entry=retroarch' $W/pk && grep -qx 'type=package	change=added	entry=vim>=9.1' $W/pk"
+ok "packages: removed world entries" "grep -qx 'type=package	change=removed	entry=firefox' $W/pk && [ \$(grep -c 'change=removed' $W/pk) = 1 ]"
+ok "packages: raised and lowered versions" "grep -qx 'type=package	change=raised	name=musl	version=1.2.5-r11	base_version=1.2.5-r10' $W/pk && grep -qx 'type=package	change=lowered	name=mesa	version=25.1.9-r100	base_version=25.1.9-r106' $W/pk"
+ok "packages: unchanged and new packages are not version records" "! grep -q 'name=sway' $W/pk && ! grep -q 'name=retroarch' $W/pk"
+ok "packages without apk: changed" "GLASSINE_DEPLOY_ROOT=$PV GLASSINE_DEPLOY_APK=$W/none $G packages pk --porcelain | grep -q 'change=changed	name=musl'"
+ok "packages: human output" "GLASSINE_DEPLOY_ROOT=$PV GLASSINE_DEPLOY_APK=$W/apkstub $G packages pk | grep -qx 'raised   musl 1.2.5-r11 (base 1.2.5-r10)'"
+ok "packages: an unknown deployment: exit 1; a bad id: exit 2" "$G packages zz 2>/dev/null; a=\$?; $G packages ../x 2>/dev/null; [ \$a\$? = 12 ]"
+rm -f $W/run/booted
+ok "packages of a deployment that is not running, userdata not mounted: refused" "mv $W/udmnt $W/udmnt.x; $G packages pk 2>$W/err; r=\$?; mv $W/udmnt.x $W/udmnt; [ \$r = 1 ]"
+
 echo "$fails failed"
 [ $fails = 0 ]
