@@ -491,7 +491,11 @@ cmd_reset() {
     if [ "$NOW" = 1 ]; then
         do_switch
     else
-        echo "glassine-deploy: $id ($kind of $cur) is staged; the next shutdown carries the settings over and selects it"
+        if [ "$carry" = none ]; then
+            echo "glassine-deploy: $id ($kind of $cur) is staged; the next shutdown selects it, with no settings carried over"
+        else
+            echo "glassine-deploy: $id ($kind of $cur) is staged; the next shutdown carries the settings over and selects it"
+        fi
     fi
 }
 
