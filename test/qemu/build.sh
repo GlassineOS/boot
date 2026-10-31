@@ -4,8 +4,8 @@
 #                    (unchanged, plus a test shim that loads the virt kernel's
 #                    modules first), the base tree (Alpine + OpenRC + this
 #                    repository installed) and the modules tree, as tar files
-#   build.sh disk    privileged native container (btrfs ioctls don't pass
-#                    arm64 user emulation): a GPT disk with a btrfs "system"
+#   build.sh disk    privileged container of the host's own architecture
+#                    (btrfs ioctls don't pass user emulation): a GPT disk with a btrfs "system"
 #                    partition (base b1, modules subvolume, state/) and an ext4
 #                    "userdata" partition (deployment d1)
 # Output in $OUT: Image, initramfs.cpio.gz, disk.img.

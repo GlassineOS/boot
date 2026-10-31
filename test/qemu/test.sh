@@ -12,17 +12,20 @@
 # The virt kernel has no watchdog driver, so the watchdog stop around the
 # resume write is covered by test/root only.
 # Slow (minutes per boot, emulated) and not part of `make check`. Needs
-# Docker with privileged containers and arm64 emulation (binfmt).
+# Docker with privileged containers, and arm64 emulation (binfmt) on a
+# non-arm64 host.
 #   test.sh [OUTDIR]    exit 0 = every QTEST check passed; logs in OUTDIR
 set -eu
 D=$(cd "$(dirname "$0")" && pwd)
 P=$(cd "$D/../.." && pwd)
 OUT=$(mkdir -p "${1:-$D/out}" && cd "${1:-$D/out}" && pwd)
 docker run --rm --privileged --platform linux/arm64 -v "$P":/p:ro -v "$OUT":/out alpine:3.22 sh /p/test/qemu/build.sh files
-docker run --rm --privileged --platform linux/amd64 -v "$P":/p:ro -v "$OUT":/out alpine:3.22 sh /p/test/qemu/build.sh disk
+# the disk step runs on the host's own architecture (btrfs ioctls don't pass user emulation)
+case $(uname -m) in aarch64|arm64) NATIVE=arm64 ;; *) NATIVE=amd64 ;; esac
+docker run --rm --privileged --platform linux/$NATIVE -v "$P":/p:ro -v "$OUT":/out alpine:3.22 sh /p/test/qemu/build.sh disk
 boot() {    # boot N EXTRA-CMDLINE: one boot, until the guest powers off
     echo "--- boot $1 ${2:-}"
-    docker run --rm -v "$OUT":/out alpine:3.22 sh -c "apk add -q qemu-system-aarch64 >/dev/null && \
+    docker run --rm --platform linux/$NATIVE -v "$OUT":/out alpine:3.22 sh -c "apk add -q qemu-system-aarch64 >/dev/null && \
         timeout 1500 qemu-system-aarch64 -M virt -cpu cortex-a57 -smp 2 -m 768 -nographic -no-reboot \
         -kernel /out/Image -initrd /out/initramfs.cpio.gz \
         -append 'console=ttyAMA0 rdinit=/init panic=10 ${2:-}' \
