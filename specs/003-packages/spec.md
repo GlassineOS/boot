@@ -1,7 +1,7 @@
 # Feature Specification: Packages on a locked root
 
 **Feature branch:** `deploy-0.3-packages`
-**Created:** 2026-10-31 · **Status:** built, host-tested, not yet run on hardware
+**Created:** 2026-10-31 · **Status:** built, host-tested; `apk add` and the replay run on hardware, booting a replayed deployment not yet
 **Builds on:** [001-deployments](../001-deployments/spec.md),
 [002-stage-base](../002-stage-base/spec.md) · **Interface:**
 [docs/deployments.md](../../docs/deployments.md)
@@ -76,7 +76,8 @@ visible unlock.
   the configured repositories.
 - **FR-005** A failed replay leaves no mount, no deployment and no staged state.
 - **FR-006** With `/etc/apk/cache` present, the wrapper runs `apk cache clean` after a
-  package change, so the cache holds what the system has installed.
+  package change. It drops outdated files only: a package removed but still in the
+  repository stays cached (seen on hardware); the cache of a new deployment starts empty.
 
 ## Not in this feature (later)
 
