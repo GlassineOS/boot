@@ -182,6 +182,7 @@ ok "list: human table" "$G list | grep -q '^d4 *kept'"
 mkdir -p $W/sysmnt/bases/v3.22.2
 ok "list: base_present yes for d2, no for d4" "[ \"\$(lst d2 base_present)\" = yes ] && [ \"\$(lst d4 base_present)\" = no ]"
 rmdir $W/sysmnt/bases/v3.22.2; rmdir $W/sysmnt/bases 2>/dev/null || :
+for n in 1 2 3 4; do mkdir -p $W/sysmnt/bases/v3.22.$n; done     # select needs the base
 echo failed=d1 >> $W/sysmnt/state/deploy
 ok "list: a failed deployment that is also previous shows failed" "[ \"\$(lst d1 state)\" = failed ]"
 ok "status: failed=" "$G status --porcelain | grep -q '	failed=d1'"

@@ -14,6 +14,7 @@
 #   glassine-deploy stage BASE [--now] [--yes] [--discard-hibernation]
 #   glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
 #   glassine-deploy bases [--porcelain]
+#   glassine-deploy bases remove BASE [--yes] [--discard-hibernation]
 #   glassine-deploy packages [ID] [--porcelain]
 #   glassine-deploy switch [--discard-hibernation]
 #   glassine-deploy accept ID
@@ -25,7 +26,11 @@
 # a new deployment on the current one's base; the next switch fills it and
 # selects it. stage BASE does the same on another base (a base update);
 # receive puts a btrfs send stream (full or incremental, .zst by its name) under
-# bases/ (or modules/), read-only; bases lists them with their users.
+# bases/ (or modules/), read-only; bases lists them with their users. bases
+# remove deletes a base no deployment needs to boot now: it refuses the base of
+# the booted, current, candidate or staged deployment, and asks first when other
+# deployments (the previous one, usually) would lose theirs: those stay on
+# userdata but can no longer be selected.
 # packages lists how a deployment's packages differ from its base's (current
 # by default): added and removed world entries, packages installed in another
 # version (raised/lowered, by apk version -t when apk is there, else changed);
@@ -397,6 +402,8 @@ do_select() {
     ud_dirs deployments | grep -qx -- "$1" || die "no deployment $1 on userdata"
     state_open_rw
     cur=$(gs_kv "$S/deploy" current)
+    _b=$(meta_kv "$(ud_cat "deployments/$1/meta")" base)
+    [ -z "$_b" ] || [ -d "$SYSTEM_MNT/bases/$_b" ] || die "deployment $1 cannot boot: its base $_b is not on the system partition"
     if [ "$1" = "$cur" ]; then
         gs_update "$S/deploy" candidate= tries=0 || die "cannot write $S/deploy"
         echo "glassine-deploy: $1 is the current deployment; no candidate"
@@ -690,6 +697,36 @@ cmd_bases() {
 }
 
 # pkg_db FILE: "name version" per package of an apk installed database
+cmd_bases_remove() {
+    [ "$FIRST" = remove ] || usage
+    valid_name "$ARG" || fail 2 "not a base name: $ARG"
+    state_open_rw
+    d=$SYSTEM_MNT/bases/$ARG
+    [ -d "$d" ] || die "no base $ARG on the system partition"
+    # who needs it, from the metas on userdata; unreadable metas must not read
+    # as "nobody": the current deployment has to be there, with its base
+    cur=$(gs_kv "$S/deploy" current)
+    curb=$(meta_kv "$(ud_cat "deployments/$cur/meta" 2>/dev/null)" base)
+    [ -n "$curb" ] || die "cannot read the deployments on userdata; nothing removed"
+    needed=" $cur $(gs_kv "$S/deploy" candidate) $(gs_kv "$S/deploy" staged) $(cat "$RUN_DIR/booted" 2>/dev/null) "
+    lose=''
+    for id in $(ud_dirs deployments); do
+        [ "$(meta_kv "$(ud_cat "deployments/$id/meta")" base)" = "$ARG" ] || continue
+        case "$needed" in *" $id "*) die "base $ARG is in use by deployment $id; nothing removed" ;; esac
+        lose="$lose $id"
+    done
+    if [ -n "$lose" ]; then
+        prev=$(gs_kv "$S/deploy" previous)
+        note=''
+        case " $lose " in *" $prev "*) note=" Rollback to $prev is lost." ;; esac
+        confirm "Remove base $ARG? Deployments that can no longer boot:$lose.$note"
+    fi
+    btrfs -q subvolume delete --commit-after "$d" >/dev/null || die "cannot delete $d"
+    # the space comes back once the cleaner has dropped the subvolume
+    btrfs -q subvolume sync "$SYSTEM_MNT" >/dev/null 2>&1 || :
+    echo "glassine-deploy: base $ARG removed"
+}
+
 pkg_db() { awk -F: '$1 == "P" { p = $2 } $1 == "V" && p != "" { print p " " $2; p = "" }' "$1" 2>/dev/null | sort; }
 # pkg_world FILE: the world entries, one per line, sorted
 pkg_world() { tr ' ' '\n' < "$1" 2>/dev/null | sed '/^$/d' | sort -u; }
@@ -751,7 +788,7 @@ cmd_accept() {
 
 [ $# -ge 1 ] || usage
 CMD=$1; shift
-PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 SHA='' ARG='' NARG=0
+PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 SHA='' ARG='' NARG=0 FIRST=''
 while [ $# -gt 0 ]; do
     a=$1; shift
     case "$a" in
@@ -764,7 +801,7 @@ while [ $# -gt 0 ]; do
     --full) FULL=1 ;;
     --now) NOW=1 ;;
     -*) usage ;;
-    *) ARG=$a; NARG=$((NARG + 1)) ;;
+    *) [ "$NARG" = 0 ] && FIRST=$a; ARG=$a; NARG=$((NARG + 1)) ;;
     esac
 done
 case "$CMD:$NARG" in
@@ -777,6 +814,7 @@ reset:0) cmd_reset ;;
 stage:1) cmd_stage ;;
 receive:1) cmd_receive ;;
 bases:0) cmd_bases ;;
+bases:2) cmd_bases_remove ;;
 packages:0|packages:1) cmd_packages ;;
 switch:0) cmd_switch ;;
 accept:1) cmd_accept ;;
