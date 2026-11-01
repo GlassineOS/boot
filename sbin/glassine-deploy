@@ -574,7 +574,8 @@ do_replay() {
     [ -n "$ob" ] && [ -d "$SYSTEM_MNT/bases/$ob" ] || die "deployment $cur: base ${ob:-?} is missing"
     obd=$SYSTEM_MNT/bases/$ob nbd=$SYSTEM_MNT/bases/$base
     if [ "$(cat "$RUN_DIR/booted" 2>/dev/null)" = "$cur" ]; then
-        view=${GLASSINE_DEPLOY_ROOT:-/}
+        # no leading //: busybox mount reads //var/cache/apk as a network share
+        view=${GLASSINE_DEPLOY_ROOT:-/}; view=${view%/}
     else
         TMP_VIEW=$RUN_DIR/view.$$
         gr_merged_ro "$SYSTEM_MNT" "$UD/deployments/$cur" "$TMP_VIEW" || die "cannot open deployment $cur read-only"
