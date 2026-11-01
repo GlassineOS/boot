@@ -186,6 +186,9 @@ gl() { GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apk sh $
 ok "glassine status: locked" "gl status | grep -qx 'root: locked'"
 ok "apk without the acknowledgement, no terminal: refused, nothing run" "gl apk add foo </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'GLASSINE_APK_ACK=1' $W/err && [ ! -e $W/apk-calls ]"
 ok "apk search (no change): runs, / stays read-only, no acknowledgement needed" "gl apk search foo </dev/null && grep -qx 'search foo' $W/apk-calls && ro $R/usr/bin/t1"
+printf '#!/bin/sh\necho "$*" >> %s/apk-calls\ncase " $* " in *" info "*) ;; *" add "*) echo pkg > %s/usr/bin/pkgfile || exit 9 ;; *" update "*) echo lock > %s/usr/bin/apklock || exit 9 ;; esac\nexit ${APK_RC:-0}\n' $W $R $R > $W/apk
+ok "apk update: / writable for the run, no acknowledgement needed, read-only after" "gl apk --no-progress update </dev/null && [ \"\$(cat $R/usr/bin/apklock)\" = lock ] && ro $R/usr/bin/t7 && [ ! -e $R/etc/glassine/apk-acknowledged ]"
+ok "apk info update (a package called update): / stays read-only" "gl apk info update </dev/null && grep -qx 'info update' $W/apk-calls && ro $R/usr/bin/t8"
 ok "apk add: / writable for the run (the package lands), read-only after" "GLASSINE_APK_ACK=1 gl apk add foo && [ \"\$(cat $R/usr/bin/pkgfile)\" = pkg ] && ro $R/usr/bin/t2 && [ -e $R/etc/glassine/apk-acknowledged ]"
 ok "apk: the change lands in the deployment's upper" "[ -e $U/deployments/d1/switch/usr/bin/pkgfile ]"
 ok "apk: acknowledged once, then no more question; apk's exit code passed on" "APK_RC=3 gl apk del foo </dev/null; [ \$? = 3 ] && ro $R/usr/bin/t3"
