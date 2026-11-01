@@ -197,6 +197,14 @@ wait
 ok "unlock: / writable, status says so" "gl unlock 2>/dev/null && echo x > $R/usr/bin/manual && gl status | grep -q 'root: unlocked'"
 ok "apk while unlocked: stays unlocked after" "gl apk add bar && echo y > $R/usr/bin/manual2"
 ok "lock: read-only again" "gl lock 2>/dev/null && ro $R/usr/bin/t5 && gl status | grep -qx 'root: locked'"
+printf '#!/bin/sh\necho "$*" >> %s/apk-calls\ncase " $* " in *" --simulate "*) echo "(1/1) Upgrading musl (1 -> 2)" ;; esac\nexit 0\n' $W > $W/apkm; chmod +x $W/apkm
+glm() { GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apkm sh $GL "$@"; }
+gl lock >/dev/null 2>&1
+: > $W/apk-calls
+ok "another repository replacing installed packages, no terminal: refused, named, relocked" "GLASSINE_APK_ACK=1 glm apk add foo@edge </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'Upgrading\|musl' $W/err && ! grep -qx 'add foo@edge' $W/apk-calls && ro $R/usr/bin/t9"
+ok "GLASSINE_APK_MIX=1: goes on" "GLASSINE_APK_ACK=1 GLASSINE_APK_MIX=1 glm apk add foo@edge </dev/null 2>/dev/null && grep -qx 'add foo@edge' $W/apk-calls"
+: > $W/apk-calls
+ok "a plain add: no simulation, no question" "GLASSINE_APK_ACK=1 glm apk add foo </dev/null 2>/dev/null && ! grep -q simulate $W/apk-calls && grep -qx 'add foo' $W/apk-calls"
 ok "called as apk: the wrapper" "mkdir -p $W/bin && ln -sf $GL $W/bin/apk && GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apk $W/bin/apk add baz && ro $R/usr/bin/t6 && grep -qx 'add baz' $W/apk-calls"
 rm -f $W/run2/booted
 ok "not booted from a deployment: apk-tools unchanged (no unlock: the stub's write fails)" "gl apk add qux </dev/null 2>/dev/null; [ \$? = 9 ] && grep -qx 'add qux' $W/apk-calls && gl status | grep -q 'plain'"

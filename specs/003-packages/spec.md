@@ -40,6 +40,28 @@ visible unlock.
    world entries added and removed against the base, and packages installed in a newer
    (raised), older (lowered) or other (changed, without apk) version than the base's.
 
+### Story 4: my packages come along to a new base (P1)
+
+1. **Given** packages added or removed on the running deployment, **when** a new base
+   is staged, **then** they are replayed into the new deployment's build layer, with
+   apk from the new base in a chroot of it, and the running root is untouched.
+2. **Given** a package upgraded above the old base's version, **then** the replay
+   upgrades it on the new base; a base that already has that version or newer takes
+   over.
+3. **Given** a package that no longer resolves, or a package whose version would go
+   down, **then** stage stops with exit 7, names it, and stages nothing;
+   `--without NAME`, `--accept-downgrades` or `--no-replay` decide.
+4. **Given** no network, **then** the replay uses the package lists and packages in the
+   running deployment's apk cache.
+5. **Given** a repository the user added, **then** it comes along with its keys; the old
+   base's own repositories do not.
+
+### Story 5: another repository replaces installed packages (P2)
+
+1. **Given** `apk add name@tag` (or `-X`) that would replace installed packages, **then**
+   the wrapper lists them and asks; a script without a terminal is refused unless
+   `GLASSINE_APK_MIX=1`.
+
 ## Requirements
 
 - **FR-001** The wrapper unlocks only for a command line naming `add`, `del`, `fix`,
@@ -49,15 +71,24 @@ visible unlock.
   deployment's `/etc/apk/world` and `/lib/apk/db/installed`.
 - **FR-003** Busybox only, except `apk version -t` for raised/lowered (`changed`
   without it).
+- **FR-004** The replay blocks service starts with an empty `/run` in the chroot: OpenRC
+  refuses to start services on a system it did not boot. Package scripts run; only from
+  the configured repositories.
+- **FR-005** A failed replay leaves no mount, no deployment and no staged state.
+- **FR-006** With `/etc/apk/cache` present, the wrapper runs `apk cache clean` after a
+  package change, so the cache holds what the system has installed.
 
 ## Not in this feature (later)
 
-- The replay itself when a new deployment is built (its build layer), the A17
-  downgrade question, the A18 branch warning, the offline package cache.
 - Programs that link libapk themselves (a package-manager daemon such as the one
   behind a software centre) bypass the wrapper; how they get the root writable is
   open.
 - `glassine diff`, `glassine keep`.
+- A17's "keep" answer beyond what still resolves, and setting aside kept files on a
+  downgrade (`<file>.glassine-<version>`).
+- The deferred upgrade scripts of the switch (A22 step 3).
+- A change after staging is not in the staged deployment: the wrapper says so; stage
+  again to include it.
 
 ## Success criteria
 

@@ -11,7 +11,7 @@
 #   glassine-deploy rollback [--yes] [--discard-hibernation]
 #   glassine-deploy hibernate-invalidate [--yes]
 #   glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation]
-#   glassine-deploy stage BASE [--now] [--yes] [--discard-hibernation]
+#   glassine-deploy stage BASE [--no-replay] [--without NAME]… [--accept-downgrades] [--now] [--yes] [--discard-hibernation]
 #   glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
 #   glassine-deploy bases [--porcelain]
 #   glassine-deploy bases remove BASE [--yes] [--discard-hibernation]
@@ -24,7 +24,13 @@
 # = select the previous one. hibernate-invalidate turns a hibernate image on
 # userdata back into a plain swap file (that session is lost). reset stages
 # a new deployment on the current one's base; the next switch fills it and
-# selects it. stage BASE does the same on another base (a base update);
+# selects it. stage BASE does the same on another base (a base update), with
+# the user's package changes replayed into the new deployment's build layer:
+# apk from the new base in a chroot, scripts on, an empty /run so that OpenRC
+# starts nothing. A package version going down, or a package that no longer
+# resolves, stops the stage with exit 7 and nothing staged: --accept-downgrades
+# takes the lower versions, --without NAME leaves an added package out,
+# --no-replay stages the bare base;
 # receive puts a btrfs send stream (full or incremental, .zst by its name) under
 # bases/ (or modules/), read-only; bases lists them with their users. bases
 # remove deletes a base no deployment needs to boot now: it refuses the base of
@@ -53,7 +59,7 @@
 # Exit codes: 0 done, 1 error, 2 usage, 3 the state format on the system
 # partition is newer than this tool (every command refuses; status still
 # prints both versions), 4 hibernated and refused, 5 not enough space,
-# 6 busy.
+# 6 busy, 7 the replay needs a decision.
 #
 # Configuration: /etc/glassine/deploy.conf (conf/deploy.conf.example), or
 # the file named by GLASSINE_DEPLOY_CONF.
@@ -76,6 +82,7 @@ PORCELAIN_VERSION=1
 SWAPFILE="$USERDATA_PREFIX/swap/hibernate"
 GUARD="$USERDATA_PREFIX/swap/hibernate.guard"
 MOUNTED_HERE='' UD_MOUNTED_HERE='' TMP_VIEW='' NEW_DEP='' SWITCHING='' RECV_TMP='' RECV_BEFORE=''
+REPLAY_MNT='' REPLAY_BINDS='' REPLAY_RESOLV='' REPLAY_TMP=''
 
 die() { echo "glassine-deploy: $*" >&2; exit 1; }
 fail() { _c=$1; shift; echo "glassine-deploy: $*" >&2; exit "$_c"; }
@@ -92,7 +99,22 @@ fstype() {
     blkid "$1" 2>/dev/null | sed -n 's/.* TYPE="\([^"]*\)".*/\1/p' | head -n 1
 }
 
+# replay_umount: the replay's chroot down, binds first. The mount point is only
+# ever rmdir'ed: while a bind is on it, a recursive remove would reach the host.
+replay_umount() {
+    [ -n "$REPLAY_MNT" ] || return 0
+    for _m in $REPLAY_BINDS; do umount "$REPLAY_MNT$_m" || echo "glassine-deploy: cannot unmount $REPLAY_MNT$_m" >&2; done
+    REPLAY_BINDS=''
+    [ -z "$REPLAY_RESOLV" ] || rm -f "$REPLAY_MNT/etc/resolv.conf"
+    REPLAY_RESOLV=''
+    umount "$REPLAY_MNT" && rmdir "$REPLAY_MNT" || echo "glassine-deploy: cannot unmount $REPLAY_MNT" >&2
+    REPLAY_MNT=''
+}
+
 cleanup() {
+    replay_umount
+    [ -n "$REPLAY_TMP" ] && rm -rf "$REPLAY_TMP"
+    REPLAY_TMP=''
     [ -n "$TMP_VIEW" ] && umount "$TMP_VIEW" 2>/dev/null && rmdir "$TMP_VIEW" 2>/dev/null
     TMP_VIEW=''
     [ -n "$SWITCHING" ] && rm -f "$SWITCHING"
@@ -532,6 +554,114 @@ cmd_stage() {
     stage_new
 }
 
+# replay_apk ARGS: apk from the new base, in its chroot; the state lock stays out
+replay_apk() {
+    chroot "$REPLAY_MNT" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
+        /sbin/apk --no-progress --cache-dir /var/cache/apk "$@" 9>&-
+}
+
+# do_replay: the user's package changes on the running deployment, against its
+# base, applied to the new deployment's build layer on $base. Needs state_open_rw
+# + UD, cur, NEW_DEP. Sets nothing; dies or fails 7, which removes NEW_DEP.
+do_replay() {
+    [ "$NOREPLAY" = 1 ] && { echo "glassine-deploy: no replay: your packages stay out of this deployment"; return 0; }
+    vapk=${GLASSINE_DEPLOY_APK:-/sbin/apk}
+    [ -x "$vapk" ] || die "the replay needs apk ($vapk); --no-replay stages without your packages"
+    t=${TMPDIR:-/tmp}/glassine-replay.$$
+    mkdir -p "$t" || die "cannot create $t"
+    REPLAY_TMP=$t
+    ob=$(gs_kv "$UD/deployments/$cur/meta" base)
+    [ -n "$ob" ] && [ -d "$SYSTEM_MNT/bases/$ob" ] || die "deployment $cur: base ${ob:-?} is missing"
+    obd=$SYSTEM_MNT/bases/$ob nbd=$SYSTEM_MNT/bases/$base
+    if [ "$(cat "$RUN_DIR/booted" 2>/dev/null)" = "$cur" ]; then
+        view=${GLASSINE_DEPLOY_ROOT:-/}
+    else
+        TMP_VIEW=$RUN_DIR/view.$$
+        gr_merged_ro "$SYSTEM_MNT" "$UD/deployments/$cur" "$TMP_VIEW" || die "cannot open deployment $cur read-only"
+        view=$TMP_VIEW
+    fi
+    pkg_world "$obd/etc/apk/world" > "$t/ow"; pkg_world "$view/etc/apk/world" > "$t/vw"; pkg_world "$nbd/etc/apk/world" > "$t/nw"
+    pkg_db "$obd/lib/apk/db/installed" > "$t/oi" 2>/dev/null; pkg_db "$view/lib/apk/db/installed" > "$t/vi" 2>/dev/null
+    pkg_db "$nbd/lib/apk/db/installed" > "$t/ni" 2>/dev/null
+    # added and removed against the old base, as far as the new one differs
+    awk 'FILENAME == ARGV[1] { o[$0] = 1; next } FILENAME == ARGV[2] { n[$0] = 1; next } !($0 in o) && !($0 in n)' "$t/ow" "$t/nw" "$t/vw" > "$t/add0"
+    : > "$t/add"
+    while read -r e; do
+        _n=$(echo "$e" | sed 's/[<>=~@].*//')
+        case " $WITHOUT " in *" $_n "*) echo "glassine-deploy: leaving out $e" ;; *) echo "$e" >> "$t/add" ;; esac
+    done < "$t/add0"
+    awk 'FILENAME == ARGV[1] { v[$0] = 1; next } FILENAME == ARGV[2] { n[$0] = 1; next } !($0 in v) && ($0 in n)' "$t/vw" "$t/nw" "$t/ow" > "$t/del"
+    # raised: above the old base and still above the new one (a base that caught up takes over)
+    : > "$t/up"
+    awk 'FILENAME == ARGV[1] { o[$1] = $2; next } FILENAME == ARGV[2] { n[$1] = $2; next } ($1 in o) && ($1 in n) && o[$1] != $2 { print $1, $2, o[$1], n[$1] }' "$t/oi" "$t/ni" "$t/vi" |
+    while read -r n v bv nv; do
+        [ "$("$vapk" version -t "$v" "$bv" 2>/dev/null)" = '>' ] || continue
+        [ "$("$vapk" version -t "$v" "$nv" 2>/dev/null)" = '>' ] && echo "$n" >> "$t/up"
+    done
+    # repositories the user added (a line the old base does not have); never the old
+    # branch's own, which a base on a new branch replaces
+    : > "$t/repos"
+    if [ -r "$view/etc/apk/repositories" ]; then
+        while IFS= read -r l; do
+            [ -n "$l" ] || continue
+            grep -qxF -- "$l" "$obd/etc/apk/repositories" 2>/dev/null && continue
+            grep -qxF -- "$l" "$nbd/etc/apk/repositories" 2>/dev/null && continue
+            echo "$l" >> "$t/repos"
+        done < "$view/etc/apk/repositories"
+    fi
+    cp "$t/ni" "$t/ri"
+    if [ -s "$t/add" ] || [ -s "$t/del" ] || [ -s "$t/up" ]; then
+        echo "glassine-deploy: replaying your packages on base $base: add $(tr '\n' ' ' < "$t/add"); remove $(tr '\n' ' ' < "$t/del"); upgrade $(tr '\n' ' ' < "$t/up")"
+        [ -x "$nbd/sbin/apk" ] && [ -x "$nbd/usr/bin/env" ] || die "base $base has no apk to replay with; --no-replay stages without your packages"
+        M=$RUN_DIR/replay.$$
+        gr_mount_overlay "$M" "$nbd" "$NEW_DEP/build" "$NEW_DEP/work" || die "cannot assemble the new deployment at $M"
+        REPLAY_MNT=$M
+        cat "$t/repos" >> "$M/etc/apk/repositories" || die "cannot write the repositories"
+        for k in "$view"/etc/apk/keys/*; do
+            [ -e "$k" ] && [ ! -e "$M/etc/apk/keys/${k##*/}" ] && cp -p "$k" "$M/etc/apk/keys/"
+        done
+        # the API file systems and the package cache; an empty /run: nothing starts
+        mkdir -p "$M/var/cache/apk" "$M/run" "$M/tmp" "$M/proc" "$M/sys" "$M/dev"
+        mount --bind /dev "$M/dev" && REPLAY_BINDS="/dev $REPLAY_BINDS" || die "cannot bind /dev"
+        mount -t proc proc "$M/proc" && REPLAY_BINDS="/proc $REPLAY_BINDS" || die "cannot mount /proc"
+        mount -t tmpfs tmpfs "$M/run" && REPLAY_BINDS="/run $REPLAY_BINDS" || die "cannot mount /run"
+        mount -t tmpfs tmpfs "$M/tmp" && REPLAY_BINDS="/tmp $REPLAY_BINDS" || die "cannot mount /tmp"
+        if [ -d "$view/var/cache/apk" ]; then
+            mount --bind "$view/var/cache/apk" "$M/var/cache/apk" && REPLAY_BINDS="/var/cache/apk $REPLAY_BINDS" || die "cannot bind the package cache"
+        fi
+        if [ -e /etc/resolv.conf ] && [ ! -L "$M/etc/resolv.conf" ]; then
+            [ -e "$M/etc/resolv.conf" ] || { : > "$M/etc/resolv.conf" && REPLAY_RESOLV=1; }
+            mount --bind /etc/resolv.conf "$M/etc/resolv.conf" && REPLAY_BINDS="/etc/resolv.conf $REPLAY_BINDS" || die "cannot bind resolv.conf"
+        fi
+        replay_apk update || echo "glassine-deploy: no fresh package lists, going on with the cached ones"
+        # shellcheck disable=SC2046  # one package per word
+        [ ! -s "$t/del" ] || replay_apk del $(cat "$t/del") ||
+            fail 7 "removing your removed packages failed; nothing staged. --no-replay stages the bare base"
+        # shellcheck disable=SC2046
+        [ ! -s "$t/add" ] || replay_apk add $(cat "$t/add") ||
+            fail 7 "your added packages do not install on base $base; nothing staged. --without NAME leaves one out, --no-replay stages the bare base"
+        # shellcheck disable=SC2046
+        [ ! -s "$t/up" ] || replay_apk upgrade $(cat "$t/up") ||
+            fail 7 "your upgraded packages do not upgrade on base $base; nothing staged. --no-replay stages the bare base"
+        pkg_db "$M/lib/apk/db/installed" > "$t/ri"
+        replay_umount
+    fi
+    # no silent downgrade: every package the running deployment has, against the new one
+    down=''
+    while read -r n v nv; do
+        [ "$("$vapk" version -t "$v" "$nv" 2>/dev/null)" = '>' ] || continue
+        echo "glassine-deploy: goes down: $n $v -> $nv"
+        down=1
+    done <<EOF
+$(awk 'FILENAME == ARGV[1] { r[$1] = $2; next } ($1 in r) && r[$1] != $2 { print $1, $2, r[$1] }' "$t/ri" "$t/vi")
+EOF
+    if [ -n "$down" ] && [ "$ACCEPT_DOWN" != 1 ]; then
+        fail 7 "these packages would go down in version; nothing staged. --accept-downgrades takes them, or stay on this base until a newer one"
+    fi
+    if [ -n "$TMP_VIEW" ]; then umount "$TMP_VIEW" && rmdir "$TMP_VIEW"; TMP_VIEW=''; fi
+    rm -rf "$t"; REPLAY_TMP=''
+}
+
 # stage_new: a new deployment on $base (kind, carry set) becomes the staged one;
 # --now switches at once. Needs state_open_rw + UD, cur.
 stage_new() {
@@ -540,6 +670,7 @@ stage_new() {
     mkdir -p "$NEW_DEP/build" "$NEW_DEP/switch" "$NEW_DEP/work" || die "cannot create $NEW_DEP"
     printf 'base=%s\nkind=%s\ncarry=%s\nfrom=%s\ncreated=%s\n' "$base" "$kind" "$carry" "$cur" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" |
         gs_write "$NEW_DEP/meta" || die "cannot write $NEW_DEP/meta"
+    [ "$kind" = update ] && do_replay
     sync
     old=$(gs_kv "$S/deploy" staged)
     gs_update "$S/deploy" "staged=$id" || die "cannot write $S/deploy"
@@ -789,12 +920,16 @@ cmd_accept() {
 [ $# -ge 1 ] || usage
 CMD=$1; shift
 PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 SHA='' ARG='' NARG=0 FIRST=''
+NOREPLAY=0 ACCEPT_DOWN=0 WITHOUT=''
 while [ $# -gt 0 ]; do
     a=$1; shift
     case "$a" in
     --porcelain) PORC=1 ;;
     --modules) MODULES=1 ;;
     --sha256) [ $# -ge 1 ] || usage; SHA=$1; shift ;;
+    --no-replay) NOREPLAY=1 ;;
+    --accept-downgrades) ACCEPT_DOWN=1 ;;
+    --without) [ $# -ge 1 ] || usage; WITHOUT="$WITHOUT $1"; shift ;;
     -) ARG=-; NARG=$((NARG + 1)) ;;
     --yes) YES=1 ;;
     --discard-hibernation) DISCARD=1 ;;
