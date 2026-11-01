@@ -117,9 +117,36 @@ cmd_apk() {
         opened=1
     fi
     trap 'relock; exit 130' INT TERM HUP
+    changes "$@" && mixing "$@"
     "$APK" "$@"; rc=$?
+    if [ $rc = 0 ] && changes "$@"; then
+        # the offline replay's cache: only what this system still has installed
+        [ -e /etc/apk/cache ] && "$APK" cache clean >/dev/null 2>&1
+        staged_note
+    fi
     relock
     exit $rc
+}
+
+# mixing: a package from another repository (name@tag, -X) would replace installed
+# ones: list them and ask first. /usr/lib and friends are shared with the base.
+mixing() {
+    case " $* " in *@*|*" -X "*|*" --repository"*) ;; *) return 0 ;; esac
+    _mix=$("$APK" --simulate "$@" 2>/dev/null | sed -n 's/^([^)]*) \(Upgrading\|Downgrading\|Replacing\) //p')
+    [ -n "$_mix" ] || return 0
+    printf '%s\n%s\n' "This replaces installed packages with another repository's versions (often shared libraries):" "$_mix" >&2
+    if [ "${GLASSINE_APK_MIX:-}" != 1 ]; then
+        if [ ! -t 0 ]; then relock; die "to go on, run this on a terminal or set GLASSINE_APK_MIX=1"; fi
+        printf 'Go on? [y/N] ' >&2
+        read -r _r || _r=''
+        case "$_r" in y|Y|yes) ;; *) relock; die cancelled ;; esac
+    fi
+}
+
+# staged_note: a deployment staged before this change does not have it
+staged_note() {
+    _st=$(glassine-deploy status --porcelain 2>/dev/null | tr '\t' '\n' | sed -n 's/^staged=//p' | head -n 1)
+    [ -z "$_st" ] || say "deployment $_st was staged before this change and does not have it; stage the base again to include it"
 }
 
 # relock: back to read-only, unless unlocked by hand in the meantime

@@ -43,6 +43,7 @@ check:
 	sh test/initramfs/test.sh
 	sh test/deploy/test.sh
 	sh test/root/test.sh
+	sh test/replay/test.sh
 
 clean:
 	rm -f glassine-reboot initramfs.cpio.gz

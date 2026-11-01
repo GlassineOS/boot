@@ -157,6 +157,7 @@ glassine-deploy accept ID
 | `hibernate-invalidate` | turns a hibernate image back into a plain swap file (that session is lost) |
 | `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Home is never touched. |
 | `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. |
+| `stage BASE` flags | `--no-replay` the bare base, `--without NAME` (repeatable) leaves an added package out, `--accept-downgrades` takes lower versions. Exit 7: the replay needs one of these; nothing staged. |
 | `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. The only verb that needs btrfs-progs (and zstd for `.zst`). |
 | `packages [ID]` | how a deployment's packages (current by default) differ from its base's, derived each time (no bookkeeping): world entries `added` and `removed` (constraints and tags as written), packages installed in another version: `raised`/`lowered` (`apk version -t`; `changed` where apk is missing). A deployment that is not running needs userdata mounted. The replay input of a later base. |
 | `bases` | one record per subvolume under `bases/` and `modules/`, with the deployments whose meta names it |
@@ -213,6 +214,13 @@ packages are replayed and manual edits are not (`/etc/glassine/apk-acknowledged`
 `GLASSINE_APK_ACK=1` for scripts, refused without a terminal otherwise). Other apk
 commands, and every command outside a deployment, run apk-tools unchanged. Programs
 that link libapk themselves (e.g. a package-manager daemon) do not go through it.
+
+`apk update` changes no package but takes apk's lock under `/`, so it opens `/` too, without
+the acknowledgement. A package from another repository (`name@tag`, `-X`) that would replace
+installed ones is listed first and asked about (`GLASSINE_APK_MIX=1` for scripts). With
+`/etc/apk/cache` present, packages stay in the cache and the wrapper cleans it after each
+change; the replay uses that cache, so a base staged offline still gets the packages this
+system has. After a change, it says when a staged deployment does not include it.
 
 ### Porcelain (format 1)
 
