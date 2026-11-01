@@ -20,7 +20,8 @@
 #
 # The package installs this script as /usr/sbin/apk too (before /sbin/apk on
 # PATH); called as "apk" it is "glassine apk". On a system not booted from a
-# deployment it runs apk-tools unchanged.
+# deployment it runs apk-tools unchanged. apk update changes no package, but
+# apk takes its lock under /, so it opens / too (no acknowledgement).
 #
 # Exit codes: apk's own for apk; 0 done, 1 error, 2 usage, 6 busy (another
 # package change holds the lock).
@@ -92,9 +93,21 @@ acknowledge() {
     mkdir -p "${ACK%/*}" && : > "$ACK" || say "cannot record the acknowledgement in $ACK"
 }
 
+# refreshes: apk update changes no package, but apk takes its lock under /
+refreshes() {
+    for _a in "$@"; do
+        case "$_a" in -*) ;; update) return 0 ;; *) return 1 ;; esac
+    done
+    return 1
+}
+
 cmd_apk() {
-    booted && changes "$@" || exec "$APK" "$@"
-    acknowledge
+    booted || exec "$APK" "$@"
+    if changes "$@"; then
+        acknowledge
+    else
+        refreshes "$@" || exec "$APK" "$@"
+    fi
     mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
     exec 8>>"$RUN_DIR/apk.lock" || die "cannot open $RUN_DIR/apk.lock"
     flock -n 8 || { say "waiting for another package change"; flock 8; } || exit 6
