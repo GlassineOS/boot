@@ -253,6 +253,20 @@ gr_umount $R
 btrfs -q subvolume create $W/src/bad; mkdir $W/src/bad/etc; btrfs property set -ts $W/src/bad ro true
 btrfs -q send $W/src/bad | $G receive - >/dev/null
 ok "stage: a base without /etc/passwd: refused" "$G stage bad --yes 2>$W/err; [ \$? = 1 ] && grep -q 'no /etc/passwd' $W/err"
+# --- bases remove ---------------------------------------------------------------
+PREV0=$(gs_kv $S/state/deploy previous)
+mkdir -p $U/deployments/rm1; echo base=bad > $U/deployments/rm1/meta; gs_update $S/state/deploy previous=rm1
+ok "bases remove: a bad name: exit 2; another verb: usage" "$G bases remove ../x 2>/dev/null; a=\$?; $G bases drop b3 2>/dev/null; [ \$a\$? = 22 ] && [ -e $S/bases/b3 ]"
+ok "bases remove: an unknown base: exit 1" "$G bases remove nope --yes 2>$W/err; [ \$? = 1 ] && grep -q 'no base nope' $W/err"
+ok "bases remove: the current deployment's base: refused even with --yes" "$G bases remove $NB --yes 2>$W/err; [ \$? = 1 ] && grep -q \"in use by deployment $CUR\" $W/err && [ -e $S/bases/$NB ]"
+ok "bases remove: the candidate's base: refused" "$G bases remove b2 --yes 2>$W/err; [ \$? = 1 ] && grep -q \"in use by deployment $SB\" $W/err && [ -e $S/bases/b2 ]"
+ok "bases remove: unreadable deployments do not read as unused" "mv $U/deployments/$CUR/meta $W/meta.save; $G bases remove b3 --yes 2>$W/err; a=\$?; mv $W/meta.save $U/deployments/$CUR/meta; [ \$a = 1 ] && grep -q 'cannot read the deployments' $W/err && [ -e $S/bases/b3 ]"
+ok "bases remove: an unused base: gone, without asking" "$G bases remove b3 </dev/null >/dev/null && [ ! -e $S/bases/b3 ] && ! btrfs subvolume list $S | grep -q 'bases/b3$'"
+ok "bases remove: the previous deployment's base: asks, names the rollback, nothing removed" "$G bases remove bad </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'rm1' $W/err && grep -q 'Rollback to rm1 is lost' $W/err && [ -e $S/bases/bad ]"
+ok "bases remove --yes: removed; the deployment stays, base_present=no" "$G bases remove bad --yes >/dev/null && [ ! -e $S/bases/bad ] && [ -e $U/deployments/rm1/meta ] && $G list --porcelain | grep 'id=rm1' | grep -q 'base_present=no'"
+C0=$(st candidate)
+ok "select, rollback: a deployment without its base: refused, candidate unchanged" "$G select rm1 2>$W/err; a=\$?; $G rollback 2>/dev/null; [ \$a\$? = 11 ] && grep -q 'its base bad is not on' $W/err && [ \"\$(st candidate)\" = \"$C0\" ]"
+rm -rf $U/deployments/rm1; gs_update $S/state/deploy "previous=$PREV0"
 gs_update $S/state/deploy candidate= tries=0; rm -rf $U/deployments/$SB
 for v in bases/b2 bases/b3 bases/bad modules/m9; do btrfs property set -fts $S/$v ro false 2>/dev/null; btrfs -q subvolume delete $S/$v; done
 umount $W/src

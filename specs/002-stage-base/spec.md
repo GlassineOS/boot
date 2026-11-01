@@ -82,7 +82,7 @@ memberships survive a base change and a reset alike.
 
 - The replay of the user's packages (the apk wrapper, epic P1) and carrying only what
   the device changed (P5).
-- Removing old bases (`bases` only lists).
+- Removing old bases: `bases remove`, added in 0.3 (docs/deployments.md).
 - Downloading streams; checking a signature (`--sha256` only).
 
 ## Success criteria

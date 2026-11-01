@@ -142,6 +142,7 @@ glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation]
 glassine-deploy stage BASE [--now] [--yes] [--discard-hibernation]
 glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
 glassine-deploy bases [--porcelain]
+glassine-deploy bases remove BASE [--yes] [--discard-hibernation]
 glassine-deploy packages [ID] [--porcelain]
 glassine-deploy switch [--discard-hibernation]
 glassine-deploy accept ID
@@ -159,6 +160,7 @@ glassine-deploy accept ID
 | `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. The only verb that needs btrfs-progs (and zstd for `.zst`). |
 | `packages [ID]` | how a deployment's packages (current by default) differ from its base's, derived each time (no bookkeeping): world entries `added` and `removed` (constraints and tags as written), packages installed in another version: `raised`/`lowered` (`apk version -t`; `changed` where apk is missing). A deployment that is not running needs userdata mounted. The replay input of a later base. |
 | `bases` | one record per subvolume under `bases/` and `modules/`, with the deployments whose meta names it |
+| `bases remove BASE` | deletes the subvolume and waits until its space is back. Refuses the base of the booted, current, candidate or staged deployment. Other deployments on it stay on userdata but can no longer be selected (`list` shows `base_present=no`); it asks first (`--yes`), naming them and a lost rollback. Modules are not removed. |
 | `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), merges the accounts (below), syncs, then sets `candidate=<id> tries=2 staged=`. Interrupted = nothing selected, redone in full next time. |
 | `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous. Refuses a non-candidate; accepting current is a no-op. |
 
