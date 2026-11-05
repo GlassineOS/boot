@@ -21,7 +21,8 @@
 # The package installs this script as /usr/sbin/apk too (before /sbin/apk on
 # PATH); called as "apk" it is "glassine apk". On a system not booted from a
 # deployment it runs apk-tools unchanged. apk update changes no package, but
-# apk takes its lock under /, so it opens / too (no acknowledgement).
+# apk takes its lock under /, so it opens / too (no acknowledgement). A simulation
+# (-s) and any user but root run apk-tools directly: no lock, no acknowledgement.
 #
 # Exit codes: apk's own for apk; 0 done, 1 error, 2 usage, 6 busy (another
 # package change holds the lock).
@@ -101,8 +102,19 @@ refreshes() {
     return 1
 }
 
+# simulates: apk -s changes nothing and takes no lock, so it needs neither / nor root
+simulates() {
+    for _a in "$@"; do
+        case "$_a" in --simulate) return 0 ;; --*) ;; -*s*) return 0 ;; esac
+    done
+    return 1
+}
+
 cmd_apk() {
     booted || exec "$APK" "$@"
+    # no lock and no / for these: a simulation, and any user but root (who can't
+    # open either; a real change then fails with apk's own message)
+    if simulates "$@" || [ "$(id -u)" != 0 ]; then exec "$APK" "$@"; fi
     if changes "$@"; then
         acknowledge
     else
