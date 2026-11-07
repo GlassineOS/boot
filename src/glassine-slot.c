@@ -166,8 +166,11 @@ static int next_slot(const uint64_t at[2])
     for (int i = 0; i < 2; i++)
         if ((at[i] & ACTIVE) && prio(at[i]) > best)
             best = prio(at[i]), s = i;
+    /* no active slot: ABL takes slot a only on a first boot, when a is not
+     * active, not successful, not unbootable and has priority 0 (it then gives
+     * a priority 3, active, 7 tries); otherwise nothing boots */
     if (s < 0)
-        s = 0;  /* first boot: slot a */
+        return !(at[0] & (ACTIVE | SUCCESS | UNBOOTABLE)) && prio(at[0]) == 0 ? 0 : -1;
     if (!(at[s] & UNBOOTABLE) && ((at[s] & SUCCESS) || tries(at[s]) > 0))
         return s;
     if (!(at[!s] & UNBOOTABLE) && (at[!s] & SUCCESS))

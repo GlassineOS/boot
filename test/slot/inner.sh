@@ -57,6 +57,14 @@ sgdisk -A 3:clear:51 -A 3:clear:52 -A 3:clear:53 $I >/dev/null
 ok "next: b without tries and not successful -> a" "S status --porcelain && grep -qx 'next=a' $W/out"
 sgdisk -A 1:clear:54 $I >/dev/null
 ok "next: neither bootable -> none" "S status --porcelain && grep -qx 'next=' $W/out"
+# no active slot: ABL takes a only when all of a's slot bits are 0 (a first boot)
+setbits() { p=$1; shift; for b in 48 49 50 51 52 53 54 55; do sgdisk -A $p:clear:$b $I >/dev/null; done; for b; do sgdisk -A $p:set:$b $I >/dev/null; done; }
+setbits 1; setbits 3 49 54
+ok "next: none active, a all zero, b successful -> a (first boot)" "S status --porcelain && grep -qx 'next=a' $W/out"
+setbits 3
+ok "next: none active, both all zero -> a (first boot)" "S status --porcelain && grep -qx 'next=a' $W/out"
+setbits 1 49 54
+ok "next: none active, a priority 2 and successful -> none" "S status --porcelain && grep -qx 'next=' $W/out"
 
 # refusals
 mkdisk; : > $W/cmdline; snap
