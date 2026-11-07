@@ -146,7 +146,11 @@ cleanup() {
     fi
     MOUNTED_HERE=''
 }
-trap cleanup EXIT INT TERM
+# an interrupt leaves the script (the EXIT trap then cleans up); a trap that only
+# cleaned up would let it carry on with a staged deployment that was just removed
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # system_open: make the system partition's top level readable at SYSTEM_MNT.
 # Sets SYS_FS (btrfs/ext4/…/none) and SYS_DIR (empty if not readable). A

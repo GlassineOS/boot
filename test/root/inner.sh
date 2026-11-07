@@ -123,6 +123,12 @@ gr_assemble $S $U d1 $R && echo later > $R/etc/eink/eink.conf && gr_umount $R
 mkdir -p $W/shim; printf '#!/bin/sh\nexit 1\n' > $W/shim/cp; chmod +x $W/shim/cp
 echo leftover > $NS/leftover; cp $S/state/deploy $W/stS
 ok "an interrupted switch (cut copy): exit 1, still staged, nothing selected, marker gone, nothing mounted" "PATH=$W/shim:\$PATH $G switch 2>/dev/null; [ \$? = 1 ] && cmp -s $S/state/deploy $W/stS && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
+mkdir -p $W/shim2; printf '#!/bin/sh\n: > %s/cpstarted\nsleep 2\nexec /bin/cp "$@"\n' $W > $W/shim2/cp; chmod +x $W/shim2/cp; rm -f $W/cpstarted
+PATH=$W/shim2:$PATH $G switch >/dev/null 2>&1 &
+swpid=$!
+while [ ! -e $W/cpstarted ]; do sleep 0.1; done
+kill -TERM $swpid; wait $swpid; swrc=$?
+ok "TERM during the switch: the script exits (143), still staged, nothing selected, marker gone, nothing mounted" "[ $swrc = 143 ] && cmp -s $S/state/deploy $W/stS && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
 : > $W/run/switching
 ok "switch: a stale marker does not block it; redone from scratch; selected with 2 tries" "$G switch >/dev/null 2>&1 && [ \"\$(st candidate)\" = $N ] && [ \"\$(st tries)\" = 2 ] && [ -z \"\$(st staged)\" ] && [ ! -e $NS/leftover ] && [ ! -e $W/run/switching ]"
 ok "switch carries the migrate list (shipped + the user's), with the change made after the reset" "[ \"\$(cat $NS/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $NS/etc/hostname)\" = myhost ] && [ -e $NS/var/lib/bluetooth/k ] && [ -e $NS/etc/wireguard/wg0.conf ] && grep -qx 'user:x:1000:1000::/home/user:/bin/ash' $NS/etc/passwd"
