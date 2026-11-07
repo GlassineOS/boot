@@ -134,7 +134,9 @@ hibernation step) and after `gr_carry` has put the tmpfs on the new root's `/run
 3. If the manifest exists: mount `DEVICE_PART` `ro,noload` (no journal replay, nothing
    written) directly under the new root, `$NEWROOT/run/glassine/device-part` (after
    `gr_carry`'s tmpfs, so it needs no move), and check every file against the manifest's
-   sha256 (a few MB, `sha256sum`). Only when all match is `glassine/` bound on
+   sha256 with `sha256sum` (about 33 MB on the Note Air, most of it radio and DSP images;
+   estimated well under a second per boot, accepted for never exposing an unverified
+   file). Only when all match is `glassine/` bound on
    `$NEWROOT/run/glassine/device`, read-only. Nothing unverified is ever visible there.
 4. Otherwise nothing is bound (a mount without a valid seed is unmounted); the seed hook
    runs later.
@@ -210,11 +212,17 @@ under `/var/lib/glassine-bootimg` (`pending`, `failed`, `current`, `deferred`, `
 Writers: `glassine-bootimg` (install, accept, rollback, retry) and the initramfs (one try).
 
 **One trial at a time.** "A kernel candidate is set" means from `install` until the
-candidate is accepted or failed, not only during the trial boot.
+candidate is accepted, failed or cancelled, not only during the trial boot.
+`glassine-bootimg cancel` drops it: clears `candidate`, `candidate_img` and `tries`,
+leaves the default boot alone (on `bootpart-test` the default slot isn't touched), and
+keeps the files for a later `install`.
 
-- While a kernel candidate is set: `select`, `stage` and `reset` refuse (exit 8), and the
-  shutdown switch and the `--now` paths leave a staged deployment staged (it switches at
-  a later shutdown).
+- While a kernel candidate is set: `select`, `stage` and `reset` refuse (exit 8, the
+  message names `glassine-bootimg cancel`), and the shutdown switch leaves a staged
+  deployment staged (it switches at a later shutdown).
+- **The escape routes always work:** `reset --now` and `rollback` (the recovery's) run
+  `glassine-bootimg cancel` first and say so. A broken deployment never waits for a kernel
+  trial.
 - While a deployment is a candidate or staged: `install` doesn't refuse, it puts the
   release in `deferred`, and `glassine-bootimg-promote` installs it automatically after
   that deployment is accepted or failed.
@@ -299,7 +307,7 @@ So a kernel and a base built with different table versions still compare.
 A boot image is **valid** when:
 
 1. the kernel's `provides` covers the initramfs's `needs`;
-2. kernel and device tree come from the same source commit; otherwise `install` logs a
+2. the kernel's `dtbs` lists the device tree (built together); otherwise `install` logs a
    warning and goes on: the device-tree ABI only promises that newer kernels accept older
    trees, so the trial (every install is one) is what proves the pair;
 3. it fits the board's limits (slot size, the bootloader's ramdisk limit).
@@ -313,7 +321,9 @@ Checked by:
 - `glassine-bootimg install`, before the hand-off: 1–3, and that the kernel covers the
   deployments that will boot next (current, and a staged one). `previous` isn't required:
   an old deployment never blocks a kernel update; going back to it is checked when it is
-  selected. The modules are checked
+  selected. If the current kernel doesn't cover it (exit 8), the way back is
+  `glassine-bootimg rollback` first (the previous kernel's modules are kept), then the
+  deployment's. The modules are checked
   at `<system>/modules/<release>`, not under `/lib/modules`, where a new release can't
   appear until it boots;
 - `glassine-deploy select` (and so `rollback`) and `stage`/`reset`: refuse a deployment
@@ -365,8 +375,8 @@ kernel (with a kexec loader) is a loader change, not a format change: an empty v
 
 | Where | What |
 |---|---|
-| `glassine-deploy` | `receive --boot FILE` (an existing name is a no-op); exit 8 for `select`/`rollback`/`stage`/`reset`; `switch` and `--now` leave a deployment staged while a kernel candidate is set; `bases remove` also removes unused modules and `boot/` files |
-| `glassine-bootimg` | kernel records, trial and accept on the system partition in the deployments layout; `install` defers during a deployment trial or with a staged deployment; `status` `format=1` |
+| `glassine-deploy` | `receive --boot FILE` (an existing name is a no-op); exit 8 for `select`/`stage`/`reset`; `reset --now` and `rollback` cancel a kernel candidate first; `switch` leaves a deployment staged while a kernel candidate is set; `bases remove` also removes unused modules and `boot/` files |
+| `glassine-bootimg` | kernel records, trial and accept on the system partition in the deployments layout; `install` defers during a deployment trial or with a staged deployment; `cancel` (new); `status` `format=1` |
 | initramfs | the kernel trial (boots current, no deployment try, no accept); the `DEVICE_PART` mount, verified before it is bound |
 | `glassine-hibernate` | exit 3 while another kernel than the running one is selected, during a kernel trial, and while `DEVICE_PART` is read-write |
 | `board.conf` | `DEVICE_PART`, `HANDOFF`; `KERNEL`, `DTB`, `INITRAMFS` only for the plain layout |
