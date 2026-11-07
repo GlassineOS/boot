@@ -249,7 +249,7 @@ tree or initramfs for the running kernel).
 | Value | How | Boards |
 |---|---|---|
 | `bootpart-test` | the candidate's image written to a one-shot test slot, the default slot written on accept (today's `glassine-bootimg`) | boards with a spare slot |
-| `blocklist` | a cold boot of a kernel file whose storage blocks the bootloader reads | the Note Air (planned; [hub#53](https://github.com/GlassineOS/hub/issues/53)) |
+| `blocklist` | a cold boot of a kernel file whose storage blocks the bootloader reads | the Note Air (planned; [blocklist.md](blocklist.md), [hub#53](https://github.com/GlassineOS/hub/issues/53)) |
 | `kexec`, `hardboot` | from a minimal loader / a warm reset into a staged image | not specified here |
 | empty | none: `install` refuses ("kernel updates are paused") | the Note Air today |
 
