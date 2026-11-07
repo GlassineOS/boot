@@ -1,10 +1,9 @@
 # Kernel artifacts: what a build hands to a device
 
-Status: **agreed design; nothing here is implemented yet.** It builds on the
-`glassine-deploy` of branch `deploy-0.3-apk-simulate` (812eedb7c2ae, which contains
-`deploy-0.3-packages`: `receive --modules`, `stage`, `bases remove`), which this repository
-merges first. Kernel updates stay paused on a device until its hand-off (below) exists. Once implemented, `images`
-builds to this page and the tools here consume it. Changes go through this repository
+Status: **agreed design; nothing here is implemented yet.** It builds on
+`glassine-deploy`'s `receive --modules`, `stage` and `bases remove`. Kernel updates stay
+paused on a device until its hand-off (below) exists. Once implemented, `images` builds to
+this page and the tools here consume it. Changes go through this repository
 first ([constitution](../.specify/memory/constitution.md), principle IV).
 
 A device boots four things with separate lifecycles: a **kernel**, a **device tree**, an
@@ -223,6 +222,9 @@ keeps the files for a later `install`.
 - **The escape routes always work:** `reset --now` and `rollback` (the recovery's) run
   `glassine-bootimg cancel` first and say so. A broken deployment never waits for a kernel
   trial.
+- `cancel` is also allowed during the trial boot itself: promote then finds no candidate,
+  the next boot is the old kernel again, and `glassine-hibernate` refuses until then
+  because the selected kernel isn't the running one.
 - While a deployment is a candidate or staged: `install` doesn't refuse, it puts the
   release in `deferred`, and `glassine-bootimg-promote` installs it automatically after
   that deployment is accepted or failed.
@@ -328,7 +330,8 @@ Checked by:
   appear until it boots;
 - `glassine-deploy select` (and so `rollback`) and `stage`/`reset`: refuse a deployment
   the current kernel doesn't cover, with a new exit code 8 ("not covered by the current
-  kernel, or a kernel candidate is set").
+  kernel"). The same exit code covers a set kernel candidate (above), except for
+  `rollback` and `reset --now`, which cancel it first.
 
 ## Packing
 

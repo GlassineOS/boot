@@ -19,6 +19,8 @@ initramfs.cpio.gz: initramfs/init build-initramfs.sh lib/glassine-state.sh lib/g
 install: glassine-reboot
 	install -Dm755 sbin/glassine-bootimg $(DESTDIR)$(PREFIX)/sbin/glassine-bootimg
 	install -Dm755 sbin/glassine-deploy $(DESTDIR)$(PREFIX)/sbin/glassine-deploy
+	install -Dm755 sbin/glassine $(DESTDIR)$(PREFIX)/sbin/glassine
+	ln -sf glassine $(DESTDIR)$(PREFIX)/sbin/apk
 	install -Dm755 sbin/glassine-switch-hook $(DESTDIR)$(PREFIX)/sbin/glassine-switch-hook
 	install -Dm755 sbin/glassine-hibernate $(DESTDIR)$(PREFIX)/sbin/glassine-hibernate
 	install -Dm755 openrc/glassine-switch $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-switch
@@ -26,6 +28,7 @@ install: glassine-reboot
 	install -Dm755 openrc/glassine-deploy-accept $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-deploy-accept
 	install -Dm644 lib/glassine-state.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-state.sh
 	install -Dm644 lib/glassine-root.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-root.sh
+	install -Dm644 lib/glassine-accounts.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-accounts.sh
 	install -Dm644 conf/deploy.conf.example $(DESTDIR)$(PREFIX)/share/glassine-boot/deploy.conf.example
 	install -Dm755 sbin/glassine-reboot-clean $(DESTDIR)$(PREFIX)/sbin/glassine-reboot-clean
 	install -Dm755 glassine-reboot $(DESTDIR)$(PREFIX)/sbin/glassine-reboot
@@ -40,6 +43,7 @@ check:
 	sh test/initramfs/test.sh
 	sh test/deploy/test.sh
 	sh test/root/test.sh
+	sh test/replay/test.sh
 
 clean:
 	rm -f glassine-reboot initramfs.cpio.gz

@@ -94,7 +94,7 @@ A staged deployment never boots.
 | Key | Value |
 |---|---|
 | `base` | the base id (required) |
-| `kind` | `install`, `reset`, `reset-full`, later `update` |
+| `kind` | `install`, `reset`, `reset-full`, `update` (`stage`) |
 | `carry` | `migrate` (the switch carries the migrate list) or `none` |
 | `from` | the deployment it was made from |
 | `created` | UTC time |
@@ -139,6 +139,11 @@ glassine-deploy select ID [--yes] [--discard-hibernation]
 glassine-deploy rollback [--yes] [--discard-hibernation]
 glassine-deploy hibernate-invalidate [--yes]
 glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation]
+glassine-deploy stage BASE [--now] [--yes] [--discard-hibernation]
+glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
+glassine-deploy bases [--porcelain]
+glassine-deploy bases remove BASE [--yes] [--discard-hibernation]
+glassine-deploy packages [ID] [--porcelain]
 glassine-deploy switch [--discard-hibernation]
 glassine-deploy accept ID
 ```
@@ -151,7 +156,13 @@ glassine-deploy accept ID
 | `rollback` | `select` previous |
 | `hibernate-invalidate` | turns a hibernate image back into a plain swap file (that session is lost) |
 | `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Home is never touched. |
-| `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), syncs, then sets `candidate=<id> tries=2 staged=`. Interrupted = nothing selected, redone in full next time. |
+| `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. |
+| `stage BASE` flags | `--no-replay` the bare base, `--without NAME` (repeatable) leaves an added package out, `--accept-downgrades` takes lower versions. Exit 7: the replay needs one of these; nothing staged. |
+| `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. The only verb that needs btrfs-progs (and zstd for `.zst`). |
+| `packages [ID]` | how a deployment's packages (current by default) differ from its base's, derived each time (no bookkeeping): world entries `added` and `removed` (constraints and tags as written), packages installed in another version: `raised`/`lowered` (`apk version -t`; `changed` where apk is missing). A deployment that is not running needs userdata mounted. The replay input of a later base. |
+| `bases` | one record per subvolume under `bases/` and `modules/`, with the deployments whose meta names it |
+| `bases remove BASE` | deletes the subvolume and waits until its space is back. Refuses the base of the booted, current, candidate or staged deployment. Other deployments on it stay on userdata but can no longer be selected (`list` shows `base_present=no`); it asks first (`--yes`), naming them and a lost rollback. Modules are not removed. |
+| `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), merges the accounts (below), syncs, then sets `candidate=<id> tries=2 staged=`. Interrupted = nothing selected, redone in full next time. |
 | `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous. Refuses a non-candidate; accepting current is a no-op. |
 
 Where it reads and writes:
@@ -173,6 +184,44 @@ make that session unsafe to resume.
 (`/run/glassine/booted` = current), `switch` reads a plain bind of the running `/`. In
 a recovery it reads a read-only overlay of current's layers.
 
+**Account merge** (every switch that carries; `lib/glassine-accounts.sh`): the new
+deployment's `/etc/passwd`, `group` and `shadow` are its own lower's (build layer,
+else base) plus, from current: users and groups with IDs 1000–65533 the new side
+lacks (same ID when free, else the next free one from 1000; a kept user's primary
+group follows by name), every password by name, group memberships of users that
+exist afterwards, `subuid`/`subgid` ranges by name. They replace any carried copy.
+`shadow` keeps the base's owner and mode. Carried files owned by an ID that moved
+(same name, other ID, e.g. a system account renumbered by a new base) get the new
+owner, modes kept. Accounts the new base has no row for are not carried; the switch
+lists them.
+
+## The root lock and the apk wrapper: `glassine`
+
+```
+glassine status | unlock | lock
+glassine apk [APK ARGUMENTS…]      (also installed as /usr/sbin/apk)
+```
+
+In a system booted from a deployment (`/run/glassine/booted`), `/` is a read-only
+bind; `/etc`, `/var`, `/usr/local`, `/opt` stay writable. `unlock` makes `/` writable
+until `lock` or the next boot (marker `RUN_DIR/unlocked`); such edits stay in the
+deployment but are not carried to a new base. `glassine apk` runs apk-tools
+(`GLASSINE_APK`, default `/sbin/apk`, which `/usr/sbin/apk` precedes on PATH): a
+command line with `add`, `del`, `fix`, `upgrade` or `cache` takes `RUN_DIR/apk.lock`
+(a second one waits), makes `/` writable for that run and read-only again after it
+(left writable when unlocked by hand). The first change asks once to acknowledge that
+packages are replayed and manual edits are not (`/etc/glassine/apk-acknowledged`;
+`GLASSINE_APK_ACK=1` for scripts, refused without a terminal otherwise). Other apk
+commands, and every command outside a deployment, run apk-tools unchanged. Programs
+that link libapk themselves (e.g. a package-manager daemon) do not go through it.
+
+`apk update` changes no package but takes apk's lock under `/`, so it opens `/` too, without
+the acknowledgement. A package from another repository (`name@tag`, `-X`) that would replace
+installed ones is listed first and asked about (`GLASSINE_APK_MIX=1` for scripts). With
+`/etc/apk/cache` present, packages stay in the cache and the wrapper cleans it after each
+change; the replay uses that cache, so a base staged offline still gets the packages this
+system has. After a change, it says when a staged deployment does not include it.
+
 ### Porcelain (format 1)
 
 `--porcelain` prints `glassine-deploy 1` on the first line, then one record per line.
@@ -187,6 +236,18 @@ type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previo
 ```
 glassine-deploy 1
 type=deployment	id=…	state=current	base=…	base_present=yes	kernel=…	created=…	size_kib=…
+```
+
+```
+glassine-deploy 1
+type=base	kind=base	name=…	used_by=<id>,<id>
+type=base	kind=module	name=7.3.0-…	used_by=
+```
+
+```
+glassine-deploy 1
+type=package	change=added	entry=retroarch
+type=package	change=raised	name=musl	version=1.2.5-r11	base_version=1.2.5-r10
 ```
 
 `state` is one of current, candidate, staged, failed, previous, kept (the first that
@@ -206,6 +267,7 @@ no base. `status`'s `failed` is the last deployment that ran out of tries.
 | 4 | a hibernated session on userdata, refused |
 | 5 | not enough space on userdata (the deployment stays staged) |
 | 6 | busy (another writer holds the lock) |
+| 7 | `stage`: the package replay stops: a package does not install or upgrade on the new base, or a version would go down (see `stage BASE` flags); nothing staged |
 
 ## The shutdown switch
 

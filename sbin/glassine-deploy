@@ -11,6 +11,11 @@
 #   glassine-deploy rollback [--yes] [--discard-hibernation]
 #   glassine-deploy hibernate-invalidate [--yes]
 #   glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation]
+#   glassine-deploy stage BASE [--no-replay] [--without NAME]… [--accept-downgrades] [--now] [--yes] [--discard-hibernation]
+#   glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
+#   glassine-deploy bases [--porcelain]
+#   glassine-deploy bases remove BASE [--yes] [--discard-hibernation]
+#   glassine-deploy packages [ID] [--porcelain]
 #   glassine-deploy switch [--discard-hibernation]
 #   glassine-deploy accept ID
 #
@@ -19,11 +24,29 @@
 # = select the previous one. hibernate-invalidate turns a hibernate image on
 # userdata back into a plain swap file (that session is lost). reset stages
 # a new deployment on the current one's base; the next switch fills it and
-# selects it. switch runs at shutdown (the hook's job, after services stop) or
+# selects it. stage BASE does the same on another base (a base update), with
+# the user's package changes replayed into the new deployment's build layer:
+# apk from the new base in a chroot, scripts on, an empty /run so that OpenRC
+# starts nothing. A package version going down, or a package that no longer
+# resolves, stops the stage with exit 7 and nothing staged: --accept-downgrades
+# takes the lower versions, --without NAME leaves an added package out,
+# --no-replay stages the bare base;
+# receive puts a btrfs send stream (full or incremental, .zst by its name) under
+# bases/ (or modules/), read-only; bases lists them with their users. bases
+# remove deletes a base no deployment needs to boot now: it refuses the base of
+# the booted, current, candidate or staged deployment, and asks first when other
+# deployments (the previous one, usually) would lose theirs: those stay on
+# userdata but can no longer be selected.
+# packages lists how a deployment's packages differ from its base's (current
+# by default): added and removed world entries, packages installed in another
+# version (raised/lowered, by apk version -t when apk is there, else changed);
+# derived each time from the world and the installed database, no bookkeeping.
+# switch runs at shutdown (the hook's job, after services stop) or
 # at once with reset --now (the recovery): it starts the staged deployment's
 # switch layer afresh, carries the migrate list of the current deployment
 # (/usr/share/glassine/migrate.list + /etc/glassine/migrate.d/*.list) into it,
-# or nothing after reset --full, and only then makes it the candidate; an
+# or nothing after reset --full, merges the user accounts into the new base's
+# (lib/glassine-accounts.sh), and only then makes it the candidate; an
 # interrupted switch selects nothing and is redone in full the next time. So
 # changes made between the reset and the shutdown are carried. Home is on
 # userdata, outside the deployments, and never touched. accept ID is the
@@ -36,7 +59,7 @@
 # Exit codes: 0 done, 1 error, 2 usage, 3 the state format on the system
 # partition is newer than this tool (every command refuses; status still
 # prints both versions), 4 hibernated and refused, 5 not enough space,
-# 6 busy.
+# 6 busy, 7 the replay needs a decision.
 #
 # Configuration: /etc/glassine/deploy.conf (conf/deploy.conf.example), or
 # the file named by GLASSINE_DEPLOY_CONF.
@@ -52,11 +75,14 @@ RUN_DIR=/run/glassine
 . "$LIB" || { echo "glassine-deploy: cannot read $LIB" >&2; exit 1; }
 # shellcheck source=../lib/glassine-root.sh
 . "${LIB%/*}/glassine-root.sh" || { echo "glassine-deploy: cannot read ${LIB%/*}/glassine-root.sh" >&2; exit 1; }
+# shellcheck source=../lib/glassine-accounts.sh
+. "${LIB%/*}/glassine-accounts.sh" || { echo "glassine-deploy: cannot read ${LIB%/*}/glassine-accounts.sh" >&2; exit 1; }
 
 PORCELAIN_VERSION=1
 SWAPFILE="$USERDATA_PREFIX/swap/hibernate"
 GUARD="$USERDATA_PREFIX/swap/hibernate.guard"
-MOUNTED_HERE='' UD_MOUNTED_HERE='' TMP_VIEW='' NEW_DEP='' SWITCHING=''
+MOUNTED_HERE='' UD_MOUNTED_HERE='' TMP_VIEW='' NEW_DEP='' SWITCHING='' RECV_TMP='' RECV_BEFORE=''
+REPLAY_MNT='' REPLAY_BINDS='' REPLAY_RESOLV='' REPLAY_TMP='' NEW_ETC=''
 
 die() { echo "glassine-deploy: $*" >&2; exit 1; }
 fail() { _c=$1; shift; echo "glassine-deploy: $*" >&2; exit "$_c"; }
@@ -73,7 +99,24 @@ fstype() {
     blkid "$1" 2>/dev/null | sed -n 's/.* TYPE="\([^"]*\)".*/\1/p' | head -n 1
 }
 
+# replay_umount: the replay's chroot down, binds first. The mount point is only
+# ever rmdir'ed: while a bind is on it, a recursive remove would reach the host.
+replay_umount() {
+    [ -n "$REPLAY_MNT" ] || return 0
+    for _m in $REPLAY_BINDS; do umount "$REPLAY_MNT$_m" || echo "glassine-deploy: cannot unmount $REPLAY_MNT$_m" >&2; done
+    REPLAY_BINDS=''
+    [ -z "$REPLAY_RESOLV" ] || rm -f "$REPLAY_MNT/etc/resolv.conf"
+    REPLAY_RESOLV=''
+    umount "$REPLAY_MNT" && rmdir "$REPLAY_MNT" || echo "glassine-deploy: cannot unmount $REPLAY_MNT" >&2
+    REPLAY_MNT=''
+}
+
 cleanup() {
+    replay_umount
+    [ -n "$REPLAY_TMP" ] && rm -rf "$REPLAY_TMP"
+    REPLAY_TMP=''
+    [ -n "$NEW_ETC" ] && rm -rf "$NEW_ETC"
+    NEW_ETC=''
     [ -n "$TMP_VIEW" ] && umount "$TMP_VIEW" 2>/dev/null && rmdir "$TMP_VIEW" 2>/dev/null
     TMP_VIEW=''
     [ -n "$SWITCHING" ] && rm -f "$SWITCHING"
@@ -81,6 +124,16 @@ cleanup() {
     # a half-built deployment never stays behind
     [ -n "$NEW_DEP" ] && rm -rf "$NEW_DEP"
     NEW_DEP=''
+    # a failed receive leaves nothing behind: what it added to RECV_TMP
+    # (bases/ or modules/) since RECV_BEFORE goes
+    if [ -n "$RECV_TMP" ]; then
+        for _r in "$RECV_TMP"/*; do
+            [ -d "$_r" ] || continue
+            printf '%s\n' "$RECV_BEFORE" | grep -qxF -- "${_r##*/}" && continue
+            btrfs -q subvolume delete "$_r" >/dev/null 2>&1 || rm -rf "$_r"
+        done
+    fi
+    RECV_TMP=''
     # the state lock (fd 9, on $SYSTEM_MNT/state/.lock) keeps the system
     # partition busy; cleanup runs only before the lock is taken or at exit
     exec 9>&-
@@ -93,7 +146,11 @@ cleanup() {
     fi
     MOUNTED_HERE=''
 }
-trap cleanup EXIT INT TERM
+# an interrupt leaves the script (the EXIT trap then cleans up); a trap that only
+# cleaned up would let it carry on with a staged deployment that was just removed
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # system_open: make the system partition's top level readable at SYSTEM_MNT.
 # Sets SYS_FS (btrfs/ext4/…/none) and SYS_DIR (empty if not readable). A
@@ -373,6 +430,8 @@ do_select() {
     ud_dirs deployments | grep -qx -- "$1" || die "no deployment $1 on userdata"
     state_open_rw
     cur=$(gs_kv "$S/deploy" current)
+    _b=$(meta_kv "$(ud_cat "deployments/$1/meta")" base)
+    [ -z "$_b" ] || [ -d "$SYSTEM_MNT/bases/$_b" ] || die "deployment $1 cannot boot: its base $_b is not on the system partition"
     if [ "$1" = "$cur" ]; then
         gs_update "$S/deploy" candidate= tries=0 || die "cannot write $S/deploy"
         echo "glassine-deploy: $1 is the current deployment; no candidate"
@@ -477,12 +536,155 @@ cmd_reset() {
     else
         confirm "Reset system: a new deployment on base $base that keeps only the migrate list (accounts, Wi-Fi, Bluetooth, settings; your packages and edits go), prepared $when?"
     fi
+    kind=reset carry=migrate; [ "$FULL" = 1 ] && kind=reset-full carry=none
+    stage_new
+}
+
+# valid_name NAME: a deployment, base or modules name ([A-Za-z0-9._-], no
+# leading dot)
+valid_name() { case "$1" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac; }
+
+cmd_stage() {
+    valid_name "$ARG" || fail 2 "not a base name: $ARG"
+    [ "$FULL" = 0 ] || fail 2 "stage carries the migrate list; --full is reset's"
+    state_open_rw
+    cur=$(gs_kv "$S/deploy" current)
+    [ -n "$cur" ] || die "no current deployment to carry from"
+    [ -d "$SYSTEM_MNT/bases/$ARG" ] || die "no base $ARG on the system partition (receive it first)"
+    [ -r "$SYSTEM_MNT/bases/$ARG/etc/passwd" ] || die "base $ARG has no /etc/passwd"
+    ud_open_rw
+    base=$ARG
+    when="at the next shutdown"; [ "$NOW" = 1 ] && when=now
+    confirm "Update: a new deployment on base $base that keeps the migrate list and your accounts (Wi-Fi, Bluetooth, settings; your packages and edits go), prepared $when?"
+    kind=update carry=migrate
+    stage_new
+}
+
+# replay_apk ARGS: apk from the new base, in its chroot; the state lock stays out
+replay_apk() {
+    chroot "$REPLAY_MNT" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
+        /sbin/apk --no-progress --cache-dir /var/cache/apk "$@" 9>&-
+}
+
+# do_replay: the user's package changes on the running deployment, against its
+# base, applied to the new deployment's build layer on $base. Needs state_open_rw
+# + UD, cur, NEW_DEP. Sets nothing; dies or fails 7, which removes NEW_DEP.
+do_replay() {
+    [ "$NOREPLAY" = 1 ] && { echo "glassine-deploy: no replay: your packages stay out of this deployment"; return 0; }
+    vapk=${GLASSINE_DEPLOY_APK:-/sbin/apk}
+    [ -x "$vapk" ] || die "the replay needs apk ($vapk); --no-replay stages without your packages"
+    t=${TMPDIR:-/tmp}/glassine-replay.$$
+    mkdir -p "$t" || die "cannot create $t"
+    REPLAY_TMP=$t
+    ob=$(gs_kv "$UD/deployments/$cur/meta" base)
+    [ -n "$ob" ] && [ -d "$SYSTEM_MNT/bases/$ob" ] || die "deployment $cur: base ${ob:-?} is missing"
+    obd=$SYSTEM_MNT/bases/$ob nbd=$SYSTEM_MNT/bases/$base
+    if [ "$(cat "$RUN_DIR/booted" 2>/dev/null)" = "$cur" ]; then
+        # no leading //: busybox mount reads //var/cache/apk as a network share
+        view=${GLASSINE_DEPLOY_ROOT:-/}; view=${view%/}
+    else
+        TMP_VIEW=$RUN_DIR/view.$$
+        gr_merged_ro "$SYSTEM_MNT" "$UD/deployments/$cur" "$TMP_VIEW" || die "cannot open deployment $cur read-only"
+        view=$TMP_VIEW
+    fi
+    pkg_world "$obd/etc/apk/world" > "$t/ow"; pkg_world "$view/etc/apk/world" > "$t/vw"; pkg_world "$nbd/etc/apk/world" > "$t/nw"
+    pkg_db "$obd/lib/apk/db/installed" > "$t/oi" 2>/dev/null; pkg_db "$view/lib/apk/db/installed" > "$t/vi" 2>/dev/null
+    pkg_db "$nbd/lib/apk/db/installed" > "$t/ni" 2>/dev/null
+    # added and removed against the old base, as far as the new one differs
+    awk 'FILENAME == ARGV[1] { o[$0] = 1; next } FILENAME == ARGV[2] { n[$0] = 1; next } !($0 in o) && !($0 in n)' "$t/ow" "$t/nw" "$t/vw" > "$t/add0"
+    : > "$t/add"
+    while read -r e; do
+        _n=$(echo "$e" | sed 's/[<>=~@].*//')
+        case " $WITHOUT " in *" $_n "*) echo "glassine-deploy: leaving out $e" ;; *) echo "$e" >> "$t/add" ;; esac
+    done < "$t/add0"
+    awk 'FILENAME == ARGV[1] { v[$0] = 1; next } FILENAME == ARGV[2] { n[$0] = 1; next } !($0 in v) && ($0 in n)' "$t/vw" "$t/nw" "$t/ow" > "$t/del"
+    # raised: above the old base and still above the new one (a base that caught up takes over)
+    : > "$t/up"
+    awk 'FILENAME == ARGV[1] { o[$1] = $2; next } FILENAME == ARGV[2] { n[$1] = $2; next } ($1 in o) && ($1 in n) && o[$1] != $2 { print $1, $2, o[$1], n[$1] }' "$t/oi" "$t/ni" "$t/vi" |
+    while read -r n v bv nv; do
+        [ "$("$vapk" version -t "$v" "$bv" 2>/dev/null)" = '>' ] || continue
+        [ "$("$vapk" version -t "$v" "$nv" 2>/dev/null)" = '>' ] && echo "$n" >> "$t/up"
+    done
+    # repositories the user added (a line the old base does not have); never the old
+    # branch's own, which a base on a new branch replaces
+    : > "$t/repos"
+    if [ -r "$view/etc/apk/repositories" ]; then
+        while IFS= read -r l; do
+            [ -n "$l" ] || continue
+            grep -qxF -- "$l" "$obd/etc/apk/repositories" 2>/dev/null && continue
+            grep -qxF -- "$l" "$nbd/etc/apk/repositories" 2>/dev/null && continue
+            echo "$l" >> "$t/repos"
+        done < "$view/etc/apk/repositories"
+    fi
+    cp "$t/ni" "$t/ri"
+    if [ -s "$t/add" ] || [ -s "$t/del" ] || [ -s "$t/up" ]; then
+        echo "glassine-deploy: replaying your packages on base $base: add $(tr '\n' ' ' < "$t/add"); remove $(tr '\n' ' ' < "$t/del"); upgrade $(tr '\n' ' ' < "$t/up")"
+        [ -x "$nbd/sbin/apk" ] && [ -x "$nbd/usr/bin/env" ] || die "base $base has no apk to replay with; --no-replay stages without your packages"
+        M=$RUN_DIR/replay.$$
+        gr_mount_overlay "$M" "$nbd" "$NEW_DEP/build" "$NEW_DEP/work" || die "cannot assemble the new deployment at $M"
+        REPLAY_MNT=$M
+        cat "$t/repos" >> "$M/etc/apk/repositories" || die "cannot write the repositories"
+        for k in "$view"/etc/apk/keys/*; do
+            [ -e "$k" ] && [ ! -e "$M/etc/apk/keys/${k##*/}" ] && cp -p "$k" "$M/etc/apk/keys/"
+        done
+        # the API file systems and the package cache; an empty /run: nothing starts
+        mkdir -p "$M/var/cache/apk" "$M/run" "$M/tmp" "$M/proc" "$M/sys" "$M/dev"
+        mount --bind /dev "$M/dev" && REPLAY_BINDS="/dev $REPLAY_BINDS" || die "cannot bind /dev"
+        mount -t proc proc "$M/proc" && REPLAY_BINDS="/proc $REPLAY_BINDS" || die "cannot mount /proc"
+        mount -t tmpfs tmpfs "$M/run" && REPLAY_BINDS="/run $REPLAY_BINDS" || die "cannot mount /run"
+        mount -t tmpfs tmpfs "$M/tmp" && REPLAY_BINDS="/tmp $REPLAY_BINDS" || die "cannot mount /tmp"
+        if [ -n "$TMP_VIEW" ]; then
+            # not the booted deployment: its view is read-only, and so is a bind of a
+            # directory in it (apk could not write the lists or the downloads): the
+            # cache is a directory of the new deployment, on userdata, gone after the replay
+            mkdir -p "$NEW_DEP/apk-cache" && mount --bind "$NEW_DEP/apk-cache" "$M/var/cache/apk" &&
+                REPLAY_BINDS="/var/cache/apk $REPLAY_BINDS" || die "cannot set up a writable package cache in $NEW_DEP"
+        elif [ -d "$view/var/cache/apk" ]; then
+            mount --bind "$view/var/cache/apk" "$M/var/cache/apk" && REPLAY_BINDS="/var/cache/apk $REPLAY_BINDS" || die "cannot bind the package cache"
+        fi
+        if [ -e /etc/resolv.conf ] && [ ! -L "$M/etc/resolv.conf" ]; then
+            [ -e "$M/etc/resolv.conf" ] || { : > "$M/etc/resolv.conf" && REPLAY_RESOLV=1; }
+            mount --bind /etc/resolv.conf "$M/etc/resolv.conf" && REPLAY_BINDS="/etc/resolv.conf $REPLAY_BINDS" || die "cannot bind resolv.conf"
+        fi
+        replay_apk update || echo "glassine-deploy: no fresh package lists, going on with the cached ones"
+        # shellcheck disable=SC2046  # one package per word
+        [ ! -s "$t/del" ] || replay_apk del $(cat "$t/del") ||
+            fail 7 "removing your removed packages failed; nothing staged. --no-replay stages the bare base"
+        # shellcheck disable=SC2046
+        [ ! -s "$t/add" ] || replay_apk add $(cat "$t/add") ||
+            fail 7 "your added packages do not install on base $base; nothing staged. --without NAME leaves one out, --no-replay stages the bare base"
+        # shellcheck disable=SC2046
+        [ ! -s "$t/up" ] || replay_apk upgrade $(cat "$t/up") ||
+            fail 7 "your upgraded packages do not upgrade on base $base; nothing staged. --no-replay stages the bare base"
+        pkg_db "$M/lib/apk/db/installed" > "$t/ri"
+        replay_umount
+        rm -rf "$NEW_DEP/apk-cache"
+    fi
+    # no silent downgrade: every package the running deployment has, against the new one
+    down=''
+    while read -r n v nv; do
+        [ "$("$vapk" version -t "$v" "$nv" 2>/dev/null)" = '>' ] || continue
+        echo "glassine-deploy: goes down: $n $v -> $nv"
+        down=1
+    done <<EOF
+$(awk 'FILENAME == ARGV[1] { r[$1] = $2; next } ($1 in r) && r[$1] != $2 { print $1, $2, r[$1] }' "$t/ri" "$t/vi")
+EOF
+    if [ -n "$down" ] && [ "$ACCEPT_DOWN" != 1 ]; then
+        fail 7 "these packages would go down in version; nothing staged. --accept-downgrades takes them, or stay on this base until a newer one"
+    fi
+    if [ -n "$TMP_VIEW" ]; then umount "$TMP_VIEW" && rmdir "$TMP_VIEW"; TMP_VIEW=''; fi
+    rm -rf "$t"; REPLAY_TMP=''
+}
+
+# stage_new: a new deployment on $base (kind, carry set) becomes the staged one;
+# --now switches at once. Needs state_open_rw + UD, cur.
+stage_new() {
     id=$(new_id)
     NEW_DEP=$UD/deployments/$id
     mkdir -p "$NEW_DEP/build" "$NEW_DEP/switch" "$NEW_DEP/work" || die "cannot create $NEW_DEP"
-    kind=reset carry=migrate; [ "$FULL" = 1 ] && kind=reset-full carry=none
     printf 'base=%s\nkind=%s\ncarry=%s\nfrom=%s\ncreated=%s\n' "$base" "$kind" "$carry" "$cur" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" |
         gs_write "$NEW_DEP/meta" || die "cannot write $NEW_DEP/meta"
+    [ "$kind" = update ] && do_replay
     sync
     old=$(gs_kv "$S/deploy" staged)
     gs_update "$S/deploy" "staged=$id" || die "cannot write $S/deploy"
@@ -492,9 +694,9 @@ cmd_reset() {
         do_switch
     else
         if [ "$carry" = none ]; then
-            echo "glassine-deploy: $id ($kind of $cur) is staged; the next shutdown selects it, with no settings carried over"
+            echo "glassine-deploy: $id ($kind of $cur, base $base) is staged; the next shutdown selects it, with no settings carried over"
         else
-            echo "glassine-deploy: $id ($kind of $cur) is staged; the next shutdown carries the settings over and selects it"
+            echo "glassine-deploy: $id ($kind of $cur, base $base) is staged; the next shutdown carries the settings over and selects it"
         fi
     fi
 }
@@ -537,6 +739,23 @@ do_switch() {
         for p in $(migrate_paths "$view"); do
             copy_path "$view" "$nd/switch" "$p" || die "copying $p failed; $id stays staged"
         done
+        # the accounts: the new deployment's lower /etc (its build layer over
+        # its base) merged with the old one's; carried files follow moved IDs
+        nb=$(gs_kv "$nd/meta" base)
+        # (each file by itself: the build layer holds only what the replay changed)
+        ne=$RUN_DIR/newetc.$$
+        [ -n "$nb" ] && [ -r "$SYSTEM_MNT/bases/$nb/etc/passwd" ] || die "deployment $id: base ${nb:-?} has no /etc/passwd; $id stays staged"
+        NEW_ETC=$ne
+        ga_lower "$ne" "$nd/build/etc" "$SYSTEM_MNT/bases/$nb/etc" || die "cannot read the new deployment's accounts; $id stays staged"
+        [ -r "$ne/passwd" ] || die "deployment $id has no /etc/passwd; $id stays staged"
+        [ -d "$nd/switch/etc" ] || { mkdir "$nd/switch/etc" && chown "$(stat -c %u:%g "$view/etc")" "$nd/switch/etc" &&
+            chmod "$(stat -c %a "$view/etc")" "$nd/switch/etc"; } || die "cannot create $nd/switch/etc"
+        echo "glassine-deploy: accounts (base $nb + $cur's users)"
+        ga_merge "$view/etc" "$ne" "$nd/switch/etc" "$nd/idmap" || die "the account merge failed; $id stays staged"
+        moved=$(ga_kept_moves "$nd/idmap")
+        [ -z "$moved" ] || die "kept accounts would change ID ($moved) because the new base has accounts at those IDs; /home is outside the deployments and would keep the old owners, and a fallback to $cur would find it changed. Nothing is switched; $id stays staged (stage another base, or free the IDs)"
+        ga_remap "$nd/idmap" "$nd/switch" || die "the owner remap failed; $id stays staged"
+        rm -f "$nd/idmap"
         umount "$TMP_VIEW" && rmdir "$TMP_VIEW"; TMP_VIEW=''
         ;;
     *) die "deployment $id: unknown carry=$(gs_kv "$nd/meta" carry)" ;;
@@ -557,6 +776,161 @@ cmd_switch() {
     do_switch
 }
 
+# subvol_received DIR: DIR is a read-only subvolume with a received UUID
+subvol_received() {
+    [ "$(btrfs property get -ts "$1" ro 2>/dev/null)" = ro=true ] || return 1
+    btrfs subvolume show "$1" 2>/dev/null | grep -q 'Received UUID:[[:space:]]*[0-9a-f]'
+}
+
+cmd_receive() {
+    command -v btrfs >/dev/null || die "receive needs btrfs (btrfs-progs)"
+    sub=bases; [ "$MODULES" = 1 ] && sub=modules
+    if [ "$ARG" != - ]; then
+        [ -r "$ARG" ] || die "cannot read $ARG"
+        if [ -n "$SHA" ]; then
+            have=$(sha256sum "$ARG" | cut -d ' ' -f 1)
+            [ "$have" = "$SHA" ] || die "$ARG: sha256 $have, expected $SHA"
+        fi
+        case "$ARG" in *.zst) command -v zstd >/dev/null || die "a .zst stream needs zstd" ;; esac
+    else
+        [ -z "$SHA" ] || fail 2 "--sha256 needs a file, not -"
+    fi
+    state_open_rw
+    # straight into bases/ (modules/): a read-only subvolume cannot be renamed
+    # (and clearing ro would drop its received UUID); a stream for a name that
+    # exists fails in btrfs receive itself
+    d=$SYSTEM_MNT/$sub
+    mkdir -p "$d" || die "cannot create $d"
+    RECV_BEFORE=$(for n in "$d"/*; do [ -e "$n" ] && echo "${n##*/}"; done)
+    RECV_TMP=$d
+    case "$ARG" in
+    -) btrfs -q receive "$d" ;;
+    *.zst) zstd -dcq "$ARG" | btrfs -q receive "$d" ;;
+    *) btrfs -q receive -f "$ARG" "$d" ;;
+    esac || die "btrfs receive failed (a name that exists already, a cut stream or a missing parent); nothing kept"
+    new=''
+    for n in "$d"/*; do
+        [ -e "$n" ] || continue
+        printf '%s\n' "$RECV_BEFORE" | grep -qxF -- "${n##*/}" || new="$new ${n##*/}"
+    done
+    # shellcheck disable=SC2086  # a name with a space fails valid_name below
+    set -- $new
+    [ $# = 1 ] || die "the stream held $# subvolumes, expected one; nothing kept"
+    name=$1
+    valid_name "$name" || die "received subvolume name '$name' is not valid; nothing kept"
+    subvol_received "$d/$name" || die "$name is not read-only with a received UUID; nothing kept"
+    sync
+    RECV_TMP=''
+    echo "glassine-deploy: received $sub/$name"
+}
+
+cmd_bases() {
+    system_open || die "cannot mount $SYSTEM_DEV read-only"
+    format_check
+    [ "$FMT" = none ] && die "the system partition is not migrated (no state/)"
+    # base -> deployments using it, from the metas on userdata
+    users=''
+    for id in $(ud_dirs deployments); do
+        b=$(meta_kv "$(ud_cat "deployments/$id/meta")" base)
+        [ -n "$b" ] && users="$users$b $id
+"
+    done
+    [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
+    [ "$PORC" = 1 ] || printf '%-8s %-40s %s\n' KIND NAME USED_BY
+    for k in bases modules; do
+        for d in "$SYS_DIR/$k"/*; do
+            [ -d "$d" ] || continue
+            n=${d##*/}; u=''
+            [ $k = bases ] && u=$(printf '%s' "$users" | awk -v b="$n" '$1 == b { printf "%s%s", s, $2; s = "," }')
+            if [ "$PORC" = 1 ]; then
+                out type base; out kind "${k%s}"; out name "$n"; out used_by "$u"; emit
+            else
+                printf '%-8s %-40s %s\n' "${k%s}" "$n" "$u"
+            fi
+        done
+    done
+}
+
+# pkg_db FILE: "name version" per package of an apk installed database
+cmd_bases_remove() {
+    [ "$FIRST" = remove ] || usage
+    valid_name "$ARG" || fail 2 "not a base name: $ARG"
+    state_open_rw
+    d=$SYSTEM_MNT/bases/$ARG
+    [ -d "$d" ] || die "no base $ARG on the system partition"
+    # who needs it, from the metas on userdata; unreadable metas must not read
+    # as "nobody": the current deployment has to be there, with its base
+    cur=$(gs_kv "$S/deploy" current)
+    curb=$(meta_kv "$(ud_cat "deployments/$cur/meta" 2>/dev/null)" base)
+    [ -n "$curb" ] || die "cannot read the deployments on userdata; nothing removed"
+    needed=" $cur $(gs_kv "$S/deploy" candidate) $(gs_kv "$S/deploy" staged) $(cat "$RUN_DIR/booted" 2>/dev/null) "
+    lose=''
+    for id in $(ud_dirs deployments); do
+        [ "$(meta_kv "$(ud_cat "deployments/$id/meta")" base)" = "$ARG" ] || continue
+        case "$needed" in *" $id "*) die "base $ARG is in use by deployment $id; nothing removed" ;; esac
+        lose="$lose $id"
+    done
+    if [ -n "$lose" ]; then
+        prev=$(gs_kv "$S/deploy" previous)
+        note=''
+        case " $lose " in *" $prev "*) note=" Rollback to $prev is lost." ;; esac
+        confirm "Remove base $ARG? Deployments that can no longer boot:$lose.$note"
+    fi
+    btrfs -q subvolume delete --commit-after "$d" >/dev/null || die "cannot delete $d"
+    # the space comes back once the cleaner has dropped the subvolume
+    btrfs -q subvolume sync "$SYSTEM_MNT" >/dev/null 2>&1 || :
+    echo "glassine-deploy: base $ARG removed"
+}
+
+pkg_db() { awk -F: '$1 == "P" { p = $2 } $1 == "V" && p != "" { print p " " $2; p = "" }' "$1" 2>/dev/null | sort; }
+# pkg_world FILE: the world entries, one per line, sorted
+pkg_world() { tr ' ' '\n' < "$1" 2>/dev/null | sed '/^$/d' | sort -u; }
+
+cmd_packages() {
+    require_migrated
+    id=$ARG; [ -n "$id" ] || id=$(gs_kv "$SYS_DIR/state/deploy" current)
+    valid_name "$id" || fail 2 "not a deployment id: $id"
+    base=$(meta_kv "$(ud_cat "deployments/$id/meta")" base)
+    [ -n "$base" ] || die "no deployment $id on userdata (or its meta names no base)"
+    bd=$SYS_DIR/bases/$base
+    [ -d "$bd" ] || die "deployment $id: base $base is missing"
+    # the deployment's merged root: the running one itself, else a read-only view
+    if [ "$(cat "$RUN_DIR/booted" 2>/dev/null)" = "$id" ]; then
+        view=${GLASSINE_DEPLOY_ROOT:-/}
+    else
+        ud_mounted || die "userdata is not mounted; packages of a deployment that is not running need it mounted"
+        TMP_VIEW=$RUN_DIR/view.$$
+        mkdir -p "$TMP_VIEW" && gr_merged_ro "$SYS_DIR" "$USERDATA_MNT/$USERDATA_PREFIX/deployments/$id" "$TMP_VIEW" ||
+            die "cannot open deployment $id read-only"
+        view=$TMP_VIEW
+    fi
+    t=${TMPDIR:-/tmp}/glassine-pkg.$$
+    mkdir -p "$t" || die "cannot create $t"
+    pkg_world "$bd/etc/apk/world" > "$t/bw"; pkg_world "$view/etc/apk/world" > "$t/vw"
+    pkg_db "$bd/lib/apk/db/installed" > "$t/bi"; pkg_db "$view/lib/apk/db/installed" > "$t/vi"
+    apk=${GLASSINE_DEPLOY_APK:-/sbin/apk}; [ -x "$apk" ] || apk=''
+    [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
+    awk 'f == 1 { b[$0] = 1; next } !($0 in b)' f=1 "$t/bw" f=2 "$t/vw" | while read -r e; do
+        if [ "$PORC" = 1 ]; then out type package; out change added; out entry "$e"; emit; else echo "added    $e"; fi
+    done
+    awk 'f == 1 { v[$0] = 1; next } !($0 in v)' f=1 "$t/vw" f=2 "$t/bw" | while read -r e; do
+        if [ "$PORC" = 1 ]; then out type package; out change removed; out entry "$e"; emit; else echo "removed  $e"; fi
+    done
+    awk 'f == 1 { b[$1] = $2; next } ($1 in b) && b[$1] != $2 { print $1, $2, b[$1] }' f=1 "$t/bi" f=2 "$t/vi" |
+    while read -r n v bv; do
+        c=changed
+        if [ -n "$apk" ]; then
+            case $("$apk" version -t "$v" "$bv" 2>/dev/null) in '>') c=raised ;; '<') c=lowered ;; esac
+        fi
+        if [ "$PORC" = 1 ]; then
+            out type package; out change "$c"; out name "$n"; out version "$v"; out base_version "$bv"; emit
+        else
+            printf '%-8s %s %s (base %s)\n' "$c" "$n" "$v" "$bv"
+        fi
+    done
+    rm -rf "$t"
+}
+
 cmd_accept() {
     case "$ARG" in ''|.*|*[!A-Za-z0-9._-]*) fail 2 "not a deployment id: $ARG" ;; esac
     state_open_rw
@@ -569,16 +943,24 @@ cmd_accept() {
 
 [ $# -ge 1 ] || usage
 CMD=$1; shift
-PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 ARG='' NARG=0
-for a in "$@"; do
+PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 SHA='' ARG='' NARG=0 FIRST=''
+NOREPLAY=0 ACCEPT_DOWN=0 WITHOUT=''
+while [ $# -gt 0 ]; do
+    a=$1; shift
     case "$a" in
     --porcelain) PORC=1 ;;
+    --modules) MODULES=1 ;;
+    --sha256) [ $# -ge 1 ] || usage; SHA=$1; shift ;;
+    --no-replay) NOREPLAY=1 ;;
+    --accept-downgrades) ACCEPT_DOWN=1 ;;
+    --without) [ $# -ge 1 ] || usage; WITHOUT="$WITHOUT $1"; shift ;;
+    -) ARG=-; NARG=$((NARG + 1)) ;;
     --yes) YES=1 ;;
     --discard-hibernation) DISCARD=1 ;;
     --full) FULL=1 ;;
     --now) NOW=1 ;;
     -*) usage ;;
-    *) ARG=$a; NARG=$((NARG + 1)) ;;
+    *) [ "$NARG" = 0 ] && FIRST=$a; ARG=$a; NARG=$((NARG + 1)) ;;
     esac
 done
 case "$CMD:$NARG" in
@@ -588,6 +970,11 @@ select:1) cmd_select ;;
 rollback:0) cmd_rollback ;;
 hibernate-invalidate:0) cmd_hibernate_invalidate ;;
 reset:0) cmd_reset ;;
+stage:1) cmd_stage ;;
+receive:1) cmd_receive ;;
+bases:0) cmd_bases ;;
+bases:2) cmd_bases_remove ;;
+packages:0|packages:1) cmd_packages ;;
 switch:0) cmd_switch ;;
 accept:1) cmd_accept ;;
 *) usage ;;

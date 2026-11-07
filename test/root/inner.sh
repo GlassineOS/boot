@@ -44,7 +44,7 @@ echo alpine-base > $B/etc/apk/world
 echo glassine > $B/etc/hostname
 echo welcome > $B/etc/motd
 echo '@stagger_ctl=3' > $B/etc/eink/eink.conf
-echo 'root:x:0:0:root:/root:/bin/sh' > $B/etc/passwd
+echo 'root:x:0:0:root:/root:/bin/sh' > $B/etc/passwd; echo 'root:x:0:root' > $B/etc/group
 printf '#!/bin/sh\necho hello\n' > $B/usr/bin/hello; chmod 755 $B/usr/bin/hello
 printf '# shipped\n/etc/eink/\n/etc/hostname\n/etc/passwd\n/var/lib/bluetooth/\n../escape\nrelative/path\n' > $B/usr/share/glassine/migrate.list
 btrfs property set -ts $B ro true
@@ -69,7 +69,7 @@ ok "/etc, /var, /usr/local, /opt are writable" "echo edited > $R/etc/eink/eink.c
 ok "the writes go through the overlay: copy-up into d1's switch layer" "[ \"\$(cat $U/deployments/d1/switch/etc/eink/eink.conf)\" = edited ] && [ -e $U/deployments/d1/switch/usr/local/x ]"
 rm $R/etc/motd
 ok "a deletion in /etc: a whiteout in the switch layer, the base keeps the file" "[ ! -e $R/etc/motd ] && [ -c $U/deployments/d1/switch/etc/motd ] && [ \"\$(cat $B/etc/motd)\" = welcome ]"
-ok "rename-replace in /etc works (passwd-style)" "echo 'root:x:0:0:root:/root:/bin/ash' > $R/etc/passwd.new && mv $R/etc/passwd.new $R/etc/passwd && grep -q ash $R/etc/passwd"
+ok "rename-replace in /etc works (passwd-style)" "printf 'root:x:0:0:root:/root:/bin/ash\nuser:x:1000:1000::/home/user:/bin/ash\n' > $R/etc/passwd.new && mv $R/etc/passwd.new $R/etc/passwd && grep -q ash $R/etc/passwd"
 ok "modules: on /lib/modules/7.3.0, read-only" "[ \"\$(cat $R/lib/modules/7.3.0/kernel/x.ko)\" = ko ] && ro $R/lib/modules/7.3.0/kernel/y.ko"
 ok "unlock: / writable" "gr_unlock $R && echo new > $R/usr/bin/new && [ -e $U/deployments/d1/switch/usr/bin/new ]"
 ok "lock: / read-only again" "gr_lock $R && ro $R/usr/bin/new2"
@@ -123,9 +123,16 @@ gr_assemble $S $U d1 $R && echo later > $R/etc/eink/eink.conf && gr_umount $R
 mkdir -p $W/shim; printf '#!/bin/sh\nexit 1\n' > $W/shim/cp; chmod +x $W/shim/cp
 echo leftover > $NS/leftover; cp $S/state/deploy $W/stS
 ok "an interrupted switch (cut copy): exit 1, still staged, nothing selected, marker gone, nothing mounted" "PATH=$W/shim:\$PATH $G switch 2>/dev/null; [ \$? = 1 ] && cmp -s $S/state/deploy $W/stS && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
+mkdir -p $W/shim2; printf '#!/bin/sh\n: > %s/cpstarted\nsleep 2\nexec /bin/cp "$@"\n' $W > $W/shim2/cp; chmod +x $W/shim2/cp; rm -f $W/cpstarted
+PATH=$W/shim2:$PATH $G switch >/dev/null 2>&1 &
+swpid=$!
+while [ ! -e $W/cpstarted ]; do sleep 0.1; done
+kill -TERM $swpid; wait $swpid; swrc=$?
+ok "TERM during the switch: the script exits (143), still staged, nothing selected, marker gone, nothing mounted" "[ $swrc = 143 ] && cmp -s $S/state/deploy $W/stS && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
 : > $W/run/switching
 ok "switch: a stale marker does not block it; redone from scratch; selected with 2 tries" "$G switch >/dev/null 2>&1 && [ \"\$(st candidate)\" = $N ] && [ \"\$(st tries)\" = 2 ] && [ -z \"\$(st staged)\" ] && [ ! -e $NS/leftover ] && [ ! -e $W/run/switching ]"
-ok "switch carries the migrate list (shipped + the user's), with the change made after the reset" "[ \"\$(cat $NS/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $NS/etc/hostname)\" = myhost ] && [ -e $NS/var/lib/bluetooth/k ] && [ -e $NS/etc/wireguard/wg0.conf ] && grep -q ash $NS/etc/passwd"
+ok "switch carries the migrate list (shipped + the user's), with the change made after the reset" "[ \"\$(cat $NS/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $NS/etc/hostname)\" = myhost ] && [ -e $NS/var/lib/bluetooth/k ] && [ -e $NS/etc/wireguard/wg0.conf ] && grep -qx 'user:x:1000:1000::/home/user:/bin/ash' $NS/etc/passwd"
+ok "switch: the carried passwd is replaced by the merge (root from the base)" "grep -qx 'root:x:0:0:root:/root:/bin/sh' $NS/etc/passwd && [ -e $NS/etc/shadow ]"
 ok "switch keeps modes (0700 wireguard)" "[ \$(stat -c %a $NS/etc/wireguard) = 700 ]"
 ok "switch drops the rest (edits, packages, /usr/local, whiteouts)" "[ ! -e $NS/etc/junk ] && [ ! -e $NS/usr/bin/new ] && [ ! -e $NS/usr/local/x ] && [ ! -e $NS/etc/motd ] && [ ! -e $NS/escape ]"
 ok "switch left nothing mounted" "! grep -q '$W/run' /proc/mounts"
@@ -174,6 +181,136 @@ dd if=/dev/zero of=$W/udmnt/fill bs=1M count=$(( $(df -Pk $W/udmnt | awk 'NR==2{
 ok "switch, not enough space: exit 5, stays staged, nothing selected" "$G switch 2>/dev/null; [ \$? = 5 ] && cmp -s $S/state/deploy $W/st2 && [ \"\$(st staged)\" = \$A3 ]"
 rm -f $W/udmnt/fill $U/deployments/$N/switch/var/lib/bluetooth/big
 gs_update $S/state/deploy staged=; rm -rf $U/deployments/$A3
+
+# --- glassine: lock, unlock, the apk wrapper (on a real locked root) --------------
+GL=/p/sbin/glassine
+gr_assemble $S $U d1 $R
+mkdir -p $W/run2; echo d1 > $W/run2/booted
+printf 'RUN_DIR=%s/run2\n' $W > $W/gl.conf
+printf '#!/bin/sh\necho "$*" >> %s/apk-calls\ncase " $* " in *" -s "*) ;; *" add "*) echo pkg > %s/usr/bin/pkgfile || exit 9 ;; esac\nexit ${APK_RC:-0}\n' $W $R > $W/apk; chmod +x $W/apk
+gl() { GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apk sh $GL "$@"; }
+ok "glassine status: locked" "gl status | grep -qx 'root: locked'"
+ok "apk without the acknowledgement, no terminal: refused, nothing run" "gl apk add foo </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'GLASSINE_APK_ACK=1' $W/err && [ ! -e $W/apk-calls ]"
+ok "apk search (no change): runs, / stays read-only, no acknowledgement needed" "gl apk search foo </dev/null && grep -qx 'search foo' $W/apk-calls && ro $R/usr/bin/t1"
+ok "apk add -s: runs, / stays read-only, no acknowledgement, no lock" "rm -f $W/run2/apk.lock; gl apk add -s foo </dev/null && grep -qx 'add -s foo' $W/apk-calls && ro $R/usr/bin/t9 && [ ! -e $W/run2/apk.lock ] && [ ! -e $R/etc/glassine/apk-acknowledged ]"
+ok "apk del --simulate, -qs: the same" "gl apk del --simulate foo </dev/null && gl apk -qs upgrade </dev/null && grep -qx 'del --simulate foo' $W/apk-calls && grep -qx -- '-qs upgrade' $W/apk-calls && ro $R/usr/bin/t10 && [ ! -e $W/run2/apk.lock ]"
+mkdir -p $W/uid1000; printf '#!/bin/sh\necho 1000\n' > $W/uid1000/id; chmod +x $W/uid1000/id
+ok "apk add as a user: apk's own answer, no lock, / stays read-only, no acknowledgement" "PATH=$W/uid1000:\$PATH gl apk add foo </dev/null 2>/dev/null; [ \$? = 9 ] && grep -qx 'add foo' $W/apk-calls && ro $R/usr/bin/t11 && [ ! -e $W/run2/apk.lock ] && [ ! -e $R/etc/glassine/apk-acknowledged ]"
+printf '#!/bin/sh\necho "$*" >> %s/apk-calls\ncase " $* " in *" info "*) ;; *" add "*) echo pkg > %s/usr/bin/pkgfile || exit 9 ;; *" update "*) echo lock > %s/usr/bin/apklock || exit 9 ;; esac\nexit ${APK_RC:-0}\n' $W $R $R > $W/apk
+ok "apk update: / writable for the run, no acknowledgement needed, read-only after" "gl apk --no-progress update </dev/null && [ \"\$(cat $R/usr/bin/apklock)\" = lock ] && ro $R/usr/bin/t7 && [ ! -e $R/etc/glassine/apk-acknowledged ]"
+ok "apk info update (a package called update): / stays read-only" "gl apk info update </dev/null && grep -qx 'info update' $W/apk-calls && ro $R/usr/bin/t8"
+ok "apk add: / writable for the run (the package lands), read-only after" "GLASSINE_APK_ACK=1 gl apk add foo && [ \"\$(cat $R/usr/bin/pkgfile)\" = pkg ] && ro $R/usr/bin/t2 && [ -e $R/etc/glassine/apk-acknowledged ]"
+ok "apk: the change lands in the deployment's upper" "[ -e $U/deployments/d1/switch/usr/bin/pkgfile ]"
+ok "apk: acknowledged once, then no more question; apk's exit code passed on" "APK_RC=3 gl apk del foo </dev/null; [ \$? = 3 ] && ro $R/usr/bin/t3"
+mv $R/etc/glassine/apk-acknowledged $W/ack.sv; : > $W/apk-calls
+ok "apk search cache, apk info fix: not changes (no acknowledgement, / stays read-only)" "gl apk search cache </dev/null && gl apk info fix </dev/null && grep -qx 'search cache' $W/apk-calls && grep -qx 'info fix' $W/apk-calls && [ ! -e $R/etc/glassine/apk-acknowledged ] && ro $R/usr/bin/t12"
+mv $W/ack.sv $R/etc/glassine/apk-acknowledged
+ok "apk -X URL add, --cache-dir DIR add: the applet is found past an option's value (the stub fails with 9 unless / is writable)" "gl apk -X http://x/y --no-progress add qq </dev/null && gl apk --cache-dir /x add zz </dev/null && grep -qx -- '--cache-dir /x add zz' $W/apk-calls && ro $R/usr/bin/t13"
+ok "apk while another change holds the lock: waits, then runs" "( exec 8>>$W/run2/apk.lock; flock 8; sleep 2 ) & sleep 0.5; gl apk fix 2>$W/err && grep -q 'waiting' $W/err && ro $R/usr/bin/t4"
+wait
+printf '#!/bin/sh\n[ -e /proc/$$/fd/8 ] && echo leaked > %s/fd8\nexit 0\n' $W > $W/apkfd; chmod +x $W/apkfd; rm -f $W/fd8
+ok "apk: the lock (fd 8) is not inherited by apk and its scripts" "GLASSINE_APK_ACK=1 GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apkfd sh $GL apk add foo && [ ! -e $W/fd8 ]"
+ok "unlock: / writable, status says so" "gl unlock 2>/dev/null && echo x > $R/usr/bin/manual && gl status | grep -q 'root: unlocked'"
+ok "apk while unlocked: stays unlocked after" "gl apk add bar && echo y > $R/usr/bin/manual2"
+ok "lock: read-only again" "gl lock 2>/dev/null && ro $R/usr/bin/t5 && gl status | grep -qx 'root: locked'"
+printf '#!/bin/sh\necho "$*" >> %s/apk-calls\ncase " $* " in *" --simulate "*) echo "(1/1) Upgrading musl (1 -> 2)" ;; esac\nexit 0\n' $W > $W/apkm; chmod +x $W/apkm
+glm() { GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apkm sh $GL "$@"; }
+gl lock >/dev/null 2>&1
+: > $W/apk-calls
+ok "another repository replacing installed packages, no terminal: refused, named, relocked" "GLASSINE_APK_ACK=1 glm apk add foo@edge </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'Upgrading\|musl' $W/err && ! grep -qx 'add foo@edge' $W/apk-calls && ro $R/usr/bin/t9"
+ok "GLASSINE_APK_MIX=1: goes on" "GLASSINE_APK_ACK=1 GLASSINE_APK_MIX=1 glm apk add foo@edge </dev/null 2>/dev/null && grep -qx 'add foo@edge' $W/apk-calls"
+: > $W/apk-calls
+ok "a plain add: no simulation, no question" "GLASSINE_APK_ACK=1 glm apk add foo </dev/null 2>/dev/null && ! grep -q simulate $W/apk-calls && grep -qx 'add foo' $W/apk-calls"
+ok "called as apk: the wrapper" "mkdir -p $W/bin && ln -sf $GL $W/bin/apk && GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apk $W/bin/apk add baz && ro $R/usr/bin/t6 && grep -qx 'add baz' $W/apk-calls"
+ok "apk: GLASSINE_APK is the wrapper itself (a link): refused, no loop, nothing run" "ln -sf $GL $W/selfapk && : > $W/apk-calls && GLASSINE_APK_ACK=1 GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/selfapk sh $GL apk search foo </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'is this wrapper' $W/err && [ ! -s $W/apk-calls ]"
+rm -f $W/run2/booted
+ok "not booted from a deployment: apk-tools unchanged (no unlock: the stub's write fails)" "gl apk add qux </dev/null 2>/dev/null; [ \$? = 9 ] && grep -qx 'add qux' $W/apk-calls && gl status | grep -q 'plain'"
+ok "unlock refused when not booted from a deployment" "gl unlock 2>/dev/null; [ \$? = 1 ]"
+gr_umount $R
+
+# --- receive, bases, stage: a base update ------------------------------------------
+# the new base b2 on a scratch btrfs (the build host's), sent as streams
+truncate -s 128M $W/src.img; mkfs.btrfs -q $W/src.img; loop $W/src.img; SRC=$LOOP
+mkdir -p $W/src && mount -t btrfs "$SRC" $W/src
+btrfs -q subvolume create $W/src/b2; B2=$W/src/b2
+mkdir -p $B2/etc/apk $B2/etc/eink $B2/usr/bin $B2/usr/share/glassine $B2/var/lib
+cp $B/usr/share/glassine/migrate.list $B2/usr/share/glassine/; echo glassine > $B2/etc/hostname
+echo two > $B2/etc/motd; echo '@stagger_ctl=4' > $B2/etc/eink/eink.conf
+printf 'root:x:0:0:root:/root:/bin/sh\nbluetooth:x:101:101::/:/sbin/nologin\n' > $B2/etc/passwd
+printf 'root:x:0:root\nwheel:x:10:root\nbluetooth:x:101:\nshadow:x:42:\n' > $B2/etc/group
+printf 'root:*:1::::::\nbluetooth:!:1::::::\n' > $B2/etc/shadow; chown 0:42 $B2/etc/shadow; chmod 640 $B2/etc/shadow
+btrfs property set -ts $B2 ro true
+btrfs -q subvolume snapshot $B2 $W/src/b3; echo three > $W/src/b3/etc/motd; btrfs property set -ts $W/src/b3 ro true
+btrfs -q send -f $W/b2.stream $B2; zstd -q $W/b2.stream -o $W/b2.stream.zst
+btrfs -q send -f $W/b3.inc -p $B2 $W/src/b3
+btrfs -q send -f $W/two.stream $B2 $W/src/b3
+head -c 4096 $W/b2.stream > $W/cut.stream
+SHA2=$(sha256sum $W/b2.stream.zst | cut -d ' ' -f 1)
+# the current deployment: a user account, its group, a file the bluetooth daemon owns
+CUR=$(st current); NB=$(gs_kv $U/deployments/$CUR/meta base)
+gr_assemble $S $U $CUR $R && printf 'root:x:0:0:root:/root:/bin/sh\nbluetooth:x:100:100::/:/sbin/nologin\nuser:x:1000:1000::/home/user:/bin/ash\n' > $R/etc/passwd &&
+    printf 'root:x:0:root\nwheel:x:10:root,user\nbluetooth:x:100:\nuser:x:1000:\n' > $R/etc/group &&
+    printf 'root:$6$r:1::::::\nuser:$6$u:1::::::\n' > $R/etc/shadow && mkdir -p $R/var/lib/bluetooth/AA &&
+    echo key > $R/var/lib/bluetooth/AA/info && chown -R 100:100 $R/var/lib/bluetooth/AA && gr_umount $R
+noleft() { [ -z "$(btrfs subvolume list $S | grep -v ' path \(bases/b1\|modules/7.3.0\|bases/b2\|bases/b3\|modules/m9\|bases/bad\)$')" ]; }
+ok "receive: a wrong --sha256: refused before anything is written" "$G receive $W/b2.stream.zst --sha256 00 2>$W/err; [ \$? = 1 ] && grep -q 'expected 00' $W/err && [ ! -e $S/bases/b2 ] && noleft"
+ok "receive: a cut stream: exit 1, nothing kept" "$G receive $W/cut.stream 2>/dev/null; [ \$? = 1 ] && [ ! -e $S/bases/b2 ] && noleft"
+ok "receive: two subvolumes in one stream: exit 1, nothing kept" "$G receive $W/two.stream 2>/dev/null; [ \$? = 1 ] && [ ! -e $S/bases/b2 ] && [ ! -e $S/bases/b3 ] && noleft"
+ok "receive: .zst with the right --sha256: bases/b2, read-only, a received UUID" "$G receive $W/b2.stream.zst --sha256 $SHA2 >/dev/null && [ \"\$(btrfs property get -ts $S/bases/b2 ro)\" = ro=true ] && btrfs subvolume show $S/bases/b2 | grep -q 'Received UUID:[[:space:]]*[0-9a-f]' && [ \"\$(cat $S/bases/b2/etc/motd)\" = two ] && noleft"
+ok "receive: the same name again: exit 1, the first one kept" "$G receive $W/b2.stream 2>$W/err; [ \$? = 1 ] && [ \"\$(cat $S/bases/b2/etc/motd)\" = two ] && noleft"
+ok "receive: an incremental stream (stdin) onto the received base" "$G receive - < $W/b3.inc >/dev/null && [ \"\$(cat $S/bases/b3/etc/motd)\" = three ] && [ \"\$(btrfs property get -ts $S/bases/b3 ro)\" = ro=true ]"
+ok "receive --modules: into modules/" "btrfs -q subvolume snapshot -r $W/src/b3 $W/src/m9 && btrfs -q send $W/src/m9 | $G receive - --modules >/dev/null && [ -d $S/modules/m9 ] && [ ! -e $S/bases/m9 ]"
+ok "receive: --sha256 with stdin: usage" "$G receive - --sha256 00 </dev/null 2>/dev/null; [ \$? = 2 ]"
+ok "bases: each subvolume with its users" "$G bases --porcelain | grep -q \"kind=base	name=$NB	used_by=.*$CUR\" && $G bases --porcelain | grep -q 'kind=base	name=b2	used_by=$' && $G bases --porcelain | grep -q 'kind=module	name=m9'"
+ok "stage: an unknown base: exit 1, nothing staged" "$G stage nope --yes 2>$W/err; [ \$? = 1 ] && grep -q 'no base nope' $W/err && [ -z \"\$(st staged)\" ]"
+ok "stage: a bad name: exit 2" "$G stage ../b2 --yes 2>/dev/null; [ \$? = 2 ]"
+ok "stage --full: usage" "$G stage b2 --full --yes 2>/dev/null; [ \$? = 2 ] && [ -z \"\$(st staged)\" ]"
+ok "stage b2: staged, kind update, carry migrate, base b2" "$G stage b2 --yes >/dev/null && SB=\$(st staged) && grep -qx base=b2 $U/deployments/\$SB/meta && grep -qx kind=update $U/deployments/\$SB/meta && grep -qx carry=migrate $U/deployments/\$SB/meta && grep -qx from=$CUR $U/deployments/\$SB/meta && [ \"\$(st current)\" = $CUR ]"
+SB=$(st staged); SW=$U/deployments/$SB/switch
+# the replay changed /etc/passwd only (a package script adding a system user): the build
+# layer holds that one file, group and shadow come from the base
+mkdir -p $U/deployments/$SB/build/etc && printf '%s\nnewsvc:x:200:200::/:/sbin/nologin\n' "$(cat $B2/etc/passwd)" > $U/deployments/$SB/build/etc/passwd
+ok "bases: the staged deployment uses b2" "$G bases --porcelain | grep -q 'name=b2	used_by=$SB'"
+ok "switch: the staged update is the candidate" "$G switch >$W/swout 2>&1 && [ \"\$(st candidate)\" = $SB ] && [ -z \"\$(st staged)\" ]"
+ok "switch: accounts merged (user + its password + wheel membership; bluetooth at the new base's ID)" "grep -qx 'user:x:1000:1000::/home/user:/bin/ash' $SW/etc/passwd && grep -qx 'bluetooth:x:101:101::/:/sbin/nologin' $SW/etc/passwd && grep -q '^user:\$6\$u:' $SW/etc/shadow && grep -qx 'wheel:x:10:root,user' $SW/etc/group && grep -qx 'user:x:1000:' $SW/etc/group"
+ok "switch: a build layer with only passwd: the new account is in, the base's groups and shadow rows stay" "grep -qx 'newsvc:x:200:200::/:/sbin/nologin' $SW/etc/passwd && grep -qx 'root:x:0:root' $SW/etc/group && grep -qx 'shadow:x:42:' $SW/etc/group && grep -q '^bluetooth:' $SW/etc/shadow && [ \"\$(stat -c %u:%g:%a $SW/etc/shadow)\" = 0:42:640 ]"
+ok "switch: carried files follow the moved bluetooth ID" "[ \"\$(stat -c %u:%g $SW/var/lib/bluetooth/AA/info)\" = 101:101 ] && [ \"\$(stat -c %u:%g $SW/var/lib/bluetooth/AA)\" = 101:101 ]"
+ok "switch: reports the merge" "grep -q 'user user kept' $W/swout && grep -q 'uid 100 -> 101' $W/swout && [ ! -e $U/deployments/$SB/idmap ]"
+ok "the candidate's root: the new base with the carried settings" "gr_assemble $S $U $SB $R && [ \"\$(cat $R/etc/motd)\" = two ] && [ \"\$(cat $R/etc/hostname)\" = myhost ] && [ \"\$(cat $R/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $R/var/lib/bluetooth/AA/info)\" = key ] && grep -q '^user:' $R/etc/passwd"
+gr_umount $R
+# a base without /etc/passwd: the switch refuses, stays staged
+btrfs -q subvolume create $W/src/bad; mkdir $W/src/bad/etc; btrfs property set -ts $W/src/bad ro true
+btrfs -q send $W/src/bad | $G receive - >/dev/null
+. /p/lib/glassine-accounts.sh
+mkdir -p $W/wo/up $W/wo/low; echo 'root:x:0:root' > $W/wo/low/group; echo 'root:*:1::::::' > $W/wo/low/shadow; mknod $W/wo/up/shadow c 0 0
+ga_lower $W/wo/out $W/wo/up $W/wo/low
+ok "ga_lower: a whiteout in the build layer (a real overlay upper has them): deleted, not read from the base" "[ ! -e $W/wo/out/shadow ] && [ -e $W/wo/out/group ]"
+ok "stage: a base without /etc/passwd: refused" "$G stage bad --yes 2>$W/err; [ \$? = 1 ] && grep -q 'no /etc/passwd' $W/err"
+# a new base with an account at the kept user's ID: the switch refuses, nothing selected
+btrfs -q subvolume snapshot $B2 $W/src/b4
+printf 'clash:x:1000:1000::/:/sbin/nologin\n' >> $W/src/b4/etc/passwd; printf 'clash:x:1000:\n' >> $W/src/b4/etc/group
+btrfs property set -ts $W/src/b4 ro true; btrfs -q send $W/src/b4 | $G receive - >/dev/null
+$G stage b4 --yes >/dev/null; SK=$(st staged); cp $S/state/deploy $W/stK
+ok "switch: a kept user's ID taken in the new base: refused, names the IDs, stays staged, nothing selected" "$G switch 2>$W/err; [ \$? = 1 ] && grep -q 'kept accounts would change ID (gid 1000 -> 1001, uid 1000 -> 1001)' $W/err && cmp -s $S/state/deploy $W/stK && [ \"\$(st staged)\" = $SK ] && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
+gs_update $S/state/deploy staged=; rm -rf $U/deployments/$SK
+btrfs property set -fts $S/bases/b4 ro false; btrfs -q subvolume delete $S/bases/b4
+# --- bases remove ---------------------------------------------------------------
+PREV0=$(gs_kv $S/state/deploy previous)
+mkdir -p $U/deployments/rm1; echo base=bad > $U/deployments/rm1/meta; gs_update $S/state/deploy previous=rm1
+ok "bases remove: a bad name: exit 2; another verb: usage" "$G bases remove ../x 2>/dev/null; a=\$?; $G bases drop b3 2>/dev/null; [ \$a\$? = 22 ] && [ -e $S/bases/b3 ]"
+ok "bases remove: an unknown base: exit 1" "$G bases remove nope --yes 2>$W/err; [ \$? = 1 ] && grep -q 'no base nope' $W/err"
+ok "bases remove: the current deployment's base: refused even with --yes" "$G bases remove $NB --yes 2>$W/err; [ \$? = 1 ] && grep -q \"in use by deployment $CUR\" $W/err && [ -e $S/bases/$NB ]"
+ok "bases remove: the candidate's base: refused" "$G bases remove b2 --yes 2>$W/err; [ \$? = 1 ] && grep -q \"in use by deployment $SB\" $W/err && [ -e $S/bases/b2 ]"
+ok "bases remove: unreadable deployments do not read as unused" "mv $U/deployments/$CUR/meta $W/meta.save; $G bases remove b3 --yes 2>$W/err; a=\$?; mv $W/meta.save $U/deployments/$CUR/meta; [ \$a = 1 ] && grep -q 'cannot read the deployments' $W/err && [ -e $S/bases/b3 ]"
+ok "bases remove: an unused base: gone, without asking" "$G bases remove b3 </dev/null >/dev/null && [ ! -e $S/bases/b3 ] && ! btrfs subvolume list $S | grep -q 'bases/b3$'"
+ok "bases remove: the previous deployment's base: asks, names the rollback, nothing removed" "$G bases remove bad </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'rm1' $W/err && grep -q 'Rollback to rm1 is lost' $W/err && [ -e $S/bases/bad ]"
+ok "bases remove --yes: removed; the deployment stays, base_present=no" "$G bases remove bad --yes >/dev/null && [ ! -e $S/bases/bad ] && [ -e $U/deployments/rm1/meta ] && $G list --porcelain | grep 'id=rm1' | grep -q 'base_present=no'"
+C0=$(st candidate)
+ok "select, rollback: a deployment without its base: refused, candidate unchanged" "$G select rm1 2>$W/err; a=\$?; $G rollback 2>/dev/null; [ \$a\$? = 11 ] && grep -q 'its base bad is not on' $W/err && [ \"\$(st candidate)\" = \"$C0\" ]"
+rm -rf $U/deployments/rm1; gs_update $S/state/deploy "previous=$PREV0"
+gs_update $S/state/deploy candidate= tries=0; rm -rf $U/deployments/$SB
+for v in bases/b2 bases/b3 bases/bad modules/m9; do btrfs property set -fts $S/$v ro false 2>/dev/null; btrfs -q subvolume delete $S/$v; done
+umount $W/src
 
 # --- the hibernation gate on real mounts -------------------------------------------
 mkdir -p $U/swap; head -c 1048576 /dev/zero > $U/swap/hibernate; mkswap $U/swap/hibernate >/dev/null 2>&1

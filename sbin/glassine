@@ -1,0 +1,198 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine: the lock of a deployment's root, and the apk wrapper.
+#
+#   glassine status
+#   glassine unlock
+#   glassine lock
+#   glassine apk [APK ARGUMENTS…]
+#
+# In a system booted from a deployment (/run/glassine/booted), / is read-only;
+# /etc, /var, /usr/local and /opt stay writable. unlock makes / writable until
+# lock or the next boot (arbitrary edits: they stay in this deployment but are
+# not carried to a new base). apk runs apk-tools: a command that changes
+# packages (add, del, fix, upgrade, cache) gets / writable for its run only,
+# then / is locked again (unless unlocked by hand). Packages are recorded
+# without bookkeeping: glassine-deploy packages derives them from the world
+# and the installed database against the base's, and a later base replays
+# them; manual edits are not replayed. The first change asks once to
+# acknowledge that (GLASSINE_APK_ACK=1 for scripts).
+#
+# The package installs this script as /usr/sbin/apk too (before /sbin/apk on
+# PATH); called as "apk" it is "glassine apk". On a system not booted from a
+# deployment it runs apk-tools unchanged. apk update changes no package, but
+# apk takes its lock under /, so it opens / too (no acknowledgement). A simulation
+# (-s) and any user but root run apk-tools directly: no lock, no acknowledgement.
+#
+# Exit codes: apk's own for apk; 0 done, 1 error, 2 usage, 6 the package lock could
+# not be taken (flock itself failed: another package change holding it is waited for,
+# with no time limit).
+set -u
+CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+RUN_DIR=/run/glassine
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+ROOT=${GLASSINE_ROOT:-/}
+APK=${GLASSINE_APK:-/sbin/apk}
+ACK=${GLASSINE_APK_ACK_FILE:-$ROOT/etc/glassine/apk-acknowledged}
+UNLOCKED=$RUN_DIR/unlocked
+
+say() { echo "glassine: $*" >&2; }
+die() { say "$*"; exit 1; }
+usage() { sed -n 's/^#   //p' "$0" >&2; exit 2; }
+
+booted() { [ -e "$RUN_DIR/booted" ]; }
+
+# root_rw: is the / mount read-write (its own mount flags in /proc/mounts)
+root_rw() {
+    awk -v r="$ROOT" '$2 == r { o = $4 } END { exit !(o ~ /^rw(,|$)/) }' "${GLASSINE_MOUNTS:-/proc/mounts}"
+}
+unlock() { mount -o remount,bind,rw "$ROOT"; }
+lock() { mount -o remount,bind,ro "$ROOT"; }
+
+cmd_status() {
+    if ! booted; then echo "layout: plain (not booted from a deployment)"; return 0; fi
+    echo "deployment: $(cat "$RUN_DIR/booted")"
+    if root_rw; then
+        [ -e "$UNLOCKED" ] && echo "root: unlocked (glassine lock locks it)" || echo "root: writable (a package change is running, or one was cut off)"
+    else
+        echo "root: locked"
+    fi
+}
+
+cmd_unlock() {
+    booted || die "not booted from a deployment: / is not locked"
+    mkdir -p "$RUN_DIR" && : > "$UNLOCKED" || die "cannot create $UNLOCKED"
+    root_rw || unlock || { rm -f "$UNLOCKED"; die "cannot make / writable"; }
+    say "/ is writable until 'glassine lock' or the next boot; these edits are not carried to a new base"
+}
+
+cmd_lock() {
+    booted || die "not booted from a deployment: / is not locked"
+    rm -f "$UNLOCKED"
+    root_rw || { say "/ is locked"; return 0; }
+    lock || die "cannot make / read-only (a file open for writing under /?); it stays writable"
+    say "/ is locked"
+}
+
+# applet ARGS: apk's command, the first word that is neither an option nor the
+# value of one that takes a separate value ("apk -X URL add x", not "apk search cache")
+applet() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        -p|--root|-X|--repository|--repositories-file|-C|--cache-dir|--keys-dir|--arch|--cache-max-age|--wait|--progress-fd) shift ;;
+        -*) ;;
+        *) echo "$1"; return 0 ;;
+        esac
+        shift
+    done
+}
+
+# changes: does this apk command line change packages
+changes() {
+    case "$(applet "$@")" in add|del|fix|upgrade|cache) return 0 ;; esac
+    return 1
+}
+
+acknowledge() {
+    [ -e "$ACK" ] && return 0
+    if [ "${GLASSINE_APK_ACK:-}" != 1 ]; then
+        [ -t 0 ] || die "packages you add or remove are replayed on a new base, manual edits of the system are not; to go on, run this once on a terminal or set GLASSINE_APK_ACK=1"
+        printf '%s\n%s ' "Packages you add or remove are recorded and replayed on a new base; manual edits of the system (glassine unlock) are not." \
+            "Go on? [y/N]" >&2
+        read -r _r || _r=''
+        case "$_r" in y|Y|yes) ;; *) die cancelled ;; esac
+    fi
+    mkdir -p "${ACK%/*}" && : > "$ACK" || say "cannot record the acknowledgement in $ACK"
+}
+
+# refreshes: apk update changes no package, but apk takes its lock under /
+refreshes() { [ "$(applet "$@")" = update ]; }
+
+# simulates: apk -s changes nothing and takes no lock, so it needs neither / nor root
+simulates() {
+    for _a in "$@"; do
+        case "$_a" in --simulate) return 0 ;; --*) ;; -*s*) return 0 ;; esac
+    done
+    return 1
+}
+
+# apk_is_self: $APK is this wrapper (the /usr/sbin/apk link): exec'ing it would loop
+apk_is_self() {
+    _me=$(readlink -f "$0" 2>/dev/null) && [ -n "$_me" ] && [ "$(readlink -f "$APK" 2>/dev/null)" = "$_me" ]
+}
+
+cmd_apk() {
+    ! apk_is_self || die "$APK is this wrapper: the real apk-tools binary is not where GLASSINE_APK or the default says"
+    booted || exec "$APK" "$@"
+    # no lock and no / for these: a simulation, and any user but root (who can't
+    # open either; a real change then fails with apk's own message)
+    if simulates "$@" || [ "$(id -u)" != 0 ]; then exec "$APK" "$@"; fi
+    if changes "$@"; then
+        acknowledge
+    else
+        refreshes "$@" || exec "$APK" "$@"
+    fi
+    mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
+    exec 8>>"$RUN_DIR/apk.lock" || die "cannot open $RUN_DIR/apk.lock"
+    flock -n 8 || { say "waiting for another package change"; flock 8; } || exit 6
+    opened=''
+    if ! root_rw; then
+        unlock || die "cannot make / writable"
+        opened=1
+    fi
+    trap 'relock; exit 130' INT TERM HUP
+    changes "$@" && mixing "$@"
+    # fd 8 (the lock) stays with this shell: a daemon that apk or a package script
+    # starts must not keep it after apk exits
+    "$APK" "$@" 8>&-; rc=$?
+    if [ $rc = 0 ] && changes "$@"; then
+        # the offline replay's cache: only what this system still has installed
+        [ -e /etc/apk/cache ] && "$APK" cache clean >/dev/null 2>&1 8>&-
+        staged_note
+    fi
+    relock
+    exit $rc
+}
+
+# mixing: a package from another repository (name@tag, -X) would replace installed
+# ones: list them and ask first. /usr/lib and friends are shared with the base.
+mixing() {
+    case " $* " in *@*|*" -X "*|*" --repository"*) ;; *) return 0 ;; esac
+    _mix=$("$APK" --simulate "$@" 2>/dev/null 8>&- | sed -n 's/^([^)]*) \(Upgrading\|Downgrading\|Replacing\) //p')
+    [ -n "$_mix" ] || return 0
+    printf '%s\n%s\n' "This replaces installed packages with another repository's versions (often shared libraries):" "$_mix" >&2
+    if [ "${GLASSINE_APK_MIX:-}" != 1 ]; then
+        if [ ! -t 0 ]; then relock; die "to go on, run this on a terminal or set GLASSINE_APK_MIX=1"; fi
+        printf 'Go on? [y/N] ' >&2
+        read -r _r || _r=''
+        case "$_r" in y|Y|yes) ;; *) relock; die cancelled ;; esac
+    fi
+}
+
+# staged_note: a deployment staged before this change does not have it
+staged_note() {
+    _st=$(glassine-deploy status --porcelain 2>/dev/null 8>&- | tr '\t' '\n' | sed -n 's/^staged=//p' | head -n 1)
+    [ -z "$_st" ] || say "deployment $_st was staged before this change and does not have it; stage the base again to include it"
+}
+
+# relock: back to read-only, unless unlocked by hand in the meantime
+relock() {
+    [ -n "$opened" ] || return 0
+    opened=''
+    [ -e "$UNLOCKED" ] && return 0
+    lock || say "cannot make / read-only again (a file open for writing under /?); run 'glassine lock'"
+}
+
+case "${0##*/}" in
+apk) cmd_apk "$@" ;;
+esac
+[ $# -ge 1 ] || usage
+c=$1; shift
+case "$c:$#" in
+status:0) cmd_status ;;
+unlock:0) cmd_unlock ;;
+lock:0) cmd_lock ;;
+apk:*) cmd_apk "$@" ;;
+*) usage ;;
+esac

@@ -182,6 +182,7 @@ ok "list: human table" "$G list | grep -q '^d4 *kept'"
 mkdir -p $W/sysmnt/bases/v3.22.2
 ok "list: base_present yes for d2, no for d4" "[ \"\$(lst d2 base_present)\" = yes ] && [ \"\$(lst d4 base_present)\" = no ]"
 rmdir $W/sysmnt/bases/v3.22.2; rmdir $W/sysmnt/bases 2>/dev/null || :
+for n in 1 2 3 4; do mkdir -p $W/sysmnt/bases/v3.22.$n; done     # select needs the base
 echo failed=d1 >> $W/sysmnt/state/deploy
 ok "list: a failed deployment that is also previous shows failed" "[ \"\$(lst d1 state)\" = failed ]"
 ok "status: failed=" "$G status --porcelain | grep -q '	failed=d1'"
@@ -235,6 +236,105 @@ for d in d1 d2; do debugfs -w -R "mkdir /$P/deployments/$d" $W/userdata.img 2>/d
 ok "list (debugfs): 2 records, meta read, no size" "[ \$($G list --porcelain | grep -c '^type=deployment	') = 2 ] && [ \"\$(lst d2 base)\" = v3.22.2 ] && [ -z \"\$(lst d2 size_kib)\" ]"
 ok "select on an ext4 (unmigrated) system: exit 1, says not migrated" "$G select d1 2>$W/err; [ \$? = 1 ] && grep -q 'not migrated' $W/err"
 ok "select an unknown id on an unmigrated system: says not migrated" "$G select d9 2>$W/err; [ \$? = 1 ] && grep -q 'not migrated' $W/err"
+
+# --- the account merge (lib/glassine-accounts.sh) -----------------------------
+. /p/lib/glassine-accounts.sh
+AO=$W/acct/old AN=$W/acct/new AT=$W/acct/out; mkdir -p $AO $AN $AT
+printf 'root:x:0:0:root:/root:/bin/sh\nmessagebus:x:100:101::/:/sbin/nologin\npolkitd:x:101:102::/:/sbin/nologin\navahi:x:102:103::/:/sbin/nologin\nuser:x:1000:1000::/home/user:/bin/ash\nguest:x:1001:1001::/home/guest:/bin/ash\n' > $AO/passwd
+printf 'root:x:0:root\nwheel:x:10:root,user\nvideo:x:27:user,avahi\nmessagebus:x:101:\npolkitd:x:102:\navahi:x:103:\nuser:x:1000:\nguest:x:1001:\n' > $AO/group
+printf 'root:$6$rootpw:1::::::\nuser:$6$userpw:1::::::\nguest:$6$guestpw:1::::::\nmessagebus:!old:1::::::\n' > $AO/shadow
+printf 'user:100000:65536\n' > $AO/subuid
+printf 'root:x:0:0:root:/root:/bin/sh\nmessagebus:x:101:102::/:/sbin/nologin\npolkitd:x:100:101::/:/sbin/nologin\n' > $AN/passwd
+printf 'root:x:0:root\nwheel:x:10:root\nvideo:x:27\nmessagebus:x:102:\npolkitd:x:101:\nsambashare:x:1001:\nshadow:x:42:\n' > $AN/group
+printf 'root:*:1::::::\nmessagebus:!:1::::::\npolkitd:!:1::::::\n' > $AN/shadow; chown 0:42 $AN/shadow; chmod 640 $AN/shadow
+echo 'carried:x:1:1::/:/bin/false' > $AT/passwd
+ga_merge $AO $AN $AT $W/acct/map > $W/acct/report
+pw() { awk -F: -v n="$1" '$1 == n' $AT/passwd; }
+gr() { awk -F: -v n="$1" '$1 == n' $AT/group; }
+sh_() { awk -F: -v n="$1" '$1 == n { print $2 }' $AT/shadow; }
+ok "merge: the new base's system accounts, as the base has them" "[ \"\$(pw messagebus)\" = 'messagebus:x:101:102::/:/sbin/nologin' ] && [ \"\$(pw polkitd)\" = 'polkitd:x:100:101::/:/sbin/nologin' ]"
+ok "merge: user kept with its uid and gid" "[ \"\$(pw user)\" = 'user:x:1000:1000::/home/user:/bin/ash' ] && [ \"\$(gr user)\" = 'user:x:1000:' ]"
+ok "merge: a gid taken in the new base: the next free one, the primary group follows" "[ \"\$(gr guest)\" = 'guest:x:1002:' ] && [ \"\$(pw guest)\" = 'guest:x:1001:1002::/home/guest:/bin/ash' ]"
+ok "merge: memberships carried for users that exist (avahi is gone)" "[ \"\$(gr wheel)\" = 'wheel:x:10:root,user' ] && [ \"\$(gr video)\" = 'video:x:27:user' ]"
+ok "merge: a system account the new base lacks is not carried, and reported" "[ -z \"\$(pw avahi)\" ] && [ -z \"\$(gr avahi)\" ] && grep -q 'not carried.* avahi' $W/acct/report"
+ok "merge: the carried passwd copy is replaced" "! grep -q '^carried:' $AT/passwd"
+ok "merge: passwords by name (old first, else the base's)" "[ \"\$(sh_ root)\" = '\$6\$rootpw' ] && [ \"\$(sh_ user)\" = '\$6\$userpw' ] && [ \"\$(sh_ messagebus)\" = '!old' ] && [ \"\$(sh_ polkitd)\" = '!' ] && [ \$(wc -l < $AT/shadow) = \$(wc -l < $AT/passwd) ]"
+ok "merge: shadow keeps the base's owner and mode, passwd/group 0644 root" "[ \"\$(stat -c '%u:%g %a' $AT/shadow)\" = '0:42 640' ] && [ \"\$(stat -c '%u:%g %a' $AT/passwd)\" = '0:0 644' ] && [ \"\$(stat -c '%u:%g %a' $AT/group)\" = '0:0 644' ]"
+ok "merge: subuid carried" "[ \"\$(cat $AT/subuid)\" = 'user:100000:65536' ] && [ ! -e $AT/subgid ]"
+ok "merge: the ID map (swapped system IDs, the moved group)" "[ \"\$(tr '\n' ,  < $W/acct/map)\" = 'g 1001 1002,g 101 102,g 102 101,u 100 101,u 101 100,' ]"
+ok "merge: the moved IDs of kept accounts are named (only the guest group; system IDs are not)" "[ \"\$(ga_kept_moves $W/acct/map)\" = 'gid 1001 -> 1002' ] && : > $W/acct/empty0 && [ -z \"\$(ga_kept_moves $W/acct/empty0)\" ]"
+ok "merge: no temp files left" "[ -z \"\$(ls $AT | grep '\.ga')\" ]"
+R2=$W/acct/tree; mkdir -p $R2/d
+echo a > $R2/d/mb; chown 100:101 $R2/d/mb
+echo b > $R2/d/pk; chown 101:102 $R2/d/pk
+echo c > $R2/d/us; chown 1000:1000 $R2/d/us
+echo d > "$R2/d/with space"; chown 1001:1001 "$R2/d/with space"
+echo e > $R2/d/suid; chown 100:101 $R2/d/suid; chmod 4755 $R2/d/suid
+ln -s mb $R2/d/link; chown -h 101:102 $R2/d/link
+nlf="$R2/d/$(printf 'a\nb')"; trf="$R2/d/trail "
+echo n > "$nlf"; chown 100:101 "$nlf"
+echo t > "$trf"; chown 101:102 "$trf"
+ln $R2/d/pk $R2/d/pk-hard
+ga_remap $W/acct/map $R2 > $W/acct/rep2
+own() { stat -c %u:%g "$R2/d/$1"; }
+ok "remap: by the map in one pass (swapped IDs stay right)" "[ \$(own mb) = 101:102 ] && [ \$(own pk) = 100:101 ] && [ \$(own us) = 1000:1000 ]"
+ok "remap: names with spaces, links themselves" "[ \"\$(own 'with space')\" = 1001:1002 ] && [ \$(own link) = 100:101 ] && [ \$(own mb) = 101:102 ]"
+ok "remap: setuid kept" "[ \$(stat -c %a $R2/d/suid) = 4755 ] && [ \$(own suid) = 101:102 ]"
+ok "remap: a newline in a name, a trailing space: just names" "[ \"\$(stat -c %u:%g \"\$nlf\")\" = 101:102 ] && [ \"\$(stat -c %u:%g \"\$trf\")\" = 100:101 ] && [ -e $R2/d/mb ]"
+ok "remap: a hard link is one file (the swap is applied once)" "[ \$(own pk-hard) = 100:101 ] && [ \$(own pk) = 100:101 ]"
+ok "remap: count (files, a hard link once)" "grep -q 'owners remapped: 7' $W/acct/rep2"
+ok "remap with an empty map: nothing" ": > $W/acct/empty && ga_remap $W/acct/empty $R2 | grep -q 'remapped: 0'"
+# a failure after shadow.ga exists: it never was readable by others, and nothing is left
+mkdir -p $W/shimc $W/acct/o5; cp -p $AN/* $W/acct/o5/ 2>/dev/null; echo 'carried:x:1:1::/:/bin/false' > $W/acct/o5/passwd; echo 'x.ga is theirs' > $W/acct/o5/x.ga
+printf '#!/bin/sh\ncase "$2" in *passwd.ga) stat -c %%a "${2%%passwd.ga}shadow.ga" > %s/shmode; exit 1 ;; esac\nexec /bin/chown "$@"\n' $W/acct > $W/shimc/chown; chmod +x $W/shimc/chown
+um=$(umask); umask 022
+PATH=$W/shimc:$PATH ga_merge $AO $AN $W/acct/o5 $W/acct/m5 >/dev/null 2>&1
+# shellcheck disable=SC2034  # read in the eval of ok()
+rc5=$?
+# shellcheck disable=SC2034  # read in the eval of ok()
+um2=$(umask); umask $um
+ok "merge: a failure after shadow.ga exists: it was 0600 meanwhile, nothing is left, the old files and a user's own *.ga stay, the caller's umask is back" "[ \$rc5 != 0 ] && [ \"\$(cat $W/acct/shmode)\" = 600 ] && [ -z \"\$(ls $W/acct/o5 | grep -E '^(passwd|group|shadow|subuid|subgid|report)\.ga|\.ga2\$')\" ] && grep -q '^carried:' $W/acct/o5/passwd && [ -e $W/acct/o5/x.ga ] && [ \"\$um2\" = 0022 ]"
+ok "merge: a base without passwd: refused" "! ga_merge $AO $W/acct/none $W/acct/o2 $W/acct/m2 2>/dev/null"
+# a build layer that holds only what the replay changed: each file by itself
+BU=$W/acct/build BL=$W/acct/lower NE=$W/acct/ne; mkdir -p $BU $BL
+cp -p $AN/passwd $AN/group $AN/shadow $BL/
+printf '%s\nnewsvc:x:200:200::/:/sbin/nologin\n' "$(cat $AN/passwd)" > $BU/passwd
+ga_lower $NE $BU $BL
+ok "lower: passwd from the build layer, group and shadow from the base, shadow's owner kept" "grep -q '^newsvc:' $NE/passwd && cmp -s $NE/group $AN/group && cmp -s $NE/shadow $AN/shadow && [ \"\$(stat -c %u:%g $NE/shadow)\" = 0:42 ] && [ ! -e $NE/subuid ]"
+AT2=$W/acct/out2; mkdir -p $AT2
+ga_merge $AO $NE $AT2 $W/acct/map2 > $W/acct/report2
+ok "merge over a build layer with only passwd: the base's groups stay, the new account is there" "grep -q '^wheel:' $AT2/group && grep -q '^root:x:0:' $AT2/group && grep -q '^newsvc:' $AT2/passwd && ! grep -q 'not carried.*root' $W/acct/report2 && [ \"\$(stat -c %a $AT2/shadow)\" = 640 ]"
+rm -f $BU/passwd; printf '%s\nadm2:x:300:\n' "$(cat $AN/group)" > $BU/group
+ga_lower $NE $BU $BL
+ok "lower: only group changed in the build layer: its edit is used, passwd from the base" "grep -q '^adm2:' $NE/group && cmp -s $NE/passwd $AN/passwd"
+mkdir -p $W/acct/po; cp -p $AN/passwd $W/acct/po/
+ok "merge: NEW with a passwd but no group file: refused, nothing written" "! ga_merge $AO $W/acct/po $W/acct/o3 $W/acct/m3 2>/dev/null && [ ! -e $W/acct/o3/group ]"
+mkdir -p $W/acct/pg; cp -p $AN/passwd $W/acct/pg/; : > $W/acct/pg/group
+ok "merge: NEW with an empty group file: refused" "! ga_merge $AO $W/acct/pg $W/acct/o4 $W/acct/m4 2>/dev/null"
+printf 'wheel:x:10:\n' > $W/acct/pg/group
+ok "merge: NEW with a group file without gid 0: refused" "! ga_merge $AO $W/acct/pg $W/acct/o4 $W/acct/m4 2>/dev/null"
+
+# --- packages: derived from world + installed db against the base ---------------
+export GLASSINE_DEPLOY_FAKE_MOUNTS=1
+PB=$W/sysmnt/bases/pb; PV=$W/pview
+mkdir -p $PB/etc/apk $PB/lib/apk/db $PV/etc/apk $PV/lib/apk/db $U/deployments/pk
+echo base=pb > $U/deployments/pk/meta
+printf 'alpine-base sway\nfirefox\n' > $PB/etc/apk/world
+printf 'alpine-base\nsway\nretroarch\nvim>=9.1\n' > $PV/etc/apk/world
+printf 'P:sway\nV:1.10-r0\nA:aarch64\n\nP:musl\nV:1.2.5-r10\n\nP:mesa\nV:25.1.9-r106\n\nP:firefox\nV:142.0-r0\n\n' > $PB/lib/apk/db/installed
+printf 'P:sway\nV:1.10-r0\n\nP:musl\nV:1.2.5-r11\n\nP:mesa\nV:25.1.9-r100\n\nP:retroarch\nV:1.21-r0\n\n' > $PV/lib/apk/db/installed
+printf '#!/bin/sh\n[ "$1" = version ] || exit 1\ncase "$3:$4" in 1.2.5-r11:1.2.5-r10) echo ">" ;; 25.1.9-r100:25.1.9-r106) echo "<" ;; *) echo "=" ;; esac\n' > $W/apkstub; chmod +x $W/apkstub
+echo pk > $W/run/booted
+pk() { GLASSINE_DEPLOY_ROOT=$PV GLASSINE_DEPLOY_APK=$W/apkstub $G packages pk --porcelain; }
+ok "packages: header, added world entries (constraints kept)" "pk > $W/pk && head -n 1 $W/pk | grep -qx 'glassine-deploy 1' && grep -qx 'type=package	change=added	entry=retroarch' $W/pk && grep -qx 'type=package	change=added	entry=vim>=9.1' $W/pk"
+ok "packages: removed world entries" "grep -qx 'type=package	change=removed	entry=firefox' $W/pk && [ \$(grep -c 'change=removed' $W/pk) = 1 ]"
+ok "packages: raised and lowered versions" "grep -qx 'type=package	change=raised	name=musl	version=1.2.5-r11	base_version=1.2.5-r10' $W/pk && grep -qx 'type=package	change=lowered	name=mesa	version=25.1.9-r100	base_version=25.1.9-r106' $W/pk"
+ok "packages: unchanged and new packages are not version records" "! grep -q 'name=sway' $W/pk && ! grep -q 'name=retroarch' $W/pk"
+ok "packages without apk: changed" "GLASSINE_DEPLOY_ROOT=$PV GLASSINE_DEPLOY_APK=$W/none $G packages pk --porcelain | grep -q 'change=changed	name=musl'"
+ok "packages: human output" "GLASSINE_DEPLOY_ROOT=$PV GLASSINE_DEPLOY_APK=$W/apkstub $G packages pk | grep -qx 'raised   musl 1.2.5-r11 (base 1.2.5-r10)'"
+ok "packages: an unknown deployment: exit 1; a bad id: exit 2" "$G packages zz 2>/dev/null; a=\$?; $G packages ../x 2>/dev/null; [ \$a\$? = 12 ]"
+rm -f $W/run/booted
+ok "packages of a deployment that is not running, userdata not mounted: refused" "mv $W/udmnt $W/udmnt.x; $G packages pk 2>$W/err; r=\$?; mv $W/udmnt.x $W/udmnt; [ \$r = 1 ]"
 
 echo "$fails failed"
 [ $fails = 0 ]
