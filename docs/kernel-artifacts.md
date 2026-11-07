@@ -93,7 +93,7 @@ original partitions afterwards. The seed lives on a partition of its own, the bo
 every deployment reset, and the initramfs and the recovery can read it without either:
 
 ```
-DEVICE_PART (the Note Air: vendor_b, ext4, otherwise unused by GlassineOS)
+DEVICE_PART (the Note Air: vendor_b, ext4; GlassineOS otherwise only reads it)
 └── glassine/
     ├── manifest             key=value: each file's source (PART:PATH) and sha256
     ├── waveform.wbf
