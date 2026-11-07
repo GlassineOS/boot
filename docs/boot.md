@@ -136,9 +136,18 @@ successful by its own system.
 | Command | Does |
 |---|---|
 | `status [--porcelain]` | both slots, the booted one (`androidboot.slot_suffix`), and the one ABL boots next |
-| `set-active a\|b [--successful]` | ABL's own `set_active`: the slot gets priority 3, 7 tries, not successful; the other keeps its state with priority 2. `--successful`: marked successful at once, for a system that can't mark itself |
+| `set-active a\|b [--successful]` | ABL's own `set_active` on its attributes: the slot gets priority 3, 7 tries, not successful; the other keeps its state with priority 2. `--successful`: marked successful at once, for a system that can't mark itself. Only on the layout below |
 | `mark-successful [a\|b]` | the booted slot (default) works: successful, no tries counted (tries back to 7); no write when it already is |
 | `reset-tries [a\|b]` | not successful again with 7 tries: after a kernel update in that slot |
+
+ABL's `set_active` does more than the attributes when the slot changes: it swaps
+the partition type GUIDs of each `_a`/`_b` pair, and on UFS it switches the boot LUN.
+At boot it refuses a slot whose `boot` partition has the type GUID of that slot's
+`system` partition, or that has no `system` partition. `glassine-slot` writes only
+the attributes, which is the same thing on an eMMC disk where each `_a`/`_b` pair
+shares its type GUID (the [A/B guide](https://docs.glassine.org/guides/ab-on-single-slot/)'s
+layout). Anywhere else `set-active` refuses (exit 3); the other commands only touch
+the attributes and work on any layout.
 
 Only the two attribute words change; when the two GPT copies differ elsewhere it
 refuses (exit 3). It writes the backup copy first, then the primary, each with

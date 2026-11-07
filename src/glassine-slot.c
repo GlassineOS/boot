@@ -13,7 +13,11 @@
  *                                                keeps its state, priority 2.
  *                                                --successful: marked successful
  *                                                at once, for a system that can't
- *                                                mark itself (no tries counted)
+ *                                                mark itself (no tries counted).
+ *                                                Only on an eMMC disk where each
+ *                                                _a/_b pair shares its type GUID
+ *                                                (set_active swaps them; refused
+ *                                                where that would matter)
  *   glassine-slot [OPTIONS] mark-successful [a|b] the booted slot (default) works:
  *                                                no more tries counted (tries back
  *                                                to 7); no write if it already is
@@ -31,7 +35,9 @@
  *
  * Exit: 0 done (or nothing to change), 1 I/O failed, 2 usage, 3 refused (no
  * valid GPT, the copies differ beyond the slot attributes, no boot_a/boot_b,
- * the booted slot unknown), 6 busy (another glassine-slot holds the disk). */
+ * the booted slot unknown, set-active on a layout where the bootloader's own
+ * set_active changes more than the attributes), 6 busy (another glassine-slot
+ * holds the disk). */
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -152,6 +158,63 @@ static int find(const uint8_t *arr, uint32_t nent, const char *name)
         found = (int)i;
     }
     return found;
+}
+
+/* why set-active here would not be what ABL's SetActiveSlot does, or NULL.
+ * ABL also swaps the type GUIDs of every X_a/X_b pair (SwitchPtnSlots), on UFS
+ * switches the boot LUN, and at boot refuses a slot whose boot_X has
+ * system_X's type GUID or has no system_X (ValidateSlotGuids). This tool only
+ * writes the attributes, which is the same thing on an eMMC disk where each
+ * pair shares its type GUID and boot_X's differs from system_X's. */
+static const char *not_abl_layout(const uint8_t *arr, uint32_t nent, int target, int emmc)
+{
+    static char why[160];
+    if (!emmc)
+        return "not an eMMC disk (on UFS the bootloader also switches the boot LUN)";
+    for (uint32_t i = 0; i < nent; i++) {
+        const uint8_t *e = arr + i * 128;
+        static const uint8_t unused[16];
+        char a[37] = "";
+        size_t n = 0;
+        if (!memcmp(e, unused, 16))
+            continue;
+        for (; n < 36 && e[56 + 2 * n] && e[56 + 2 * n] < 0x80 && !e[57 + 2 * n]; n++)
+            a[n] = (char)e[56 + 2 * n];
+        if (n < 2 || n == 36 || e[56 + 2 * n] || e[57 + 2 * n] || strcmp(a + n - 2, "_a"))
+            continue;
+        a[n - 1] = 'b';
+        int j = find(arr, nent, a);
+        if (j >= 0 && memcmp(e, arr + j * 128, 16)) {
+            a[n - 1] = 0;
+            snprintf(why, sizeof(why), "the type GUIDs of %sa and %sb differ (the bootloader swaps them)", a, a);
+            return why;
+        }
+    }
+    const char *s = target ? "b" : "a";
+    char boot[8], sys[10];
+    snprintf(boot, sizeof(boot), "boot_%s", s);
+    snprintf(sys, sizeof(sys), "system_%s", s);
+    int bi = find(arr, nent, boot), si = find(arr, nent, sys);
+    if (si < 0)
+        snprintf(why, sizeof(why), "no %s (the bootloader does not boot slot %s without it)", sys, s);
+    else if (!memcmp(arr + bi * 128, arr + si * 128, 16))
+        snprintf(why, sizeof(why), "%s has the type GUID of %s (the bootloader refuses that slot)", boot, sys);
+    else
+        return NULL;
+    return why;
+}
+
+/* the disk is eMMC: its sysfs device is an MMC card */
+static int is_emmc(dev_t d)
+{
+    char p[96], t[8] = "";
+    snprintf(p, sizeof(p), "/sys/dev/block/%u:%u/device/type", major(d), minor(d));
+    FILE *f = fopen(p, "r");
+    if (!f)
+        return 0;
+    int ok = fgets(t, sizeof(t), f) && !strcmp(t, "MMC\n");
+    fclose(f);
+    return ok;
 }
 
 static uint64_t prio(uint64_t a) { return (a & PRIO_MASK) >> PRIO_SHIFT; }
@@ -390,6 +453,13 @@ int main(int argc, char **argv)
 
     uint64_t nw[2] = { at[0], at[1] };
     if (!strcmp(cmd, "set-active")) {
+        /* an image file counts as eMMC: the host test, or a copy of a disk */
+        const char *why = not_abl_layout(src->arr, src->nent, target, S_ISBLK(st.st_mode) ? is_emmc(st.st_rdev) : 1);
+        if (why) {
+            fprintf(stderr, "glassine-slot: set-active: %s. The bootloader's own set_active would "
+                            "change more than the slot attributes, which are all this tool writes\n", why);
+            return 3;
+        }
         uint64_t *t = &nw[target], *o = &nw[!target];
         *t = (*t | PRIO_MASK | ACTIVE | TRIES_MASK) & ~SUCCESS & ~UNBOOTABLE;
         if (successful)

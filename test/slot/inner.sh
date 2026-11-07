@@ -10,13 +10,15 @@ cmdline() { echo "console=ttyMSM0 androidboot.slot_suffix=_$1 rootwait" > $W/cmd
 # attribute of partition N as hex, from sgdisk (not from the tool)
 attr() { sgdisk -i "$1" $I | sed -n 's/^Attribute flags: //p'; }
 field() { sed -n "s/^slot=$1\t.*$2=\([^\t]*\).*/\1/p" $W/out; }
-# a disk like the device: boot/system per slot, two type GUIDs (boot != system)
+# a disk like the device: boot/system per slot, two type GUIDs (boot != system),
+# each _b with its _a partner's; mkdisk BOOT_B SYSTEM_A SYSTEM_B BOOT_A for other type GUIDs
+BOOT=20117f86-e985-4357-b9ee-374bc1d8487d SYS=97d7b011-54da-4835-b3c4-917ad6e73d74
 mkdisk() {
     rm -f $I; truncate -s 64M $I
-    sgdisk -o -n 1:0:+4M -c 1:boot_a -t 1:20117f86-e985-4357-b9ee-374bc1d8487d \
-        -n 2:0:+8M -c 2:system_a -t 2:97d7b011-54da-4835-b3c4-917ad6e73d74 \
-        -n 3:0:+4M -c 3:boot_b -t 3:20117f86-e985-4357-b9ee-374bc1d8487d \
-        -n 4:0:+8M -c 4:system_b -t 4:97d7b011-54da-4835-b3c4-917ad6e73d74 \
+    sgdisk -o -n 1:0:+4M -c 1:boot_a -t 1:${4:-$BOOT} \
+        -n 2:0:+8M -c 2:system_a -t 2:${2:-$SYS} \
+        -n 3:0:+4M -c 3:boot_b -t 3:${1:-$BOOT} \
+        -n 4:0:+8M -c 4:system_b -t 4:${3:-$SYS} \
         -n 5:0:0 -c 5:userdata $I >/dev/null
     # slot a successful + active (the device's 0x007F...), b never booted
     sgdisk -A 1:set:48 -A 1:set:49 -A 1:set:50 -A 1:set:51 -A 1:set:52 -A 1:set:53 -A 1:set:54 $I >/dev/null
@@ -113,6 +115,19 @@ ok "a zeroed primary GPT: set-active rebuilds it, both valid, names kept" "S set
 # both broken: refused
 mkdisk; dd if=/dev/zero of=$I bs=512 seek=1 count=1 conv=notrunc 2>/dev/null; dd if=/dev/zero of=$I bs=512 seek=$(($(stat -c %s $I) / 512 - 1)) count=1 conv=notrunc 2>/dev/null; snap
 ok "both GPT copies broken: exit 3, no write" "S set-active b; [ \$? = 3 ] && unchanged"
+
+# set-active where ABL's own set_active would do more than the attributes
+# (swap the type GUIDs of each _a/_b pair; refuse a slot whose boot has its
+# system's type GUID): refused, no write. The rest is attributes only.
+OTHER=0fc63daf-8483-4772-8e79-3d69d8477de4
+mkdisk "" "" $OTHER; cmdline a; snap
+ok "set-active, a pair with different type GUIDs: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'type GUIDs of system_a and system_b differ' $W/out && unchanged"
+ok "set-active a (already active) there: exit 3 too" "S set-active a; [ \$? = 3 ] && unchanged"
+ok "mark-successful b there: works" "S mark-successful b && grep -q done $W/out"
+mkdisk $SYS $SYS $SYS $SYS; snap
+ok "set-active, boot_b with system_b's type GUID: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'boot_b has the type GUID of system_b' $W/out && unchanged"
+mkdisk; sgdisk -c 4:other $I >/dev/null; snap
+ok "set-active b without system_b: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'no system_b' $W/out && unchanged"
 
 # busy: another glassine-slot (a lock on the disk)
 mkdisk

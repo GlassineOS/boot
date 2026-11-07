@@ -46,8 +46,8 @@ jobs:
       - name: no board-specific names outside the example board.conf
         run: |
           set -e
-          # boot_a/boot_b (and the test disk's system_b) are the A/B partition names glassine-slot
-          # works on, on any A/B device: allowed in its source and test, and where a line names the pair
+          # boot_a/boot_b (and the test disk's system_b) are the A/B partition names of ABL's slot
+          # scheme, which glassine-slot works on: allowed in its source and test, and where a line names the pair
           git grep -n -i -w -E 'l[a]b|l[a]bnet|n[a]1|on[y]x|system[_]b|boot[_]b' -- . ':!conf/board.conf.example' ':!conf/deploy.conf.example' \
             ':!src/glassine-slot.c' ':!test/slot' | grep -v 'boot[_]a`\?/`\?boot[_]b' && exit 1
           git grep -n -E '/l[a]b/|172\.16' -- . ':!conf/board.conf.example' ':!conf/deploy.conf.example' && exit 1
