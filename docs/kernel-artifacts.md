@@ -202,6 +202,8 @@ state/bootimg/<id>.manifest  its record (below)
 | `tries` | boots the candidate has left (0–1) |
 | `failed`, `failed_img` | the last candidate that failed, and `reason` in its image record |
 | `deferred` | a release waiting for its install: it arrived during a trial, or while a deployment was a candidate or staged |
+| `requested` | the `candidate_img` that `reboot-test` asked the bootloader for; cleared at the next boot. A boot that isn't the candidate's while `tries=1` means the trial never started: the candidate is failed, with the hand-off's reason |
+| `writing`, `writing_op` | the image a command is writing to the default slot, and which command (`accept`, `rollback` or `repair`); set before the write, cleared after the state write that completes it. A boot of that image is a finishing boot (below) |
 
 Per image, in `state/bootimg/<id>.manifest`: `release`, `size`, `sha256`, `staged` (UTC),
 `reason` (why it failed), plus the boot record fields below. These replace today's files
@@ -234,24 +236,40 @@ tree or initramfs for the running kernel).
 
 **A kernel trial:**
 
-1. The initramfs knows the boot is the candidate kernel's when `glassine.img=` on the
-   command line equals `candidate_img` (read before `gr_resume` with the system partition
-   mounted `ro,rescue=nologreplay`, boot.md rule 1). A trial never resumes a hibernated
-   session.
-2. After the system partition is read-write and locked, it takes the try (`tries=0`).
-3. It boots **current** (the deployment), without picking a candidate and without taking a
-   deployment try (`gr_boot` gets a mode for this).
-4. `glassine-deploy-accept` doesn't run on a trial. `glassine-bootimg-promote` (OpenRC,
-   last) checks the boot and accepts the kernel (`current` ← candidate, the old one to
-   `previous`). A trial that fails, hangs or ends before the check leaves the candidate at
-   `tries=0`: the next boot is the old kernel, and it marks the candidate failed.
+1. The initramfs reads `state/kernel` before `gr_resume`, with the system partition
+   mounted `ro,rescue=nologreplay` (boot.md rule 1). A boot whose `glassine.img=` on the
+   command line equals `writing` is a **finishing boot**: a default-slot write completed,
+   but its state write didn't. Otherwise, the boot is the candidate kernel's trial when
+   `glassine.img=` equals `candidate_img`. Neither resumes a hibernated session.
+2. After the system partition is read-write and locked, a trial takes the try
+   (`tries=0`). A finishing boot takes none: an accept's candidate is already at
+   `tries=0`.
+3. Both boot **current** (the deployment), without picking a candidate and without
+   taking a deployment try (`gr_boot` gets a mode for this).
+4. `glassine-deploy-accept` doesn't run on either. `glassine-bootimg-promote` (OpenRC,
+   last):
+   - On a trial, it checks the boot and accepts the kernel (`current` ← candidate, the
+     old one to `previous`). A trial that fails, hangs or ends before the check leaves
+     the candidate at `tries=0`: the next boot is the old kernel, and it marks the
+     candidate failed.
+   - On a finishing boot, it completes what `writing_op` names, with no new check (an
+     accept's check ran in its trial). For `accept`: `current` ← candidate, the old one
+     to `previous`, and the candidate keys and `requested` are cleared. For `rollback`:
+     `current` and `previous` swap. For `repair`: a candidate, if one is set, is
+     cancelled. Then `writing` and `writing_op` are cleared.
+   - A boot with `writing` set and another `glassine.img=` means the write never
+     changed the slot. `writing` and `writing_op` are cleared, and an accept's
+     candidate is failed (reason `default slot write`).
+
+   How each hand-off writes the default slot is its own
+   ([blocklist.md](blocklist.md) for `blocklist`).
 
 **Hand-off** (board key `HANDOFF`): how the bootloader gets the selected kernel.
 
 | Value | How | Boards |
 |---|---|---|
 | `bootpart-test` | the candidate's image written to a one-shot test slot, the default slot written on accept (today's `glassine-bootimg`) | boards with a spare slot |
-| `blocklist` | a cold boot of a kernel file whose storage blocks the bootloader reads | the Note Air (planned; [hub#53](https://github.com/GlassineOS/hub/issues/53)) |
+| `blocklist` | a cold boot of a kernel file whose storage blocks the bootloader reads | the Note Air (planned; [blocklist.md](blocklist.md), [hub#53](https://github.com/GlassineOS/hub/issues/53)) |
 | `kexec`, `hardboot` | from a minimal loader / a warm reset into a staged image | not specified here |
 | empty | none: `install` refuses ("kernel updates are paused") | the Note Air today |
 
