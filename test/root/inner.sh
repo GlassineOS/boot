@@ -69,7 +69,7 @@ ok "/etc, /var, /usr/local, /opt are writable" "echo edited > $R/etc/eink/eink.c
 ok "the writes go through the overlay: copy-up into d1's switch layer" "[ \"\$(cat $U/deployments/d1/switch/etc/eink/eink.conf)\" = edited ] && [ -e $U/deployments/d1/switch/usr/local/x ]"
 rm $R/etc/motd
 ok "a deletion in /etc: a whiteout in the switch layer, the base keeps the file" "[ ! -e $R/etc/motd ] && [ -c $U/deployments/d1/switch/etc/motd ] && [ \"\$(cat $B/etc/motd)\" = welcome ]"
-ok "rename-replace in /etc works (passwd-style)" "echo 'root:x:0:0:root:/root:/bin/ash' > $R/etc/passwd.new && mv $R/etc/passwd.new $R/etc/passwd && grep -q ash $R/etc/passwd"
+ok "rename-replace in /etc works (passwd-style)" "printf 'root:x:0:0:root:/root:/bin/ash\nuser:x:1000:1000::/home/user:/bin/ash\n' > $R/etc/passwd.new && mv $R/etc/passwd.new $R/etc/passwd && grep -q ash $R/etc/passwd"
 ok "modules: on /lib/modules/7.3.0, read-only" "[ \"\$(cat $R/lib/modules/7.3.0/kernel/x.ko)\" = ko ] && ro $R/lib/modules/7.3.0/kernel/y.ko"
 ok "unlock: / writable" "gr_unlock $R && echo new > $R/usr/bin/new && [ -e $U/deployments/d1/switch/usr/bin/new ]"
 ok "lock: / read-only again" "gr_lock $R && ro $R/usr/bin/new2"
@@ -125,7 +125,7 @@ echo leftover > $NS/leftover; cp $S/state/deploy $W/stS
 ok "an interrupted switch (cut copy): exit 1, still staged, nothing selected, marker gone, nothing mounted" "PATH=$W/shim:\$PATH $G switch 2>/dev/null; [ \$? = 1 ] && cmp -s $S/state/deploy $W/stS && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
 : > $W/run/switching
 ok "switch: a stale marker does not block it; redone from scratch; selected with 2 tries" "$G switch >/dev/null 2>&1 && [ \"\$(st candidate)\" = $N ] && [ \"\$(st tries)\" = 2 ] && [ -z \"\$(st staged)\" ] && [ ! -e $NS/leftover ] && [ ! -e $W/run/switching ]"
-ok "switch carries the migrate list (shipped + the user's), with the change made after the reset" "[ \"\$(cat $NS/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $NS/etc/hostname)\" = myhost ] && [ -e $NS/var/lib/bluetooth/k ] && [ -e $NS/etc/wireguard/wg0.conf ]"
+ok "switch carries the migrate list (shipped + the user's), with the change made after the reset" "[ \"\$(cat $NS/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $NS/etc/hostname)\" = myhost ] && [ -e $NS/var/lib/bluetooth/k ] && [ -e $NS/etc/wireguard/wg0.conf ] && grep -qx 'user:x:1000:1000::/home/user:/bin/ash' $NS/etc/passwd"
 ok "switch: the carried passwd is replaced by the merge (root from the base)" "grep -qx 'root:x:0:0:root:/root:/bin/sh' $NS/etc/passwd && [ -e $NS/etc/shadow ]"
 ok "switch keeps modes (0700 wireguard)" "[ \$(stat -c %a $NS/etc/wireguard) = 700 ]"
 ok "switch drops the rest (edits, packages, /usr/local, whiteouts)" "[ ! -e $NS/etc/junk ] && [ ! -e $NS/usr/bin/new ] && [ ! -e $NS/usr/local/x ] && [ ! -e $NS/etc/motd ] && [ ! -e $NS/escape ]"
