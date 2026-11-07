@@ -271,12 +271,18 @@ echo c > $R2/d/us; chown 1000:1000 $R2/d/us
 echo d > "$R2/d/with space"; chown 1001:1001 "$R2/d/with space"
 echo e > $R2/d/suid; chown 100:101 $R2/d/suid; chmod 4755 $R2/d/suid
 ln -s mb $R2/d/link; chown -h 101:102 $R2/d/link
+nlf="$R2/d/$(printf 'a\nb')"; trf="$R2/d/trail "
+echo n > "$nlf"; chown 100:101 "$nlf"
+echo t > "$trf"; chown 101:102 "$trf"
+ln $R2/d/pk $R2/d/pk-hard
 ga_remap $W/acct/map $R2 > $W/acct/rep2
 own() { stat -c %u:%g "$R2/d/$1"; }
 ok "remap: by the map in one pass (swapped IDs stay right)" "[ \$(own mb) = 101:102 ] && [ \$(own pk) = 100:101 ] && [ \$(own us) = 1000:1000 ]"
 ok "remap: names with spaces, links themselves" "[ \"\$(own 'with space')\" = 1001:1002 ] && [ \$(own link) = 100:101 ] && [ \$(own mb) = 101:102 ]"
 ok "remap: setuid kept" "[ \$(stat -c %a $R2/d/suid) = 4755 ] && [ \$(own suid) = 101:102 ]"
-ok "remap: count" "grep -q 'owners remapped: 5' $W/acct/rep2"
+ok "remap: a newline in a name, a trailing space: just names" "[ \"\$(stat -c %u:%g \"\$nlf\")\" = 101:102 ] && [ \"\$(stat -c %u:%g \"\$trf\")\" = 100:101 ] && [ -e $R2/d/mb ]"
+ok "remap: a hard link is one file (the swap is applied once)" "[ \$(own pk-hard) = 100:101 ] && [ \$(own pk) = 100:101 ]"
+ok "remap: count (files, a hard link once)" "grep -q 'owners remapped: 7' $W/acct/rep2"
 ok "remap with an empty map: nothing" ": > $W/acct/empty && ga_remap $W/acct/empty $R2 | grep -q 'remapped: 0'"
 # a failure after shadow.ga exists: it never was readable by others, and nothing is left
 mkdir -p $W/shimc $W/acct/o5; cp -p $AN/* $W/acct/o5/ 2>/dev/null; echo 'carried:x:1:1::/:/bin/false' > $W/acct/o5/passwd; echo 'x.ga is theirs' > $W/acct/o5/x.ga

@@ -164,24 +164,37 @@ ga_kept_moves() {
 }
 
 # ga_remap MAP DIR: owners by the map (one pass: swapped IDs stay right); a
-# chown clears setuid/setgid, so the mode is set again. Prints the count.
+# chown clears setuid/setgid, so the mode is set again. Prints the count. find picks
+# the files by the old IDs and hands each path to the helper as an argument: a name is
+# never parsed, so a newline or a trailing space in one is just a name. A hard link is
+# one file (its inode is noted when done), or a swap would be applied twice.
+_ga_remap_each='
+while read -r _k _a _b; do
+    case $_a$_b in *[!0-9]*) echo "ga_remap: bad map line: $_k $_a $_b" >&2; exit 1 ;; esac
+    eval "${_k}m_$_a=$_b"
+done < "$GA_MAP"
+for _f; do
+    _i=$(stat -c "%u %g %a %d:%i %F" "$_f") || exit 1
+    set -- $_i
+    _u=$1 _g=$2 _m=$3 _n=$4 _l=""
+    [ "$5" = symbolic ] && _l=1
+    grep -qxF "$_n" "$GA_DONE" 2>/dev/null && continue
+    eval "_nu=\${um_$_u:-$_u} _ng=\${gm_$_g:-$_g}"
+    [ "$_nu:$_ng" = "$_u:$_g" ] && continue
+    chown -h "$_nu:$_ng" "$_f" || exit 1
+    [ -n "$_l" ] || chmod "$_m" "$_f" || exit 1
+    echo "$_n" >> "$GA_DONE"
+done'
+
 ga_remap() {
     [ -s "$1" ] || { echo "  owners remapped: 0"; return 0; }
-    _gr=0
-    find "$2" -exec stat -c '%u %g %a %F|%n' {} + |
-    awk -v map="$1" '
-        BEGIN { while ((getline l < map) > 0) { split(l, a, " "); if (a[1] == "u") um[a[2]] = a[3]; else gm[a[2]] = a[3] } }
-        {
-            u = $1; g = $2; m = $3; p = index($0, "|"); name = substr($0, p + 1)
-            link = (substr($0, 1, p - 1) ~ /symbolic link/)
-            nu = (u in um) ? um[u] : u; ng = (g in gm) ? gm[g] : g
-            if (nu != u || ng != g) print nu ":" ng " " (link ? "-" : m) " " name
-        }' > "$1.todo" || return 1
-    while read -r _own _mode _p; do
-        chown -h "$_own" "$_p" || return 1
-        [ "$_mode" = - ] || chmod "$_mode" "$_p" || return 1
-        _gr=$((_gr + 1))
-    done < "$1.todo"
-    rm -f "$1.todo"
-    echo "  owners remapped: $_gr"
+    _ge=$(awk '
+        $1 == "u" || $1 == "g" { if ($2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/) bad = 1
+            printf "%s-%s %s", (n++ ? " -o " : ""), ($1 == "u" ? "user" : "group"), $2 }
+        END { exit bad }' "$1") || { echo "ga_remap: bad map $1" >&2; return 1; }
+    : > "$1.done" || return 1
+    # shellcheck disable=SC2086  # the expression is words of digits and find's own
+    GA_MAP=$1 GA_DONE=$1.done find "$2" \( $_ge \) -exec sh -c "$_ga_remap_each" ga_remap {} + || { rm -f "$1.done"; return 1; }
+    echo "  owners remapped: $(wc -l < "$1.done" | tr -d ' ')"
+    rm -f "$1.done"
 }
