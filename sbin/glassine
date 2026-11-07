@@ -24,8 +24,9 @@
 # apk takes its lock under /, so it opens / too (no acknowledgement). A simulation
 # (-s) and any user but root run apk-tools directly: no lock, no acknowledgement.
 #
-# Exit codes: apk's own for apk; 0 done, 1 error, 2 usage, 6 busy (another
-# package change holds the lock).
+# Exit codes: apk's own for apk; 0 done, 1 error, 2 usage, 6 the package lock could
+# not be taken (flock itself failed: another package change holding it is waited for,
+# with no time limit).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 RUN_DIR=/run/glassine
