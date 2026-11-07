@@ -278,6 +278,13 @@ ok "remap: names with spaces, links themselves" "[ \"\$(own 'with space')\" = 10
 ok "remap: setuid kept" "[ \$(stat -c %a $R2/d/suid) = 4755 ] && [ \$(own suid) = 101:102 ]"
 ok "remap: count" "grep -q 'owners remapped: 5' $W/acct/rep2"
 ok "remap with an empty map: nothing" ": > $W/acct/empty && ga_remap $W/acct/empty $R2 | grep -q 'remapped: 0'"
+# a failure after shadow.ga exists: it never was readable by others, and nothing is left
+mkdir -p $W/shimc $W/acct/o5; cp -p $AN/* $W/acct/o5/ 2>/dev/null; echo 'carried:x:1:1::/:/bin/false' > $W/acct/o5/passwd; echo 'x.ga is theirs' > $W/acct/o5/x.ga
+printf '#!/bin/sh\ncase "$2" in *passwd.ga) stat -c %%a "${2%%passwd.ga}shadow.ga" > %s/shmode; exit 1 ;; esac\nexec /bin/chown "$@"\n' $W/acct > $W/shimc/chown; chmod +x $W/shimc/chown
+um=$(umask); umask 022
+PATH=$W/shimc:$PATH ga_merge $AO $AN $W/acct/o5 $W/acct/m5 >/dev/null 2>&1; rc5=$?
+um2=$(umask); umask $um
+ok "merge: a failure after shadow.ga exists: it was 0600 meanwhile, nothing is left, the old files and a user's own *.ga stay, the caller's umask is back" "[ \$rc5 != 0 ] && [ \"\$(cat $W/acct/shmode)\" = 600 ] && [ -z \"\$(ls $W/acct/o5 | grep -E '^(passwd|group|shadow|subuid|subgid|report)\.ga|\.ga2\$')\" ] && grep -q '^carried:' $W/acct/o5/passwd && [ -e $W/acct/o5/x.ga ] && [ \"\$um2\" = 0022 ]"
 ok "merge: a base without passwd: refused" "! ga_merge $AO $W/acct/none $W/acct/o2 $W/acct/m2 2>/dev/null"
 # a build layer that holds only what the replay changed: each file by itself
 BU=$W/acct/build BL=$W/acct/lower NE=$W/acct/ne; mkdir -p $BU $BL

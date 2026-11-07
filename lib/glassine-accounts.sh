@@ -38,10 +38,25 @@ ga_lower() {
     done
 }
 
+# _ga_prep TMP MODE OWNER: a finished file gets its mode and owner before it moves
+_ga_prep() { chmod "$2" "$1" && chown "$3" "$1"; }
 # _ga_put TMP DEST MODE OWNER: move a finished file into place
-_ga_put() { chmod "$3" "$1" && chown "$4" "$1" && mv -f "$1" "$2"; }
+_ga_put() { _ga_prep "$1" "$3" "$4" && mv -f "$1" "$2"; }
 
+# ga_merge: the work is in _ga_merge. The temporary files hold password hashes:
+# nothing is readable by others while they exist (umask 077; the final modes are
+# set before the moves), and a failed merge leaves none of them in OUT.
 ga_merge() {
+    _gu=$(umask); umask 077
+    _ga_merge "$@"; _gx=$?
+    umask "$_gu"
+    if [ "$_gx" != 0 ]; then
+        for _gy in group.ga group.ga2 passwd.ga shadow.ga report.ga subuid.ga subgid.ga; do rm -f "$3/$_gy"; done
+    fi
+    return "$_gx"
+}
+
+_ga_merge() {
     _go=$1 _gn=$2 _gt=$3 _gm=$4
     [ -r "$_gn/passwd" ] || { echo "ga_merge: $_gn has no passwd" >&2; return 1; }
     awk -F: '$3 == "0" { f = 1 } END { exit !f }' "$(_ga_f "$_gn/group")" ||
@@ -128,9 +143,11 @@ ga_merge() {
     done
     # shadow keeps NEW's owner and mode (root:shadow 0640 on Alpine)
     _so="0:0 600"; [ -e "$_gn/shadow" ] && _so=$(stat -c '%u:%g %a' "$_gn/shadow")
-    _ga_put "$_gt/passwd.ga" "$_gt/passwd" 644 0:0 &&
-        _ga_put "$_gt/group.ga" "$_gt/group" 644 0:0 &&
-        _ga_put "$_gt/shadow.ga" "$_gt/shadow" "${_so#* }" "${_so% *}" || return 1
+    # all three finished before the first moves: a failure leaves OUT as it was
+    _ga_prep "$_gt/passwd.ga" 644 0:0 && _ga_prep "$_gt/group.ga" 644 0:0 &&
+        _ga_prep "$_gt/shadow.ga" "${_so#* }" "${_so% *}" &&
+        mv -f "$_gt/passwd.ga" "$_gt/passwd" && mv -f "$_gt/group.ga" "$_gt/group" &&
+        mv -f "$_gt/shadow.ga" "$_gt/shadow" || return 1
     cat "$_gt/report.ga"; rm -f "$_gt/report.ga"
     while read -r _k _a _b; do
         [ "$_k" = u ] && echo "  uid $_a -> $_b" || echo "  gid $_a -> $_b"
