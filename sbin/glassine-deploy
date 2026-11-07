@@ -82,7 +82,7 @@ PORCELAIN_VERSION=1
 SWAPFILE="$USERDATA_PREFIX/swap/hibernate"
 GUARD="$USERDATA_PREFIX/swap/hibernate.guard"
 MOUNTED_HERE='' UD_MOUNTED_HERE='' TMP_VIEW='' NEW_DEP='' SWITCHING='' RECV_TMP='' RECV_BEFORE=''
-REPLAY_MNT='' REPLAY_BINDS='' REPLAY_RESOLV='' REPLAY_TMP=''
+REPLAY_MNT='' REPLAY_BINDS='' REPLAY_RESOLV='' REPLAY_TMP='' NEW_ETC=''
 
 die() { echo "glassine-deploy: $*" >&2; exit 1; }
 fail() { _c=$1; shift; echo "glassine-deploy: $*" >&2; exit "$_c"; }
@@ -115,6 +115,8 @@ cleanup() {
     replay_umount
     [ -n "$REPLAY_TMP" ] && rm -rf "$REPLAY_TMP"
     REPLAY_TMP=''
+    [ -n "$NEW_ETC" ] && rm -rf "$NEW_ETC"
+    NEW_ETC=''
     [ -n "$TMP_VIEW" ] && umount "$TMP_VIEW" 2>/dev/null && rmdir "$TMP_VIEW" 2>/dev/null
     TMP_VIEW=''
     [ -n "$SWITCHING" ] && rm -f "$SWITCHING"
@@ -729,8 +731,12 @@ do_switch() {
         # the accounts: the new deployment's lower /etc (its build layer over
         # its base) merged with the old one's; carried files follow moved IDs
         nb=$(gs_kv "$nd/meta" base)
-        ne=$SYSTEM_MNT/bases/$nb/etc; [ -r "$nd/build/etc/passwd" ] && ne=$nd/build/etc
-        [ -n "$nb" ] && [ -r "$ne/passwd" ] || die "deployment $id: base ${nb:-?} has no /etc/passwd; $id stays staged"
+        # (each file by itself: the build layer holds only what the replay changed)
+        ne=$RUN_DIR/newetc.$$
+        [ -n "$nb" ] && [ -r "$SYSTEM_MNT/bases/$nb/etc/passwd" ] || die "deployment $id: base ${nb:-?} has no /etc/passwd; $id stays staged"
+        NEW_ETC=$ne
+        ga_lower "$ne" "$nd/build/etc" "$SYSTEM_MNT/bases/$nb/etc" || die "cannot read the new deployment's accounts; $id stays staged"
+        [ -r "$ne/passwd" ] || die "deployment $id has no /etc/passwd; $id stays staged"
         [ -d "$nd/switch/etc" ] || { mkdir "$nd/switch/etc" && chown "$(stat -c %u:%g "$view/etc")" "$nd/switch/etc" &&
             chmod "$(stat -c %a "$view/etc")" "$nd/switch/etc"; } || die "cannot create $nd/switch/etc"
         echo "glassine-deploy: accounts (base $nb + $cur's users)"

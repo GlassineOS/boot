@@ -6,18 +6,35 @@
 #                              into OUT/{passwd,group,shadow,subuid,subgid};
 #                              MAP gets "u OLD NEW" / "g OLD NEW" lines for every
 #                              ID that moved (by name). Report lines on stdout.
+#   ga_lower OUT UPPER LOWER   the NEW directory for ga_merge: each account file from
+#                              UPPER (the new deployment's build layer, which holds
+#                              only what the replay changed) if it has it, else from
+#                              LOWER (the base); a whiteout in UPPER means deleted
 #   ga_remap MAP DIR           chown every file under DIR owned by a moved ID
 #
 # Kept from OLD: users and groups with an ID in [1000, 65534) that NEW lacks (their
 # ID when free, else the next free one from 1000), every password (shadow, by
 # name), the group memberships of users that exist afterwards, subuid/subgid
 # ranges. Everything else comes from NEW. OUT may hold a carried copy of the
-# files; it is replaced. Missing files count as empty; NEW needs passwd.
+# files; it is replaced. Missing files count as empty, but NEW needs a passwd, and
+# a group file with a gid 0 (a half-read /etc must not pass for a merge).
 
 GA_FIRST=1000 GA_NOBODY=65534
 
 # _ga_f FILE: FILE, or /dev/null when it is missing
 _ga_f() { if [ -r "$1" ]; then echo "$1"; else echo /dev/null; fi; }
+
+# ga_lower OUT UPPER LOWER: see above. The files are copied, owner and mode kept.
+ga_lower() {
+    mkdir -p "$1" || return 1
+    for _lf in passwd group shadow subuid subgid; do
+        rm -f "$1/$_lf"
+        if [ -f "$2/$_lf" ]; then cp -p "$2/$_lf" "$1/$_lf" || return 1
+        elif [ -c "$2/$_lf" ]; then :
+        elif [ -f "$3/$_lf" ]; then cp -p "$3/$_lf" "$1/$_lf" || return 1
+        fi
+    done
+}
 
 # _ga_put TMP DEST MODE OWNER: move a finished file into place
 _ga_put() { chmod "$3" "$1" && chown "$4" "$1" && mv -f "$1" "$2"; }
@@ -25,6 +42,8 @@ _ga_put() { chmod "$3" "$1" && chown "$4" "$1" && mv -f "$1" "$2"; }
 ga_merge() {
     _go=$1 _gn=$2 _gt=$3 _gm=$4
     [ -r "$_gn/passwd" ] || { echo "ga_merge: $_gn has no passwd" >&2; return 1; }
+    awk -F: '$3 == "0" { f = 1 } END { exit !f }' "$(_ga_f "$_gn/group")" ||
+        { echo "ga_merge: $_gn has no group file with a gid 0" >&2; return 1; }
     _op=$(_ga_f "$_go/passwd") _og=$(_ga_f "$_go/group") _os=$(_ga_f "$_go/shadow")
     _ns=$(_ga_f "$_gn/shadow") _ng=$(_ga_f "$_gn/group")
     mkdir -p "$_gt" || return 1

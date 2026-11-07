@@ -278,6 +278,24 @@ ok "remap: setuid kept" "[ \$(stat -c %a $R2/d/suid) = 4755 ] && [ \$(own suid) 
 ok "remap: count" "grep -q 'owners remapped: 5' $W/acct/rep2"
 ok "remap with an empty map: nothing" ": > $W/acct/empty && ga_remap $W/acct/empty $R2 | grep -q 'remapped: 0'"
 ok "merge: a base without passwd: refused" "! ga_merge $AO $W/acct/none $W/acct/o2 $W/acct/m2 2>/dev/null"
+# a build layer that holds only what the replay changed: each file by itself
+BU=$W/acct/build BL=$W/acct/lower NE=$W/acct/ne; mkdir -p $BU $BL
+cp -p $AN/passwd $AN/group $AN/shadow $BL/
+printf '%s\nnewsvc:x:200:200::/:/sbin/nologin\n' "$(cat $AN/passwd)" > $BU/passwd
+ga_lower $NE $BU $BL
+ok "lower: passwd from the build layer, group and shadow from the base, shadow's owner kept" "grep -q '^newsvc:' $NE/passwd && cmp -s $NE/group $AN/group && cmp -s $NE/shadow $AN/shadow && [ \"\$(stat -c %u:%g $NE/shadow)\" = 0:42 ] && [ ! -e $NE/subuid ]"
+AT2=$W/acct/out2; mkdir -p $AT2
+ga_merge $AO $NE $AT2 $W/acct/map2 > $W/acct/report2
+ok "merge over a build layer with only passwd: the base's groups stay, the new account is there" "grep -q '^wheel:' $AT2/group && grep -q '^root:x:0:' $AT2/group && grep -q '^newsvc:' $AT2/passwd && ! grep -q 'not carried.*root' $W/acct/report2 && [ \"\$(stat -c %a $AT2/shadow)\" = 640 ]"
+rm -f $BU/passwd; printf '%s\nadm2:x:300:\n' "$(cat $AN/group)" > $BU/group
+ga_lower $NE $BU $BL
+ok "lower: only group changed in the build layer: its edit is used, passwd from the base" "grep -q '^adm2:' $NE/group && cmp -s $NE/passwd $AN/passwd"
+mkdir -p $W/acct/po; cp -p $AN/passwd $W/acct/po/
+ok "merge: NEW with a passwd but no group file: refused, nothing written" "! ga_merge $AO $W/acct/po $W/acct/o3 $W/acct/m3 2>/dev/null && [ ! -e $W/acct/o3/group ]"
+mkdir -p $W/acct/pg; cp -p $AN/passwd $W/acct/pg/; : > $W/acct/pg/group
+ok "merge: NEW with an empty group file: refused" "! ga_merge $AO $W/acct/pg $W/acct/o4 $W/acct/m4 2>/dev/null"
+printf 'wheel:x:10:\n' > $W/acct/pg/group
+ok "merge: NEW with a group file without gid 0: refused" "! ga_merge $AO $W/acct/pg $W/acct/o4 $W/acct/m4 2>/dev/null"
 
 # --- packages: derived from world + installed db against the base ---------------
 export GLASSINE_DEPLOY_FAKE_MOUNTS=1

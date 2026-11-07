@@ -44,7 +44,7 @@ echo alpine-base > $B/etc/apk/world
 echo glassine > $B/etc/hostname
 echo welcome > $B/etc/motd
 echo '@stagger_ctl=3' > $B/etc/eink/eink.conf
-echo 'root:x:0:0:root:/root:/bin/sh' > $B/etc/passwd
+echo 'root:x:0:0:root:/root:/bin/sh' > $B/etc/passwd; echo 'root:x:0:root' > $B/etc/group
 printf '#!/bin/sh\necho hello\n' > $B/usr/bin/hello; chmod 755 $B/usr/bin/hello
 printf '# shipped\n/etc/eink/\n/etc/hostname\n/etc/passwd\n/var/lib/bluetooth/\n../escape\nrelative/path\n' > $B/usr/share/glassine/migrate.list
 btrfs property set -ts $B ro true
@@ -254,9 +254,13 @@ ok "stage: a bad name: exit 2" "$G stage ../b2 --yes 2>/dev/null; [ \$? = 2 ]"
 ok "stage --full: usage" "$G stage b2 --full --yes 2>/dev/null; [ \$? = 2 ] && [ -z \"\$(st staged)\" ]"
 ok "stage b2: staged, kind update, carry migrate, base b2" "$G stage b2 --yes >/dev/null && SB=\$(st staged) && grep -qx base=b2 $U/deployments/\$SB/meta && grep -qx kind=update $U/deployments/\$SB/meta && grep -qx carry=migrate $U/deployments/\$SB/meta && grep -qx from=$CUR $U/deployments/\$SB/meta && [ \"\$(st current)\" = $CUR ]"
 SB=$(st staged); SW=$U/deployments/$SB/switch
+# the replay changed /etc/passwd only (a package script adding a system user): the build
+# layer holds that one file, group and shadow come from the base
+mkdir -p $U/deployments/$SB/build/etc && printf '%s\nnewsvc:x:200:200::/:/sbin/nologin\n' "$(cat $B2/etc/passwd)" > $U/deployments/$SB/build/etc/passwd
 ok "bases: the staged deployment uses b2" "$G bases --porcelain | grep -q 'name=b2	used_by=$SB'"
 ok "switch: the staged update is the candidate" "$G switch >$W/swout 2>&1 && [ \"\$(st candidate)\" = $SB ] && [ -z \"\$(st staged)\" ]"
 ok "switch: accounts merged (user + its password + wheel membership; bluetooth at the new base's ID)" "grep -qx 'user:x:1000:1000::/home/user:/bin/ash' $SW/etc/passwd && grep -qx 'bluetooth:x:101:101::/:/sbin/nologin' $SW/etc/passwd && grep -q '^user:\$6\$u:' $SW/etc/shadow && grep -qx 'wheel:x:10:root,user' $SW/etc/group && grep -qx 'user:x:1000:' $SW/etc/group"
+ok "switch: a build layer with only passwd: the new account is in, the base's groups and shadow rows stay" "grep -qx 'newsvc:x:200:200::/:/sbin/nologin' $SW/etc/passwd && grep -qx 'root:x:0:root' $SW/etc/group && grep -qx 'shadow:x:42:' $SW/etc/group && grep -q '^bluetooth:' $SW/etc/shadow && [ \"\$(stat -c %u:%g:%a $SW/etc/shadow)\" = 0:42:640 ]"
 ok "switch: carried files follow the moved bluetooth ID" "[ \"\$(stat -c %u:%g $SW/var/lib/bluetooth/AA/info)\" = 101:101 ] && [ \"\$(stat -c %u:%g $SW/var/lib/bluetooth/AA)\" = 101:101 ]"
 ok "switch: reports the merge" "grep -q 'user user kept' $W/swout && grep -q 'uid 100 -> 101' $W/swout && [ ! -e $U/deployments/$SB/idmap ]"
 ok "the candidate's root: the new base with the carried settings" "gr_assemble $S $U $SB $R && [ \"\$(cat $R/etc/motd)\" = two ] && [ \"\$(cat $R/etc/hostname)\" = myhost ] && [ \"\$(cat $R/etc/eink/eink.conf)\" = later ] && [ \"\$(cat $R/var/lib/bluetooth/AA/info)\" = key ] && grep -q '^user:' $R/etc/passwd"
@@ -264,6 +268,10 @@ gr_umount $R
 # a base without /etc/passwd: the switch refuses, stays staged
 btrfs -q subvolume create $W/src/bad; mkdir $W/src/bad/etc; btrfs property set -ts $W/src/bad ro true
 btrfs -q send $W/src/bad | $G receive - >/dev/null
+. /p/lib/glassine-accounts.sh
+mkdir -p $W/wo/up $W/wo/low; echo 'root:x:0:root' > $W/wo/low/group; echo 'root:*:1::::::' > $W/wo/low/shadow; mknod $W/wo/up/shadow c 0 0
+ga_lower $W/wo/out $W/wo/up $W/wo/low
+ok "ga_lower: a whiteout in the build layer (a real overlay upper has them): deleted, not read from the base" "[ ! -e $W/wo/out/shadow ] && [ -e $W/wo/out/group ]"
 ok "stage: a base without /etc/passwd: refused" "$G stage bad --yes 2>$W/err; [ \$? = 1 ] && grep -q 'no /etc/passwd' $W/err"
 # --- bases remove ---------------------------------------------------------------
 PREV0=$(gs_kv $S/state/deploy previous)
