@@ -89,6 +89,15 @@ done
 # a backup that is gone entirely (zeroed): rebuilt from the primary
 mkdisk; dd if=/dev/zero of=$I bs=512 seek=$(($(stat -c %s $I) / 512 - 33)) count=33 conv=notrunc 2>/dev/null
 ok "a zeroed backup GPT: set-active rebuilds it, both valid" "S set-active b && sgdisk -v $I | grep -q 'No problems found'"
+# fewer than 128 entries (the device's table has 64): ABL keeps the backup array
+# as one 16 KiB block before the last LBA, so a rebuilt backup goes there too,
+# and ABL's next attribute update (modelled by gpt.py abl-attr) leaves it valid
+mkdisk; python3 /p/test/slot/gpt.py entries $I 64
+last=$(($(stat -c %s $I) / 512 - 1))
+ok "64 entries: sgdisk reads the table" "sgdisk -v $I | grep -q 'No problems found'"
+dd if=/dev/zero of=$I bs=512 seek=$last count=1 conv=notrunc 2>/dev/null
+ok "64 entries, a zeroed backup header: rebuilt, its array 16 KiB before the header" "S set-active b && grep -q 'backup GPT is broken' $W/out && [ \$(od -An -tu8 -j \$(($last * 512 + 72)) -N8 $I) = \$(($last - 32)) ] && sgdisk -v $I | grep -q 'No problems found'"
+ok "64 entries: after ABL's own attribute write both copies stay valid" "python3 /p/test/slot/gpt.py abl-attr $I boot_b 0037000000000000 && S status --porcelain && ! grep -q broken $W/out && [ \$(field b tries) = 6 ] && sgdisk -v $I | grep -q 'No problems found'"
 # a zeroed primary: rebuilt from the backup
 mkdisk; dd if=/dev/zero of=$I bs=512 seek=1 count=33 conv=notrunc 2>/dev/null
 ok "a zeroed primary GPT: status reads the backup" "S status --porcelain && grep -qx 'next=a' $W/out"

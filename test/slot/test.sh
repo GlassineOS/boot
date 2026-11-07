@@ -5,4 +5,4 @@
 set -eu
 D=$(cd "$(dirname "$0")" && pwd)
 P=$(cd "$D/../.." && pwd)
-docker run --rm -v "$P":/p:ro alpine:3.22 sh -c 'apk add -q build-base linux-headers sgdisk >/dev/null 2>&1; sh /p/test/slot/inner.sh'
+docker run --rm -v "$P":/p:ro alpine:3.22 sh -c 'apk add -q build-base linux-headers sgdisk python3 >/dev/null 2>&1; sh /p/test/slot/inner.sh'

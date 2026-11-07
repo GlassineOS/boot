@@ -344,8 +344,13 @@ int main(int argc, char **argv)
         if (pri.arr[k] != bak.arr[k] && !((e == (uint32_t)ia || e == (uint32_t)ib) && off >= 48 && off < 56))
             die(3, "the primary and backup GPT differ beyond the slot attributes");
     }
-    /* the broken copy: the valid one's header with the positions swapped */
+    /* the broken copy: the valid one's header with the positions swapped. ABL
+     * reads and writes the backup as one fixed 16 KiB block of entries (128 of
+     * 128 bytes) before the header at the last LBA, whatever the entry count, so
+     * a rebuilt backup array starts 16 KiB before its header, or further when
+     * the array is larger (UpdatePartitionAttributes, MAX_PARTITION_ENTRIES_SZ) */
     uint32_t arr_secs = (src->arr_bytes + ssz - 1) / ssz;
+    uint32_t arr_secs_bak = arr_secs > 16384 / ssz ? arr_secs : 16384 / ssz;
     struct gpt *dst = p_ok ? &bak : &pri;
     if (!p_ok || !b_ok) {
         size_t arr_n = (size_t)arr_secs * ssz;
@@ -357,7 +362,7 @@ int main(int argc, char **argv)
         *dst = *src;
         dst->hdr = h, dst->arr = a;
         dst->my_lba = src->alt_lba, dst->alt_lba = src->my_lba;
-        dst->arr_lba = p_ok ? dst->my_lba - arr_secs : 2;
+        dst->arr_lba = p_ok ? dst->my_lba - arr_secs_bak : 2;
         put64(h + 24, dst->my_lba);
         put64(h + 32, dst->alt_lba);
         put64(h + 72, dst->arr_lba);
