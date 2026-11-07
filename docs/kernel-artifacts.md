@@ -238,9 +238,10 @@ tree or initramfs for the running kernel).
 
 1. The initramfs reads `state/kernel` before `gr_resume`, with the system partition
    mounted `ro,rescue=nologreplay` (boot.md rule 1). A boot whose `glassine.img=` on the
-   command line equals `writing` is a **finishing boot**: a default-slot write completed,
-   but its state write didn't. Otherwise, the boot is the candidate kernel's trial when
-   `glassine.img=` equals `candidate_img`. Neither resumes a hibernated session.
+   command line equals `writing` is a **finishing boot**: a default-slot write was
+   started, and its state write didn't happen. Otherwise, the boot is the candidate
+   kernel's trial when `glassine.img=` equals `candidate_img`. Neither resumes a
+   hibernated session.
 2. After the system partition is read-write and locked, a trial takes the try
    (`tries=0`). A finishing boot takes none: an accept's candidate is already at
    `tries=0`.
@@ -252,14 +253,21 @@ tree or initramfs for the running kernel).
      old one to `previous`). A trial that fails, hangs or ends before the check leaves
      the candidate at `tries=0`: the next boot is the old kernel, and it marks the
      candidate failed.
-   - On a finishing boot, it completes what `writing_op` names, with no new check (an
-     accept's check ran in its trial). For `accept`: `current` ← candidate, the old one
-     to `previous`, and the candidate keys and `requested` are cleared. For `rollback`:
-     `current` and `previous` swap. For `repair`: a candidate, if one is set, is
-     cancelled. Then `writing` and `writing_op` are cleared.
-   - A boot with `writing` set and another `glassine.img=` means the write never
-     changed the slot. `writing` and `writing_op` are cleared, and an accept's
-     candidate is failed (reason `default slot write`).
+   - **Whenever `writing` is set,** on a finishing boot or on any other boot, it first
+     compares the sha256 of the default slot's first `size` bytes with the manifest of
+     the image `writing` names. `glassine.img=` alone doesn't show that the slot was
+     written: on `bootpart-test`, the test slot boots the same image while the default
+     slot may still be cut. If they don't match, it writes the default slot again from
+     `state/bootimg/<writing>.img`, and if that fails, `writing` stays and `status` says
+     the default slot can't boot.
+   - Once the default slot matches, it completes what `writing_op` names, with no new
+     health check (an accept's check ran in its trial):
+     - `accept`: `current` ← candidate, the old one to `previous`, and the candidate keys
+       and `requested` are cleared;
+     - `rollback`: `current` and `previous` swap;
+     - `repair`: a candidate, if one is set, is cancelled.
+
+     Then `writing` and `writing_op` are cleared.
 
    How each hand-off writes the default slot is its own
    ([blocklist.md](blocklist.md) for `blocklist`).
