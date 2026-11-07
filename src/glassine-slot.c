@@ -25,8 +25,7 @@
  *                                                (after a kernel update in that slot)
  * OPTIONS: --disk DEV (default: the disk holding boot_a), --sector-size N (for
  * an image file; default 512, a block device says its own).
- * The booted slot is androidboot.slot_suffix in /proc/cmdline
- * (GLASSINE_SLOT_CMDLINE for the host test).
+ * The booted slot is androidboot.slot_suffix in /proc/cmdline.
  *
  * Only the attribute words of boot_a and boot_b change; anything else that
  * would differ is a refusal. Both GPT copies are written, the backup first
@@ -241,9 +240,22 @@ static int next_slot(const uint64_t at[2])
     return -1;
 }
 
+/* the host test's hooks, only in its build (test/slot compiles with
+ * -DGLASSINE_SLOT_TEST): GLASSINE_SLOT_CMDLINE is read in place of
+ * /proc/cmdline, GLASSINE_SLOT_TEST_CUT stops after a write step (cut) */
+static const char *test_env(const char *name)
+{
+#ifdef GLASSINE_SLOT_TEST
+    return getenv(name);
+#else
+    (void)name;
+    return NULL;
+#endif
+}
+
 static int booted_slot(void)
 {
-    const char *path = getenv("GLASSINE_SLOT_CMDLINE");
+    const char *path = test_env("GLASSINE_SLOT_CMDLINE");
     char buf[4096];
     FILE *f = fopen(path ? path : "/proc/cmdline", "r");
     if (!f)
@@ -315,7 +327,7 @@ static int slot_arg(const char *s)
  * value "readback" makes the read-back compare fail instead) */
 static void cut(const char *step)
 {
-    const char *c = getenv("GLASSINE_SLOT_TEST_CUT");
+    const char *c = test_env("GLASSINE_SLOT_TEST_CUT");
     if (c && !strcmp(c, step))
         die(1, "test cut");
 }
@@ -525,7 +537,7 @@ int main(int argc, char **argv)
     if (S_ISBLK(st.st_mode) ? ioctl(fd, BLKFLSBUF, 0) : posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED))
         die(1, "cannot drop the cached blocks before the read-back");
     struct gpt p2, b2;
-    const char *c = getenv("GLASSINE_SLOT_TEST_CUT");
+    const char *c = test_env("GLASSINE_SLOT_TEST_CUT");
     if (c && !strcmp(c, "readback"))  /* the test of the mismatch path */
         put64(pri.arr + ia * 128 + 48, ~nw[0]);
     if (load(&p2, 1) || load(&b2, p2.alt_lba) || memcmp(p2.arr, pri.arr, pri.arr_bytes) ||

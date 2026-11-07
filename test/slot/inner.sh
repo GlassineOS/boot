@@ -3,7 +3,9 @@ set -u
 W=/w; mkdir -p $W
 fails=0
 ok() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
-cc -Os -Wall -Werror -o $W/glassine-slot /p/src/glassine-slot.c || { echo "FAIL build"; exit 1; }
+# the test build has the hooks (GLASSINE_SLOT_CMDLINE, GLASSINE_SLOT_TEST_CUT); the plain one must not
+cc -Os -Wall -Werror -DGLASSINE_SLOT_TEST -o $W/glassine-slot /p/src/glassine-slot.c || { echo "FAIL build"; exit 1; }
+cc -Os -Wall -Werror -o $W/glassine-slot.plain /p/src/glassine-slot.c || { echo "FAIL build (plain)"; exit 1; }
 I=$W/disk.img
 S() { GLASSINE_SLOT_CMDLINE=$W/cmdline $W/glassine-slot --disk $I "$@" > $W/out 2>&1; }
 cmdline() { echo "console=ttyMSM0 androidboot.slot_suffix=_$1 rootwait" > $W/cmdline; }
@@ -144,6 +146,11 @@ ok "busy: exit 6" "flock $I sh -c 'GLASSINE_SLOT_CMDLINE=$W/cmdline $W/glassine-
 
 mkdisk
 ok "a read-back mismatch: exit 1, says so" "GLASSINE_SLOT_TEST_CUT=readback S set-active b; [ \$? = 1 ] && grep -q 'read-back mismatch' $W/out"
+
+# the plain build (what make installs) has no test hooks
+mkdisk; cmdline b
+ok "plain build: GLASSINE_SLOT_TEST_CUT does nothing, the write completes" "GLASSINE_SLOT_TEST_CUT=backup GLASSINE_SLOT_CMDLINE=$W/cmdline $W/glassine-slot.plain --disk $I set-active b > $W/out 2>&1 && grep -q done $W/out && sgdisk -v $I | grep -q 'No problems found'"
+ok "plain build: GLASSINE_SLOT_CMDLINE is not read" "GLASSINE_SLOT_CMDLINE=$W/cmdline $W/glassine-slot.plain --disk $I status --porcelain > $W/out 2>&1 && ! grep -qx 'booted=b' $W/out"
 
 echo "$fails failed"
 [ $fails = 0 ]
