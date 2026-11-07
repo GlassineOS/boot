@@ -116,6 +116,11 @@ ok "64 entries: after ABL's own attribute write both copies stay valid" "python3
 mkdisk; dd if=/dev/zero of=$I bs=512 seek=1 count=33 conv=notrunc 2>/dev/null
 ok "a zeroed primary GPT: status reads the backup" "S status --porcelain && grep -qx 'next=a' $W/out"
 ok "a zeroed primary GPT: set-active rebuilds it, both valid, names kept" "S set-active b && sgdisk -v $I | grep -q 'No problems found' && sgdisk -p $I | grep -q system_b"
+# a zeroed primary, and the backup says the first usable LBA is 20: the 32
+# sectors of entries from LBA 2 would run into it, refused
+mkdisk; python3 /p/test/slot/gpt.py field $I backup 40 8 20
+dd if=/dev/zero of=$I bs=512 seek=1 count=33 conv=notrunc 2>/dev/null; snap
+ok "a primary to rebuild with no room before the first usable LBA: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'no room for the primary' $W/out && unchanged"
 # both broken: refused
 mkdisk; dd if=/dev/zero of=$I bs=512 seek=1 count=1 conv=notrunc 2>/dev/null; dd if=/dev/zero of=$I bs=512 seek=$(($(stat -c %s $I) / 512 - 1)) count=1 conv=notrunc 2>/dev/null; snap
 ok "both GPT copies broken: exit 3, no write" "S set-active b; [ \$? = 3 ] && unchanged"

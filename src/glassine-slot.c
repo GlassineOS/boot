@@ -443,6 +443,8 @@ int main(int argc, char **argv)
         put32(h + 16, hdr_crc(dst));
         if (dst->arr_lba <= le64(src->hdr + 48) && p_ok)
             die(3, "no room for the backup entries after the last usable LBA");
+        if (2 + arr_secs > le64(src->hdr + 40) && !p_ok)
+            die(3, "no room for the primary entries before the first usable LBA");
     }
     uint64_t at[2] = { le64(src->arr + ia * 128 + 48), le64(src->arr + ib * 128 + 48) };
     int booted = booted_slot(), nx = next_slot(at);
