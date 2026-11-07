@@ -193,8 +193,21 @@ subvolume, not from the base.
 3. Test boot, promote (writes `state/kernel`). Modules of current, previous, pending and
    anything staged are never removed; older ones may be (`bases remove` extends to
    modules).
-4. `rollback` and `promote` refuse while a hibernation image exists (exit 4, as
-   `glassine-hibernate` does), so a hibernated session isn't lost to a kernel change.
+4. Promote runs inside the test boot, where no hibernation image can exist, so it never
+   waits. A `rollback` rewrites the default slot while the system runs; until the next
+   reboot the slot then holds a different kernel from the running one, and a resume under
+   it would be cancelled. So `glassine-hibernate` refuses (exit 3, with that reason) while
+   `state/kernel` says the slot's kernel isn't the running one.
+
+## What the user sees
+
+`glassine-bootimg status` is the interface; the shell reads it and notifies:
+
+- once, when an image is staged and waits for its test reboot, with a restart action
+  (`glassine-bootimg reboot-test`);
+- when a test boot failed, with the reason from `state/kernel`.
+
+A successful promote needs no message.
 
 ## Deployment meta
 
