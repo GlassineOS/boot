@@ -35,8 +35,8 @@
  * Exit: 0 done (or nothing to change), 1 I/O failed, 2 usage, 3 refused (no
  * valid GPT, the copies differ beyond the slot attributes, no boot_a/boot_b,
  * the booted slot unknown, set-active on a layout where the bootloader's own
- * set_active changes more than the attributes), 6 busy (another glassine-slot
- * holds the disk). */
+ * set_active changes more than the attributes), 6 busy (another process holds
+ * a lock on the disk: another glassine-slot, or a tool probing it). */
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -374,8 +374,13 @@ int main(int argc, char **argv)
         fprintf(stderr, "glassine-slot: %s: %s\n", disk, strerror(errno));
         return 1;
     }
-    if (flock(fd, (write_cmd ? LOCK_EX : LOCK_SH) | LOCK_NB))
-        die(errno == EWOULDBLOCK ? 6 : 1, "the disk is locked by another glassine-slot");
+    if (flock(fd, (write_cmd ? LOCK_EX : LOCK_SH) | LOCK_NB)) {
+        if (errno == EWOULDBLOCK)
+            die(6, "the disk is busy: another process holds a lock on it (another glassine-slot, "
+                   "or a tool probing the disk, such as udev); try again");
+        fprintf(stderr, "glassine-slot: cannot lock %s: %s\n", disk, strerror(errno));
+        return 1;
+    }
     struct stat st;
     if (fstat(fd, &st))
         die(1, "cannot stat the disk");

@@ -140,9 +140,9 @@ ok "set-active, boot_b with system_b's type GUID: exit 3, no write" "S set-activ
 mkdisk; sgdisk -c 4:other $I >/dev/null; snap
 ok "set-active b without system_b: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'no system_b' $W/out && unchanged"
 
-# busy: another glassine-slot (a lock on the disk)
+# busy: another process holds a lock on the disk
 mkdisk
-ok "busy: exit 6" "flock $I sh -c 'GLASSINE_SLOT_CMDLINE=$W/cmdline $W/glassine-slot --disk $I set-active b > $W/out 2>&1; [ \$? = 6 ]'"
+ok "busy: exit 6" "flock $I sh -c 'GLASSINE_SLOT_CMDLINE=$W/cmdline $W/glassine-slot --disk $I set-active b > $W/out 2>&1; [ \$? = 6 ]' && grep -q 'another process holds a lock' $W/out"
 
 mkdisk
 ok "a read-back mismatch: exit 1, says so" "GLASSINE_SLOT_TEST_CUT=readback S set-active b; [ \$? = 1 ] && grep -q 'read-back mismatch' $W/out"
