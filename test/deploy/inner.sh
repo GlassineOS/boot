@@ -202,6 +202,13 @@ gs_update $D candidate= tries=0 previous=
 ok "rollback without a previous: exit 1" "$G rollback 2>/dev/null; [ \$? = 1 ]"
 gs_set $D previous d1; cp $D $W/before
 
+# one trial at a time: a kernel candidate (docs/kernel-artifacts.md)
+KF=$W/sysmnt/state/kernel
+printf 'current=7.0.0\ncandidate=7.1.0\ncandidate_img=abcd\ntries=1\nrequested=abcd\n' > $KF
+ok "a kernel candidate: select refuses, exit 8, names glassine-bootimg cancel, nothing changed" "$G select d4 2>$W/err; [ \$? = 8 ] && grep -q 'glassine-bootimg cancel' $W/err && cmp -s $D $W/before && [ \"\$(gs_kv $KF candidate_img)\" = abcd ]"
+ok "rollback: the kernel candidate cancelled first, said, then the previous selected" "$G rollback >/dev/null 2>$W/err && grep -q 'kernel candidate 7.1.0 is cancelled first' $W/err && [ -z \"\$(gs_kv $KF candidate)\$(gs_kv $KF candidate_img)\$(gs_kv $KF tries)\$(gs_kv $KF requested)\" ] && [ \"\$(gs_kv $KF current)\" = 7.0.0 ] && [ \"\$(gs_kv \$D candidate)\" = d1 ]"
+cp $W/before $D; rm $KF
+
 # refusals must leave the state alone
 printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/dev/null
 ok "hibernated: select refuses, exit 4, state unchanged" "$G select d4 2>/dev/null </dev/null; [ \$? = 4 ] && cmp -s $D $W/before && [ \"\$(st hibernated)\" = yes ]"

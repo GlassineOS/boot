@@ -1,7 +1,8 @@
 # Feature Specification: Kernel records, trial and hand-off
 
 **Feature branch:** `kernel-records`
-**Created:** 2026-11-07 · **Status:** draft, under review; nothing implemented
+**Created:** 2026-11-07 · **Status:** phase 1 built and host-tested (nothing run on a
+device); phase 2 not built
 **Builds on:** [001-deployments](../001-deployments/spec.md) · **Interface:**
 [docs/kernel-artifacts.md](../../docs/kernel-artifacts.md) ("Kernel records, trials and
 hand-off", "Records", "Packing", "Order on the device", "What the user sees"),
@@ -47,7 +48,9 @@ Each story says which phase it belongs to.
    writes nothing.
 5. **Given** a deployment candidate or a staged deployment, **then** `install` puts the
    release in `deferred` and exits 0. **Given** a kernel trial running (this boot is the
-   candidate's), the same.
+   candidate's), the same. It defers only after the checks of FR-005 and FR-006 (an
+   install they refuse isn't deferred), and keeps the device tree and initramfs it
+   checked in `deferred_dtb` and `deferred_initramfs`, for the deferred install.
 6. **Given** a kernel candidate with `tries=1` (its trial hasn't started), **then** a new
    `install` replaces it and says so. It first clears the old candidate's keys and
    `requested`, then writes the test slot. If that write fails, no candidate is left,
@@ -62,7 +65,8 @@ Each story says which phase it belongs to.
 1. **Given** a candidate, **when** `glassine-bootimg reboot-test` runs, **then** it
    re-checks the test slot against the candidate's manifest (FR-008), writes
    `requested=<candidate_img>` and reboots with the board's reason. If the slot doesn't
-   match, it refuses and names `retry`.
+   match, it refuses and names `retry`. While a deployment is a candidate or staged, it
+   refuses: one trial at a time. (`reboot-test` ships in phase 1.)
 2. **Given** the boot of the candidate's image (`glassine.img=` = `candidate_img`),
    **then** the initramfs takes the try and clears `requested` in one write (`tries=0`
    `requested=`), boots `current` (the deployment) without a deployment pick or try,
@@ -103,7 +107,8 @@ Each story says which phase it belongs to.
 3. **Given** a previous image (`previous_img` set, its `.img` kept), **when**
    `glassine-bootimg rollback` runs, **then** the default slot gets that image (FR-009),
    and `current` and `previous` swap. Without `previous_img`, it refuses: "no previous
-   image" (FR-015).
+   image" (FR-015). A kernel candidate is cancelled in the same state write that sets
+   `writing`, so a write that fails and is put back (FR-009) leaves it set.
 4. **Given** a kernel candidate, **then** `glassine-deploy select`, `stage` and `reset`
    refuse with exit 8 and name `glassine-bootimg cancel`. `reset --now` and `rollback`
    cancel it first and say so.
@@ -112,7 +117,8 @@ Each story says which phase it belongs to.
 6. **Given** a failed candidate whose image is still in `state/bootimg`, **when**
    `glassine-bootimg retry` runs, **then** the test slot is written again from it if it
    no longer matches (FR-008), and it becomes the candidate again (`tries=1`), with
-   `failed` and `failed_img` cleared.
+   `failed` and `failed_img` cleared. While a deployment is a candidate or staged, it
+   refuses, as `reboot-test` does.
 
 ### Story 4: see the state (P2, phase 1)
 
@@ -125,7 +131,8 @@ Each story says which phase it belongs to.
   today's files under `/var/lib/glassine-bootimg`, and its tests are unchanged.
 - **FR-002** `state/kernel` holds the keys of kernel-artifacts.md: `current`,
   `previous`, `current_img`, `previous_img`, `candidate`, `candidate_img`, `tries`,
-  `failed`, `failed_img`, `deferred`, `requested`, `writing` and `writing_op`. Every
+  `failed`, `failed_img`, `deferred` (with `deferred_dtb` and `deferred_initramfs`),
+  `requested`, `writing` and `writing_op`. Every
   write goes through `gs_update` under `state/.lock` (busy: exit 6, as `glassine-deploy`).
   A newer `state/format` is refused (exit 3).
 - **FR-003** `state/bootimg/<id>.manifest`: `format=1`, `id`, `release`, `size`,
@@ -166,7 +173,8 @@ Each story says which phase it belongs to.
   On failure while Linux runs, the RAM copy goes back the same way:
   - If that passes, `writing` and `writing_op` are cleared, and `state/kernel` is as
     before the command, except that a failed accept marks the candidate failed (reason
-    `default slot write`). The command exits 1.
+    `default slot write`), and a `current_img` seeded by this command (FR-015) stays,
+    since it names the image the slot holds again. The command exits 1.
   - If it fails too: `repair` isn't in this feature, so `writing` stays, `status` says
     `state=writing` with `default_slot=bad`, the command exits 1, and nothing reboots.
     On `bootpart-test`, the way out is the test slot's image, if the bootloader can
@@ -235,7 +243,8 @@ Each story says which phase it belongs to.
 - **FR-016** Busybox ash for everything the initramfs or the recovery runs. Python only
   in the packer, as today.
 - **FR-017** `status` in this layout prints `format=1`, then `state=`, then every key of
-  FR-002 that is set, `reason=` for a failed candidate, and `default_slot=bad` after a
+  FR-002 that is set except `deferred_dtb` and `deferred_initramfs` (the deferred
+  install's inputs), `reason=` for a failed candidate, and `default_slot=bad` after a
   failed check or write (FR-009, FR-010). `state=` is one of:
   - `none`;
   - `candidate`;

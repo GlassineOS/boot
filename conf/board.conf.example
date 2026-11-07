@@ -32,6 +32,16 @@ TEST_DEV=/dev/disk/by-partlabel/recovery
 TEST_REBOOT_REASON=recovery
 # Size of each slot in bytes; an image must fit.
 PART_SIZE=67108864
+# How a new kernel reaches the bootloader in the deployments layout
+# (docs/kernel-artifacts.md, "Hand-off"): bootpart-test writes it to TEST_DEV
+# for a one-shot trial, and needs a spare slot there, never the recovery
+# partition; blocklist (not built yet); empty: kernel updates are paused.
+# This board's TEST_DEV is its recovery partition, so it stays empty.
+HANDOFF=
+# The device name of this board's device trees (<device>@<id> in a kernel's
+# kernel.manifest dtbs, boot/dtb/ on the system partition), for
+# glassine-bootimg install in the deployments layout.
+DEVICE=
 
 # --- Roles -----------------------------------------------------------------
 # How the initramfs tells a normal boot from a boot of the test slot: an
@@ -58,7 +68,8 @@ DEVMODE_DHCP_END=172.16.42.10
 #USB_MANUFACTURER=GlassineOS
 
 # --- Boot image (glassine-bootimg install) ---------------------------------
-# The kernel, DTB and initramfs a new boot image is built from.
+# The kernel, DTB and initramfs a new boot image is built from (the plain
+# layout; the deployments layout packs from the system partition).
 KERNEL=/boot/vmlinuz-sdm660
 DTB=/boot/dtbs-sdm660/qcom/sdm636-onyx-noteair.dtb
 INITRAMFS=/usr/share/glassine-bootimg/initramfs.cpio.gz

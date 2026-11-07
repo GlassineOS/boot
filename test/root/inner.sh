@@ -168,6 +168,14 @@ $G reset --yes >/dev/null
 A1=$(st staged)
 sleep 1; $G reset --full --yes >/dev/null; A2=$(st staged)
 ok "a second reset replaces the staged one (the old one is removed)" "[ \"\$A1\" != \"\$A2\" ] && [ ! -e $U/deployments/\$A1 ] && grep -qx carry=none $U/deployments/\$A2/meta"
+# one trial at a time: a kernel candidate (docs/kernel-artifacts.md)
+KF=$S/state/kernel; cp $S/state/deploy $W/stK
+printf 'current=7.0.0\ncandidate=7.1.0\ncandidate_img=abcd\ntries=1\n' > $KF
+ok "a kernel candidate: the switch leaves the staged deployment staged" "$G switch >$W/out 2>&1 && grep -q 'stays staged' $W/out && [ \"\$(st staged)\" = \"\$A2\" ] && cmp -s $S/state/deploy $W/stK"
+ok "a kernel candidate: reset refuses, exit 8, names glassine-bootimg cancel" "$G reset --yes 2>$W/err; [ \$? = 8 ] && grep -q 'glassine-bootimg cancel' $W/err && cmp -s $S/state/deploy $W/stK && [ -e $U/deployments/\$A2 ]"
+ok "a kernel candidate: stage refuses, exit 8" "$G stage b1 --no-replay --yes 2>/dev/null; [ \$? = 8 ] && cmp -s $S/state/deploy $W/stK"
+ok "reset --now: the kernel candidate cancelled first, said, then switched" "$G reset --full --now --yes >/dev/null 2>$W/err && grep -q 'kernel candidate 7.1.0 is cancelled first' $W/err && [ -z \"\$(gs_kv $KF candidate)\$(gs_kv $KF candidate_img)\$(gs_kv $KF tries)\" ] && [ \"\$(gs_kv $KF current)\" = 7.0.0 ] && [ -n \"\$(st candidate)\" ] && [ -z \"\$(st staged)\" ]"
+rm -rf "$U/deployments/$(st candidate)"; cp $W/stK $S/state/deploy; rm -f $KF
 gs_update $S/state/deploy staged=; rm -rf $U/deployments/$A2
 
 # --- failures leave nothing behind -------------------------------------------------
@@ -352,6 +360,15 @@ echo "$HD" > $W/run/booted
 gs_update $S/state/deploy candidate="$HD" tries=0 current=dZ
 ok "hibernate: the booted candidate on its last try (next boot = current): exit 3" "hn check; [ \$? = 3 ] && grep -q 'next boot would be dZ, not $HD' $W/hout"
 cp $W/deploy.keep $S/state/deploy
+# the same for the kernel (state/kernel, docs/kernel-artifacts.md)
+echo "rdinit=/init glassine.img=bbbb" > $W/cmdline; export GLASSINE_PROC_CMDLINE=$W/cmdline
+printf 'current=7.0.0\ncurrent_img=aaaa\n' > $S/state/kernel
+ok "hibernate: the next boot runs another kernel image (a kernel rollback since this boot): exit 3" "hn check; [ \$? = 3 ] && grep -q 'next boot runs kernel image aaaa' $W/hout"
+printf 'current=7.0.0\ncurrent_img=aaaa\ncandidate_img=bbbb\ntries=0\n' > $S/state/kernel
+ok "hibernate: a kernel trial: exit 3" "hn check; [ \$? = 3 ] && grep -q 'kernel trial' $W/hout"
+printf 'current=7.0.0\ncurrent_img=bbbb\nwriting=cccc\nwriting_op=rollback\n' > $S/state/kernel
+ok "hibernate: an unfinished default-slot write: exit 3" "hn check; [ \$? = 3 ] && grep -q 'unfinished' $W/hout"
+rm $S/state/kernel; unset GLASSINE_PROC_CMDLINE
 ok "setup 2:a 2 MiB swap file, swap signature, mode 600" "hn setup 2 && [ \$(stat -c %s $HS) = 2097152 ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && [ \$(stat -c %a $HS) = 600 ]"
 HI=$(stat -c %i $HS); printf 'S1SUSPEND\000' | dd of=$HS bs=1 seek=4086 conv=notrunc 2>/dev/null; echo x > $HS.guard
 ok "setup again, same size: the file kept, an old image + guard invalidated" "hn setup 2 && [ \$(stat -c %i $HS) = $HI ] && [ \"\$(gs_sig_file $HS)\" = SWAPSPACE2 ] && [ ! -e $HS.guard ]"

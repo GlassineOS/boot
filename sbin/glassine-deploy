@@ -59,7 +59,10 @@
 # Exit codes: 0 done, 1 error, 2 usage, 3 the state format on the system
 # partition is newer than this tool (every command refuses; status still
 # prints both versions), 4 hibernated and refused, 5 not enough space,
-# 6 busy, 7 the replay needs a decision.
+# 6 busy, 7 the replay needs a decision, 8 a kernel candidate is set
+# (glassine-bootimg cancel; select, stage and reset refuse while one is, and
+# reset --now and rollback cancel it first: the escape routes never wait for a
+# kernel trial).
 #
 # Configuration: /etc/glassine/deploy.conf (conf/deploy.conf.example), or
 # the file named by GLASSINE_DEPLOY_CONF.
@@ -321,6 +324,20 @@ state_open_rw() {
     fi
 }
 
+# kernel_gate [cancel]: one trial at a time (docs/kernel-artifacts.md). While a
+# kernel candidate is set, refuse (exit 8); with cancel, drop it first (as
+# glassine-bootimg cancel does) and say so. Needs state_open_rw.
+kernel_gate() {
+    _kc=$(gs_kernel_candidate "$S/kernel")
+    [ -n "$_kc" ] || return 0
+    if [ "${1:-}" = cancel ]; then
+        gs_kernel_cancel "$S/kernel" || die "cannot write $S/kernel"
+        echo "glassine-deploy: the kernel candidate $_kc is cancelled first (glassine-bootimg cancel)" >&2
+        return 0
+    fi
+    fail 8 "a kernel candidate ($_kc) is set: run glassine-bootimg cancel first, or let its trial finish"
+}
+
 # meta_kv META KEY: one key of a deployment's meta (key=value text)
 meta_kv() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1; }
 
@@ -432,6 +449,7 @@ do_select() {
     cur=$(gs_kv "$S/deploy" current)
     _b=$(meta_kv "$(ud_cat "deployments/$1/meta")" base)
     [ -z "$_b" ] || [ -d "$SYSTEM_MNT/bases/$_b" ] || die "deployment $1 cannot boot: its base $_b is not on the system partition"
+    kernel_gate ${KGATE:+"$KGATE"}
     if [ "$1" = "$cur" ]; then
         gs_update "$S/deploy" candidate= tries=0 || die "cannot write $S/deploy"
         echo "glassine-deploy: $1 is the current deployment; no candidate"
@@ -448,6 +466,7 @@ cmd_rollback() {
     prev=$(gs_kv "$SYS_DIR/state/deploy" previous)
     cleanup
     [ -n "$prev" ] || die "there is no previous deployment"
+    KGATE=cancel
     do_select "$prev"
 }
 
@@ -525,6 +544,7 @@ migrate_paths() {
 
 cmd_reset() {
     state_open_rw
+    [ "$NOW" = 1 ] || kernel_gate
     cur=$(gs_kv "$S/deploy" current)
     [ -n "$cur" ] || die "no current deployment to reset"
     ud_open_rw
@@ -537,6 +557,7 @@ cmd_reset() {
         confirm "Reset system: a new deployment on base $base that keeps only the migrate list (accounts, Wi-Fi, Bluetooth, settings; your packages and edits go), prepared $when?"
     fi
     kind=reset carry=migrate; [ "$FULL" = 1 ] && kind=reset-full carry=none
+    [ "$NOW" = 0 ] || kernel_gate cancel
     stage_new
 }
 
@@ -548,6 +569,7 @@ cmd_stage() {
     valid_name "$ARG" || fail 2 "not a base name: $ARG"
     [ "$FULL" = 0 ] || fail 2 "stage carries the migrate list; --full is reset's"
     state_open_rw
+    kernel_gate
     cur=$(gs_kv "$S/deploy" current)
     [ -n "$cur" ] || die "no current deployment to carry from"
     [ -d "$SYSTEM_MNT/bases/$ARG" ] || die "no base $ARG on the system partition (receive it first)"
@@ -708,6 +730,9 @@ do_switch() {
     [ -n "$id" ] || { echo "glassine-deploy: nothing staged"; return 0; }
     nd=$UD/deployments/$id
     [ -r "$nd/meta" ] || die "staged deployment $id is missing on userdata"
+    # one trial at a time: it switches at a later shutdown
+    _kc=$(gs_kernel_candidate "$S/kernel")
+    [ -z "$_kc" ] || { echo "glassine-deploy: a kernel candidate ($_kc) is set: $id stays staged"; return 0; }
     cur=$(gs_kv "$S/deploy" current)
     mkdir -p "$RUN_DIR" && : > "$RUN_DIR/switching" || die "cannot create $RUN_DIR/switching"
     SWITCHING=$RUN_DIR/switching
@@ -943,7 +968,7 @@ cmd_accept() {
 
 [ $# -ge 1 ] || usage
 CMD=$1; shift
-PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 SHA='' ARG='' NARG=0 FIRST=''
+PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 SHA='' ARG='' NARG=0 FIRST='' KGATE=''
 NOREPLAY=0 ACCEPT_DOWN=0 WITHOUT=''
 while [ $# -gt 0 ]; do
     a=$1; shift
