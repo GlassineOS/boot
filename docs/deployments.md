@@ -267,6 +267,7 @@ no base. `status`'s `failed` is the last deployment that ran out of tries.
 | 4 | a hibernated session on userdata, refused |
 | 5 | not enough space on userdata (the deployment stays staged) |
 | 6 | busy (another writer holds the lock) |
+| 7 | `stage`: the package replay stops: a package does not install or upgrade on the new base, or a version would go down (see `stage BASE` flags); nothing staged |
 
 ## The shutdown switch
 
