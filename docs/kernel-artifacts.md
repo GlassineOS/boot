@@ -1,11 +1,12 @@
 # Kernel artifacts: what a build hands to a device
 
 Status: **agreed design; partly implemented.** Built and host-tested, nothing run on a
-device ([specs/004](../specs/004-kernel-records/spec.md), phase 1): the kernel records,
-`glassine-bootimg` `install` (the `bootpart-test` hand-off), `status`, `cancel`, `retry`,
-`accept`, `rollback`, the default-slot write, the interlocks with `glassine-deploy` and
-`glassine-hibernate`. Not built: the trial (the initramfs and promote's verdict, phase 2),
-the `blocklist` hand-off, and everything under "Not covered here". It builds on
+device ([specs/004](../specs/004-kernel-records/spec.md), phases 1 and 2): the kernel
+records, `glassine-bootimg` `install` (the `bootpart-test` hand-off), `status`, `cancel`,
+`retry`, `accept`, `rollback`, the default-slot write, the interlocks with
+`glassine-deploy` and `glassine-hibernate`, the trial in the initramfs, and `promote`
+(finishing a cut write, `requested`, the verdict, a deferred install). Not built: the
+`blocklist` hand-off, and everything under "Not covered here". It builds on
 `glassine-deploy`'s `receive --modules`, `stage` and `bases remove`. Kernel updates stay
 paused on a device until its hand-off (below) exists. Once implemented, `images` builds to
 this page and the tools here consume it. Changes go through this repository

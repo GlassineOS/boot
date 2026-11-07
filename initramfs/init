@@ -13,7 +13,8 @@
 #
 #   TEST role (a one-shot boot from the test slot, `glassine-reboot recovery`):
 #   never writes to storage unless told to. If glassine-bootimg staged this
-#   image (glassine.img= matches its pending record), the test role runs the
+#   image (glassine.img= matches its pending record; in the deployments
+#   layout, state/kernel's candidate_img), the test role runs the
 #   default boot by itself: that boot is the image's test, and
 #   glassine-bootimg-promote judges it. Otherwise, without developer mode, it
 #   runs the default boot as well (back to the default slot if that fails).
@@ -197,19 +198,21 @@ find_root() { find_part "$ROOT_PART"; }
 
 # The deployments layout: resume or invalidate a hibernated session first
 # (nothing mounted before it), then the deployment's root at $NEWROOT. No
-# resume on a test-role boot or with glassine.noresume (the loader's word for
-# "I took the normal path", rule 10).
+# resume on a test-role boot, with glassine.noresume (the loader's word for
+# "I took the normal path", rule 10), or on a kernel trial or finishing boot
+# (KBOOT, FR-011).
 mount_deployments() {
     U=''
     [ -n "$USERDATA_PART" ] && { U=$(find_part "$USERDATA_PART") || log "default: userdata $USERDATA_PART not found"; }
     may=resume
     [ $DEFAULT = 1 ] || may=test-role
     grep -qw glassine.noresume "$CMDF" && may=noresume
+    [ -z "$KBOOT" ] || may=kernel-$KBOOT
     if [ -n "$U" ] && ! gr_resume "/dev/$P" "/dev/$U" "$USERDATA_PREFIX" $may; then
         log "default: userdata holds a hibernate image that cannot be invalidated: nothing mounted"
         return 1
     fi
-    gr_boot "/dev/$P" "${U:+/dev/$U}" "$USERDATA_PREFIX" $NEWROOT "$(uname -r)" || return 1
+    gr_boot "/dev/$P" "${U:+/dev/$U}" "$USERDATA_PREFIX" $NEWROOT "$(uname -r)" "$IMG_ID" || return 1
     log "default: deployment $GR_BOOTED"
 }
 root_release() {
@@ -241,7 +244,7 @@ boot_default() {
         mkdir -p "$D" && cp /tmp/prev-pstore/* "$D"/ && log "default: saved pstore to ${D#"$NEWROOT"}"
     fi
     # glassine-bootimg's protocol: this boot is the staged image's test
-    [ "$AUTOTEST" = 1 ] && sed -i 's/^TRIES=.*/TRIES=1/' $NEWROOT/var/lib/glassine-bootimg/pending
+    [ "$AUTOTEST" = 1 ] && [ "$ROOT_LAYOUT" != deployments ] && sed -i 's/^TRIES=.*/TRIES=1/' $NEWROOT/var/lib/glassine-bootimg/pending
     run_stage pre-switch-root
     mkdir -p $NEWROOT/var/log
     { echo "=== $(date) glassine-boot, default boot"; cat "$CMDF"; cat /tmp/fsck.log 2>/dev/null; dmesg | tail -n 300; } > $NEWROOT/var/log/glassine-boot.log
@@ -267,15 +270,22 @@ boot_default() {
 }
 
 # The test boot of an image glassine-bootimg staged (its glassine.img= = the
-# ID in the root fs's /var/lib/glassine-bootimg/pending): the default boot by
+# ID in the root fs's /var/lib/glassine-bootimg/pending; in the deployments
+# layout, a kernel trial: state/kernel's candidate_img): the default boot by
 # itself, no host; if it can't, back to the default slot (whose promote then
-# marks the image failed). Without glassine.img= nothing changes.
-AUTOTEST=0
+# marks the image failed). Without glassine.img= nothing changes. KBOOT: what
+# this boot is to state/kernel (trial, finishing, or empty), on either role.
+AUTOTEST=0 KBOOT=''
 IMG_ID=$(sed -n 's/.*glassine[._]img=\([0-9a-f]*\).*/\1/p' "$CMDF")
-if [ $DEFAULT = 0 ] && [ -n "$IMG_ID" ] && [ "$ROOT_LAYOUT" = deployments ]; then
-    # the pending record is inside a deployment on userdata; reading it would
-    # come before the hibernation step (and the deployments layout has no test slot)
-    log "image $IMG_ID: no staged-image test boot in the deployments layout"
+if [ -n "$IMG_ID" ] && [ "$ROOT_LAYOUT" = deployments ]; then
+    P=$(find_root)
+    [ -z "$P" ] || KBOOT=$(gr_kernel_mode "/dev/$P" "$IMG_ID")
+    [ $DEFAULT = 1 ] || [ "$KBOOT" != trial ] || AUTOTEST=1
+    case $KBOOT in
+    trial) log "image $IMG_ID: the kernel candidate's trial" ;;
+    finishing) log "image $IMG_ID: a finishing boot (a default-slot write to complete)" ;;
+    *) log "image $IMG_ID: no kernel trial" ;;
+    esac
 elif [ $DEFAULT = 0 ] && [ -n "$IMG_ID" ]; then
     P=$(find_root)
     # a look only: read-only, and for ext3/4 without replaying the journal

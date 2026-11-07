@@ -1,6 +1,7 @@
 #!/bin/sh
 # Host test of glassine-bootimg in the deployments layout (lib/glassine-kernel.sh,
-# specs/004-kernel-records, phase 1): the system partition's top level is a
+# specs/004-kernel-records, phases 1 and 2; the initramfs's side of the trial
+# is in test/root and test/initramfs): the system partition's top level is a
 # plain directory, both slots are files, the hand-off is bootpart-test. Cut
 # and failed writes come from GLASSINE_BI_AFTER_BODY.
 set -u
@@ -27,6 +28,11 @@ same() { [ "$(grep -v '=$' "$1" | sort)" = "$(grep -v '=$' "$2" | sort)" ]; }
 corrupt() { echo "$1" > $W/cnt; }
 export GLASSINE_BI_AFTER_BODY='n=$(cat /k/cnt 2>/dev/null || echo 0); echo $((n - 1)) > /k/cnt; [ "$n" -le 0 ] || printf X | dd of="$2" bs=1 seek=5000 conv=notrunc 2>/dev/null; true'
 corrupt 0
+# a copy of the system partition and both slots in $W/c (cpy [DEFSLOT]), a
+# command run on it (inc CMD...), a key of its state/kernel (ck KEY)
+cpy() { rm -rf $W/c; mkdir -p $W/c; cp -a $SYS $W/c/sys; cp $W/testslot $W/c/testslot; cp "${1:-$W/defslot}" $W/c/defslot; }
+inc() { GLASSINE_BI_SYSTEM=$W/c/sys GLASSINE_BI_DEFAULT_DEV=$W/c/defslot GLASSINE_BI_TEST_DEV=$W/c/testslot "$@"; }
+ck() { gs_kv $W/c/sys/state/kernel "$1"; }
 
 SLOT=1048576
 sed -e 's/^ROOT_LAYOUT=.*/ROOT_LAYOUT=deployments/' -e 's/^HANDOFF=.*/HANDOFF=bootpart-test/' -e 's/^DEVICE=.*/DEVICE=dev1/' \
@@ -54,7 +60,7 @@ oldslot() { head -c "$(stat -c %s $W/old.img)" $W/defslot | cmp -s - $W/old.img;
 boot $OLDID
 
 ok "status, nothing set: format=1, state=none, the keys" "[ \"\$($B status | head -n 2 | tr '\n' ' ')\" = 'format=1 state=none ' ] && [ \"\$(st current)\" = 6.0.0-old ]"
-ok "promote: nothing done in this layout yet, exit 0" "cp $K $W/k0; $B promote 2>/dev/null && cmp -s $K $W/k0"
+ok "promote with nothing set: nothing written, exit 0" "cp $K $W/k0; $B promote 2>/dev/null && cmp -s $K $W/k0"
 
 # --- install refusals: nothing written ------------------------------------------
 cp $K $W/k0
@@ -144,9 +150,9 @@ ok "accept on a boot that isn't the trial: refused, nothing written" "cp $K $W/k
 boot $IDA
 # the first accept in a copy of the state, with another image on the default slot (FR-015)
 seedcase() {   # seedcase SLOT [CURRENT]: accept there; the copy is $W/c
-    rm -rf $W/c; mkdir -p $W/c; cp -a $SYS $W/c/sys; cp $W/testslot $W/c/testslot; cp "$1" $W/c/defslot
+    cpy "$1"
     [ -z "${2:-}" ] || gs_update $W/c/sys/state/kernel "current=$2"
-    GLASSINE_BI_SYSTEM=$W/c/sys GLASSINE_BI_DEFAULT_DEV=$W/c/defslot GLASSINE_BI_TEST_DEV=$W/c/testslot $B accept 2>$W/c/err
+    inc $B accept 2>$W/c/err
 }
 cnot() { [ "$(gs_kv $W/c/sys/state/kernel current_img)" = $IDA ] && [ -z "$(gs_kv $W/c/sys/state/kernel previous_img)" ] && [ ! -e $W/c/sys/state/bootimg/$OLDID.manifest ]; }
 ok "accept, the default slot's kernel isn't release current: accepted, nothing seeded" "seedcase $W/defslot 6.0.0-other && cnot && grep -q 'is not release 6.0.0-other' $W/c/err"
@@ -172,7 +178,9 @@ ok "glassine-hibernate's check: refused while writing is set" "gs_kernel_refusal
 rm -f $W/run/*                                  # a reboot: /run is empty
 boot $OLDID
 ok "a boot of the image being written: state=finishing" "[ \"\$(st state)\" = finishing ]"
-boot $IDA; cp $W/k0 $K                          # the write undone by hand (phase 2's promote does it)
+cpy
+ok "promote on that finishing boot: the cut slot written again, the rollback completed" "inc $B promote 2>/dev/null && holds $W/c/defslot $OLDID && [ \"\$(ck current)\" = 6.0.0-old ] && [ \"\$(ck current_img)\" = $OLDID ] && [ \"\$(ck previous)\" = 7.1.0-a ] && [ \"\$(ck previous_img)\" = $IDA ] && [ -z \"\$(ck writing)\$(ck writing_op)\" ] && grep -q 'writing it again' $W/log"
+boot $IDA; cp $W/k0 $K                          # the main state: the write undone by hand
 ok "rollback with no image on the default slot to keep: written anyway, logged" "$B rollback >$W/out 2>/dev/null && holds $W/defslot $OLDID && grep -q 'holds no image to keep' $W/log"
 ok "rollback: current and previous swapped" "[ \"\$(kv current)\" = 6.0.0-old ] && [ \"\$(kv current_img)\" = $OLDID ] && [ \"\$(kv previous)\" = 7.1.0-a ] && [ \"\$(kv previous_img)\" = $IDA ] && [ -z \"\$(kv writing)\" ]"
 ok "glassine-hibernate's check: refused after the rollback (this boot runs the other image)" "gs_kernel_refusal $K $W/cmdline 7.1.0-a | grep -q 'next boot runs kernel image $OLDID'"
@@ -202,6 +210,28 @@ ok "status on that boot: state=writing, default_slot=bad" "[ \"\$(st state)\" = 
 ok "glassine-hibernate's check: refused" "gs_kernel_refusal $K $W/cmdline 7.1.0-a | grep -q 'unfinished'"
 corrupt 0
 
+# --- promote, writing set (FR-010), in copies: accept's write and its restore
+# failed above, the default slot holds neither image ------------------------------
+rm -f $W/run/*                                  # a reboot
+boot $IDA
+ok "a finishing boot: state=finishing" "[ \"\$(st state)\" = finishing ]"
+cpy
+ok "promote on a finishing boot, the slot doesn't match: written again, the accept completed" "inc $B promote >/dev/null 2>&1 && holds $W/c/defslot $IDA && [ \"\$(ck current)\" = 7.1.0-a ] && [ \"\$(ck current_img)\" = $IDA ] && [ \"\$(ck previous)\" = 7.1.0-b ] && [ \"\$(ck previous_img)\" = $IDB ]"
+ok "... the candidate keys, requested, writing cleared; the notice says so" "[ -z \"\$(ck candidate)\$(ck candidate_img)\$(ck tries)\$(ck requested)\$(ck writing)\$(ck writing_op)\" ] && grep -q '7.1.0-a is now the default' $W/run/glassine-bootimg.notice"
+boot $IDB; cpy
+ok "writing set, another glassine.img=, the slot doesn't match: written again, completed" "inc $B promote >/dev/null 2>&1 && holds $W/c/defslot $IDA && [ \"\$(ck current_img)\" = $IDA ] && [ -z \"\$(ck writing)\" ]"
+cpy; dd if=$BI/$IDA.img of=$W/c/defslot conv=notrunc 2>/dev/null; : > $W/log
+ok "writing set, another glassine.img=, the slot matches: completed without a write" "inc $B promote >/dev/null 2>&1 && [ \"\$(ck current_img)\" = $IDA ] && [ -z \"\$(ck writing)\" ] && grep -q 'holds image $IDA: completing accept' $W/log && ! grep -q 'writing it again' $W/log"
+cpy; dd if=$BI/$IDA.img of=$W/c/defslot conv=notrunc 2>/dev/null; gs_update $W/c/sys/state/kernel writing_op=frob; cp $W/c/sys/state/kernel $W/c/k0
+ok "an unknown writing_op: exit 1, writing stays, nothing else written" "! inc $B promote >/dev/null 2>&1 && cmp -s $W/c/sys/state/kernel $W/c/k0"
+cpy; corrupt 2; cp $W/c/sys/state/kernel $W/c/k0
+ok "the write again fails: exit 1, writing stays, state unchanged" "! inc $B promote >/dev/null 2>&1 && cmp -s $W/c/sys/state/kernel $W/c/k0 && grep -q 'writing the default slot again failed' $W/log"
+ok "... status: state=writing, default_slot=bad" "[ \"\$(inc $B status 2>/dev/null | sed -n 's/^state=//p')\" = writing ] && inc $B status 2>/dev/null | grep -qx default_slot=bad"
+corrupt 0
+cpy; rm $W/c/sys/state/bootimg/$IDA.img
+ok "the image to write again is gone: exit 1, writing stays" "! inc $B promote >/dev/null 2>&1 && [ \"\$(ck writing)\" = $IDA ]"
+rm -rf $W/c
+
 # --- state format, lock, usage --------------------------------------------------
 gs_update $K writing= writing_op=; cp $K $W/k0
 echo version=2 > $SYS/state/format
@@ -214,6 +244,42 @@ gs_update $BI/$IDB.manifest format=1
 while [ ! -e $W/held ]; do sleep 0.1; done
 ok "the lock held: exit 6, nothing written" "$B cancel 2>/dev/null; [ \$? = 6 ] && cmp -s $K $W/k0"
 wait; rm -f $W/held
+# --- the trial (Story 2), on the main state ----------------------------------------
+# the state as left above (writing cleared by hand): the default slot gets
+# the current image back, the candidate is 7.1.0-a on the test slot
+dd if=$BI/$IDB.img of=$W/defslot conv=notrunc 2>/dev/null
+boot $IDB
+ok "the trial's start: current 7.1.0-b on the default slot, candidate 7.1.0-a on the test slot" "holds $W/defslot $IDB && holds $W/testslot $IDA && [ \"\$(kv current_img)\" = $IDB ] && [ \"\$(kv candidate_img)\" = $IDA ] && [ \"\$(kv tries)\" = 1 ]"
+$B reboot-test 2>/dev/null
+ok "requested = the candidate, tries=1, a boot of another image: failed, no-boot, requested cleared" "$B promote 2>/dev/null && [ \"\$(kv failed_img)\" = $IDA ] && [ \"\$(gs_kv $BI/$IDA.manifest reason)\" = no-boot ] && [ -z \"\$(kv candidate)\$(kv requested)\" ] && holds $W/defslot $IDB"
+ok "... status: state=failed, reason=no-boot" "[ \"\$(st state)\" = failed ] && [ \"\$(st reason)\" = no-boot ]"
+$B retry >/dev/null 2>&1; gs_update $K requested=0123abcd
+ok "a stale requested (another image): cleared, logged, nothing failed" "$B promote 2>/dev/null && [ -z \"\$(kv requested)\" ] && [ \"\$(kv candidate_img)\" = $IDA ] && [ \"\$(kv tries)\" = 1 ] && [ -z \"\$(kv failed)\" ] && grep -q 'requested=0123abcd is stale' $W/log"
+ok "a candidate at tries=1 on another boot: no verdict, it waits" "$B promote 2>/dev/null && [ \"\$(kv candidate_img)\" = $IDA ] && grep -q 'waits for its trial' $W/log"
+gs_update $K tries=0
+ok "a candidate at tries=0 on another boot: failed, no-verdict" "$B promote 2>/dev/null && [ \"\$(kv failed_img)\" = $IDA ] && [ \"\$(gs_kv $BI/$IDA.manifest reason)\" = no-verdict ] && [ -z \"\$(kv candidate)\" ]"
+$B retry >/dev/null 2>&1; boot $IDA; gs_update $K tries=0 requested=     # the initramfs took the try
+ok "the trial fails its health check: failed with the reason, the default slot untouched" "GLASSINE_BI_HEALTH='echo sick; false' $B promote 2>/dev/null && [ \"\$(kv failed_img)\" = $IDA ] && [ \"\$(gs_kv $BI/$IDA.manifest reason)\" = 'health: sick' ] && holds $W/defslot $IDB && [ \"\$(kv current_img)\" = $IDB ] && [ -z \"\$(kv writing)\" ]"
+$B retry >/dev/null 2>&1; gs_update $K tries=0
+ok "during the trial: an install is deferred" "$B install 6.0.0-old --initramfs c1 >/dev/null 2>&1 && [ \"\$(kv deferred)\" = 6.0.0-old ]"
+# today's health() itself: / is a read-only bind in this layout, the binds are read-write
+echo '130.00 1.00' > $W/uptime
+printf 'overlay / overlay ro,relatime 0 0\noverlay /var overlay ro,relatime 0 0\n' > $W/mounts.bad
+printf 'overlay / overlay ro,relatime 0 0\noverlay /etc overlay rw,relatime 0 0\noverlay /var overlay rw,relatime 0 0\n' > $W/mounts
+cpy
+ok "health() in this layout: /var read-only fails the trial (var-not-rw)" "inc env GLASSINE_BI_UPTIME=$W/uptime GLASSINE_BI_MOUNTS=$W/mounts.bad GLASSINE_BI_HOOKS=$W/nohooks $B promote 2>/dev/null && [ \"\$(gs_kv $W/c/sys/state/bootimg/$IDA.manifest reason)\" = 'health: var-not-rw' ]"
+rm -rf $W/c
+ok "a healthy trial (health(): / read-only, the binds read-write): accepted, the default slot = the candidate" "GLASSINE_BI_UPTIME=$W/uptime GLASSINE_BI_MOUNTS=$W/mounts GLASSINE_BI_HOOKS=$W/nohooks $B promote >/dev/null 2>&1 && holds $W/defslot $IDA && [ \"\$(kv current)\" = 7.1.0-a ] && [ \"\$(kv current_img)\" = $IDA ] && [ \"\$(kv previous)\" = 7.1.0-b ] && [ \"\$(kv previous_img)\" = $IDB ] && [ -z \"\$(kv writing)\$(kv writing_op)\" ]"
+IDD=$(kv candidate_img)
+ok "... then the deferred release installed: the candidate, deferred cleared" "[ \"\$(kv candidate)\" = 6.0.0-old ] && [ -n \"$IDD\" ] && holds $W/testslot $IDD && [ \"\$(kv tries)\" = 1 ] && [ -z \"\$(kv deferred)\$(kv deferred_dtb)\$(kv deferred_initramfs)\" ]"
+boot $IDD; gs_update $K tries=0
+$B install 7.1.0-b --initramfs c1 --dtb dev1@bbbb >/dev/null 2>&1; $B cancel >/dev/null 2>&1
+ok "cancel during a trial with a deferred release: promote gives no verdict, the release waits" "$B promote 2>/dev/null && [ -z \"\$(kv candidate)\$(kv failed)\" ] && [ \"\$(kv deferred)\" = 7.1.0-b ] && holds $W/defslot $IDA && grep -q 'waits for a boot of the default kernel' $W/log"
+boot $IDA
+ok "... the next boot (the default kernel): promote installs it, with its device tree" "$B promote >/dev/null 2>&1 && [ \"\$(kv candidate)\" = 7.1.0-b ] && [ \"\$(gs_kv $BI/\$(kv candidate_img).manifest dtb)\" = dev1@bbbb ] && [ -z \"\$(kv deferred)\" ]"
+bset HANDOFF ''; gs_update $K deferred=7.1.0-a deferred_dtb=dev1@aaaa deferred_initramfs=c1; cp $K $W/k0
+ok "a deferred release while kernel updates are paused: it stays deferred" "! $B promote 2>/dev/null && cmp -s $K $W/k0"
+bset HANDOFF bootpart-test
 ok "usage: exit 2" "$B frob 2>/dev/null; a=\$?; $B status x 2>/dev/null; [ \$a\$? = 22 ]"
 ok "no temp files left in /run" "[ -z \"\$(ls $W/run | grep -v -e notice -e started)\" ]"
 

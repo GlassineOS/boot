@@ -1,8 +1,8 @@
 # Feature Specification: Kernel records, trial and hand-off
 
 **Feature branch:** `kernel-records`
-**Created:** 2026-11-07 · **Status:** phase 1 built and host-tested (nothing run on a
-device); phase 2 not built
+**Created:** 2026-11-07 · **Status:** phases 1 and 2 built and host-tested (nothing run
+on a device)
 **Builds on:** [001-deployments](../001-deployments/spec.md) · **Interface:**
 [docs/kernel-artifacts.md](../../docs/kernel-artifacts.md) ("Kernel records, trials and
 hand-off", "Records", "Packing", "Order on the device", "What the user sees"),
@@ -207,7 +207,8 @@ Each story says which phase it belongs to.
   2. `requested` (Story 2.5);
   3. the verdict: on a trial, today's `health` (the generic checks and `health.d`), then
      accept or fail; a candidate at `tries=0` on another boot is failed with reason
-     `no-verdict`;
+     `no-verdict`. The generic check of a read-write root checks `/var` in this layout
+     (reason `var-not-rw`), because `/` is a read-only bind there (`docs/boot.md`);
   4. a `deferred` install.
 
   `glassine-deploy-accept` doesn't run on a trial or a finishing boot (phase 2).

@@ -2,7 +2,9 @@
 # The verdict on a staged kernel (glassine-bootimg): on its test boot, after
 # the boot has settled, a health check, then the test slot is copied to the
 # default slot; on a normal boot, a test boot that never got there = failed. In the background: the check waits
-# for uptime >= 120 s and never holds up the boot.
+# for uptime >= 120 s and never holds up the boot. Busy (exit 6: the
+# deployments layout's state lock held, by glassine-deploy-accept or a
+# hibernate): tried again for up to 600 s.
 #
 # A one-shot job, not a daemon: OpenRC calls a --background daemon that exits
 # "crashed", so the job runs detached with its own pid file (not pidfile=);
@@ -20,7 +22,12 @@ start() {
 	ebegin "glassine-bootimg-promote: verdict after the boot settles"
 	setsid /bin/sh -c 'echo $$ > '"$JOBPID"'
 		while [ "$(cut -d. -f1 /proc/uptime)" -lt 120 ]; do sleep 5; done
-		/usr/sbin/glassine-bootimg promote
+		n=0
+		while :; do
+			/usr/sbin/glassine-bootimg promote && break
+			[ $? = 6 ] && [ $n -lt 600 ] || break
+			sleep 5; n=$((n + 5))
+		done
 		rm -f '"$JOBPID" </dev/null >/dev/null 2>&1 &
 	eend 0
 }

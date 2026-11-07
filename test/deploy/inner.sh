@@ -55,6 +55,12 @@ echo '130.0 1.0' > $AW/uptime; echo c1 > $AW/run/booted
 printf 'type=status\tcandidate=c1\ttries=1\n' > $AW/status
 printf '#!/bin/sh\nexit 0\n' > $AW/health/10-ok; chmod +x $AW/health/10-ok
 ok "accept: the booted candidate, healthy, up long enough: accepted" "acc && grep -qx 'accept c1' $AW/calls"
+for kb in trial finishing; do
+    echo $kb > $AW/run/kernel-boot
+    ok "accept: a kernel $kb boot (the initramfs's kernel-boot): no deployment accept" "acc && [ ! -s $AW/calls ] && grep -q 'a kernel $kb boot' $AW/out"
+done
+: > $AW/run/kernel-boot
+ok "accept: kernel-boot empty: accepted as before" "acc && grep -qx 'accept c1' $AW/calls"
 printf 'type=status\tcandidate=\ttries=0\n' > $AW/status
 ok "accept: the booted one is not the candidate: nothing" "acc && [ ! -s $AW/calls ]"
 echo bare:b1 > $AW/run/booted

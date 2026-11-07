@@ -32,26 +32,37 @@ image):
 The data model is in [deployments.md](deployments.md). The default boot runs these
 steps from `lib/glassine-root.sh`:
 
-1. **Hibernation** (`gr_resume`), before anything is mounted. See below.
-2. **Boot** (`gr_boot`):
+1. **The kernel trial** (`gr_kernel_mode`): with a `glassine.img=` on the command line,
+   `state/kernel` is read from the system partition mounted `ro,rescue=nologreplay`. The
+   image `writing` names makes a finishing boot, `candidate_img` a trial
+   ([kernel-artifacts.md](kernel-artifacts.md), "A kernel trial"). Neither resumes. A
+   trial on the test slot runs the default boot without waiting for the host, as a
+   staged image's test boot does in the plain layout.
+2. **Hibernation** (`gr_resume`), before anything else is mounted. See below.
+3. **Boot** (`gr_boot`):
    - The system partition is mounted read-write and `state/.lock` is taken.
+   - A trial takes its kernel try (`tries=0`, `requested` cleared, one write).
    - Userdata gets `e2fsck -p` and is mounted.
    - The deployment is picked (one try used) and assembled with its modules
-     subvolume for `uname -r`.
+     subvolume for `uname -r`. On a trial or a finishing boot, current is assembled
+     instead, with no pick and no deployment try.
    - Fallbacks:
      - a candidate that does not assemble is marked failed;
      - after that come current, then previous;
      - without userdata, or with no deployment that assembles, a bare boot: the base
        read-only with a tmpfs upper (nothing kept). The base is current's, or else the
        last by name.
-   - A state format newer than the initramfs is read but never written.
-3. The boot's pstore save, the log and the developer hooks run. `/var` is writable.
-4. **Carry** (`gr_carry`):
+   - A state format newer than the initramfs is read but never written, and the boot is
+     neither a trial nor a finishing boot.
+4. The boot's pstore save, the log and the developer hooks run. `/var` is writable.
+5. **Carry** (`gr_carry`):
    - A tmpfs goes on `/run` of the new root. If the base has no `/run`, it is made
      through the overlay.
    - The system partition, userdata and the merged overlay are moved to
      `/run/glassine/{system,userdata,root}`.
-   - The booted id is written to `/run/glassine/booted`.
+   - The booted id is written to `/run/glassine/booted`, and `trial`, `finishing` or
+     nothing to `/run/glassine/kernel-boot` (`glassine-deploy-accept` skips the first
+     two).
    - The lock is released.
 5. `switch_root`.
 
@@ -61,8 +72,9 @@ fstab says `ro`. It then remounts every fstab entry with `mount -o remount,<opti
 so a plain `ro` would make the whole overlay read-only, `/etc` and `/var` included.
 `bind,ro` changes only the `/` bind. Found by the QEMU test, 2026-10-29.
 
-The test role makes no staged-image test boot in this layout: reading the pending
-record would mean mounting userdata before the hibernation step.
+The test role's staged-image test boot is the kernel trial of step 1 in this layout:
+the plain layout's pending record would be on userdata, which nothing mounts before the
+hibernation step.
 
 ## Hibernation
 

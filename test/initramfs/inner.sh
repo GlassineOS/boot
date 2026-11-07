@@ -116,7 +116,7 @@ export GLASSINE_INIT_LIB=/m/lib
 run dep "panic=5 rdinit=/init glassine.return=3 _kip_initramfs" /dep.conf
 ok "deployments layout: library sourced, looks for its root partition" "! grep -q 'glassine-root.sh' /kmsg.dep && grep -q 'root partition rootfs not found' /kmsg.dep"
 run dep-img "panic=5 rdinit=/init glassine.return=3 glassine.test glassine.img=0123456789abcdef" /dep.conf
-ok "deployments layout: no staged-image peek (it would come before the resume step)" "grep -q 'no staged-image test boot in the deployments layout' /kmsg.dep-img"
+ok "deployments layout, glassine.img= with no root partition found: no kernel trial, no plain-layout peek" "grep -q 'image 0123456789abcdef: no kernel trial' /kmsg.dep-img && ! grep -q 'staged by glassine-bootimg\\|not staged' /kmsg.dep-img"
 unset GLASSINE_INIT_LIB
 
 # --- no board config ---
