@@ -1,6 +1,6 @@
 # Kernel artifacts: what a build hands to a device
 
-Status: **draft for review; nothing here is implemented.** Today kernel updates are
+Status: **agreed design; nothing here is implemented yet.** Today kernel updates are
 paused (no staged test boot in the deployments layout, [boot.md](boot.md)), and boot
 images are packed outside this repository. Once agreed, `images` builds to this page and
 the tools here consume it. Changes go through this repository first
@@ -59,8 +59,8 @@ modules/<release>/
 ├── firmware/                  redistributable firmware this kernel needs (below)
 ├── boot/
 │   ├── Image.gz               gzip -n, so its checksum is stable
-│   ├── dtb/<device>@<id>.dtb  one per device this kernel is built for
-│   ├── initramfs-<commit12>.cpio.gz
+│   ├── dtb/<device>@<id>.dtb  one per device this kernel is built for, + .manifest
+│   ├── initramfs-<commit12>.cpio.gz   + initramfs-<commit12>.manifest
 │   └── <device>.boot.manifest the record the packer used last (below)
 └── kernel.manifest
 ```
@@ -89,7 +89,7 @@ artifact; a build check enforces that by content, not only by name.
 **The seed.** They are copied once from the device's own storage into a seed, checked, and
 from then on read only from the seed (refreshed only on request). Nothing depends on the
 original partitions afterwards. The seed lives on a partition of its own, the board's
-`DEVICE_PART`, so it survives a reformat of the system partition, a format of userdata and
+`DEVICE_PART` (a new `board.conf` key), so it survives a reformat of the system partition, a format of userdata and
 every deployment reset, and the initramfs and the recovery can read it without either:
 
 ```
@@ -158,9 +158,9 @@ empty.
 | `firmware` | space-separated `name@sha256-16` of `firmware/` |
 | `provides` | features built in, derived from `.config` by this repository's table (below) |
 
-**`dtb.manifest`**: `device`, `source` (`URL@COMMIT`), `sha256`.
+**`dtb.manifest`** (`dtb/<device>@<id>.manifest`): `device`, `source` (`URL@COMMIT`), `sha256`.
 
-**`initramfs.manifest`**: `commit`, `sha256`, `state_format` (newest it writes), `needs`.
+**`initramfs.manifest`** (`initramfs-<commit12>.manifest`): `commit`, `sha256`, `state_format` (newest it writes), `needs`.
 
 **`boot.manifest`**: `id` (the `glassine.img=` value), `sha256`, `device`, `kernel`,
 `dtb`, `initramfs`, `cmdline`, `board` (sha256 of the `board.conf` the header fields came
@@ -228,6 +228,14 @@ A successful promote needs no message.
 `kernel=` in a deployment's `meta`: the release it last booted under, written at accept;
 informational only. Kept so a per-deployment kernel (with a kexec loader) is a loader
 change, not a format change: an empty value means "the device's default".
+
+## When this is implemented
+
+The pages that change with it: [deployments.md](deployments.md) (`modules/<release>/`
+contents, `state/kernel` keys, `state/bootimg/`, `kernel=` in the meta table),
+[boot.md](boot.md) (`DEVICE_PART` in the board keys, the two binds, `/run/glassine/device`),
+and `conf/board.conf.example` (`DEVICE_PART`; `KERNEL`, `DTB`, `INITRAMFS` replaced by the
+kernel's subvolume).
 
 ## Not covered here
 
