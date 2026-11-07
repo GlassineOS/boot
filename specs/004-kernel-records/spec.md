@@ -243,7 +243,8 @@ Each story says which phase it belongs to.
 - **FR-016** Busybox ash for everything the initramfs or the recovery runs. Python only
   in the packer, as today.
 - **FR-017** `status` in this layout prints `format=1`, then `state=`, then every key of
-  FR-002 that is set, `reason=` for a failed candidate, and `default_slot=bad` after a
+  FR-002 that is set except `deferred_dtb` and `deferred_initramfs` (the deferred
+  install's inputs), `reason=` for a failed candidate, and `default_slot=bad` after a
   failed check or write (FR-009, FR-010). `state=` is one of:
   - `none`;
   - `candidate`;

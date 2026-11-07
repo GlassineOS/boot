@@ -82,7 +82,8 @@ system partition (btrfs, top level)
 `boot/` files are named by their content, so a file once written never changes; a new
 device tree or initramfs is a new file, added by `glassine-deploy receive --boot FILE`
 (new). Their manifests hold only facts about the bytes, so the same bytes give the same
-file and manifest, and receiving an existing name is a no-op. A file may be removed only when no kernel record names it and it was received
+file and manifest, and receiving an existing name is a no-op. A file may be removed only when no kernel record names it (`state/kernel`'s
+`deferred_dtb` and `deferred_initramfs` included) and it was received
 before the last `glassine-bootimg install` (so a file received for an install that hasn't
 happened yet stays).
 
@@ -407,7 +408,8 @@ initramfs from `boot/`, not from the base.
 
 `glassine-bootimg status` is the interface. In this layout it prints `format=1`, then
 `state=` (`none`, `candidate`, `trial`, `finishing`, `writing` or `failed`), then each key
-of `state/kernel` that is set, `reason=` for a failed candidate, and `default_slot=bad`
+of `state/kernel` that is set (except `deferred_dtb` and `deferred_initramfs`, the deferred
+install's inputs), `reason=` for a failed candidate, and `default_slot=bad`
 while `writing` is set and the default slot doesn't hold that image. The shell reads it
 and notifies:
 

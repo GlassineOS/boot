@@ -178,9 +178,10 @@ ok "rollback: current and previous swapped" "[ \"\$(kv current)\" = 6.0.0-old ] 
 ok "glassine-hibernate's check: refused after the rollback (this boot runs the other image)" "gs_kernel_refusal $K $W/cmdline 7.1.0-a | grep -q 'next boot runs kernel image $OLDID'"
 gs_update $K candidate=7.1.0-b candidate_img=$IDB tries=1; cp $K $W/k1; corrupt 2
 ok "a failed rollback with a candidate set: exit 1, the old image back, state/kernel as before" "! $B rollback >/dev/null 2>&1 && holds $W/defslot $OLDID && same $K $W/k1"
-corrupt 0; gs_update $K candidate= candidate_img= tries=
+corrupt 0
 boot $OLDID
-ok "rollback again: back to 7.1.0-a" "$B rollback >/dev/null 2>&1 && holds $W/defslot $IDA && [ \"\$(kv current_img)\" = $IDA ] && [ \"\$(kv previous_img)\" = $OLDID ]"
+ok "rollback again: back to 7.1.0-a" "$B rollback >$W/out 2>&1 && holds $W/defslot $IDA && [ \"\$(kv current_img)\" = $IDA ] && [ \"\$(kv previous_img)\" = $OLDID ]"
+ok "... the candidate cancelled with it, said" "[ -z \"\$(kv candidate)\$(kv candidate_img)\$(kv tries)\$(kv requested)\" ] && grep -q 'kernel candidate 7.1.0-b cancelled' $W/out"
 
 # --- retry a failed candidate (Story 3.6) ---------------------------------------
 boot $IDA
