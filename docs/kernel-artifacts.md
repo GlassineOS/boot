@@ -1,6 +1,11 @@
 # Kernel artifacts: what a build hands to a device
 
-Status: **agreed design; nothing here is implemented yet.** It builds on
+Status: **agreed design; partly implemented.** Built and host-tested, nothing run on a
+device ([specs/004](../specs/004-kernel-records/spec.md), phase 1): the kernel records,
+`glassine-bootimg` `install` (the `bootpart-test` hand-off), `status`, `cancel`, `retry`,
+`accept`, `rollback`, the default-slot write, the interlocks with `glassine-deploy` and
+`glassine-hibernate`. Not built: the trial (the initramfs and promote's verdict, phase 2),
+the `blocklist` hand-off, and everything under "Not covered here". It builds on
 `glassine-deploy`'s `receive --modules`, `stage` and `bases remove`. Kernel updates stay
 paused on a device until its hand-off (below) exists. Once implemented, `images` builds to
 this page and the tools here consume it. Changes go through this repository
@@ -210,7 +215,17 @@ Per image, in `state/bootimg/<id>.manifest`: `release`, `size`, `sha256`, `stage
 under `/var/lib/glassine-bootimg` (`pending`, `failed`, `current`, `deferred`, `prev`,
 `prev.img`), which were per deployment.
 
-Writers: `glassine-bootimg` (install, accept, rollback, retry) and the initramfs (one try).
+Writers: `glassine-bootimg` (install, accept, rollback, retry, cancel) and the initramfs (one try).
+
+In an image record, `reason` is `no-boot` (the trial never reached the initramfs),
+`no-verdict` (it ended before promote's check), `default slot write` (accept's write
+failed and the old image went back), or the health check's own. `seeded=1` marks the
+record of the first `current_img`: after the migration nothing names the running image,
+so the first accept or `rollback` records the default slot's image, if it is a boot
+image with a `glassine.img=` whose kernel is release `current`.
+
+`glassine-bootimg` exits 0 done, 1 error, 2 usage, 3 the state format (or a record) is
+newer than the tool, 6 busy (`state/.lock` held).
 
 **One trial at a time.** "A kernel candidate is set" means from `install` until the
 candidate is accepted, failed or cancelled, not only during the trial boot.
@@ -276,7 +291,7 @@ tree or initramfs for the running kernel).
 
 | Value | How | Boards |
 |---|---|---|
-| `bootpart-test` | the candidate's image written to a one-shot test slot, the default slot written on accept (today's `glassine-bootimg`) | boards with a spare slot |
+| `bootpart-test` | the candidate's image written to a one-shot test slot, the default slot written on accept (today's `glassine-bootimg`) | boards with a spare slot; never the recovery partition (`install` refuses a `TEST_DEV` named `recovery`) |
 | `blocklist` | a cold boot of a kernel file whose storage blocks the bootloader reads | the Note Air (planned; [blocklist.md](blocklist.md), [hub#53](https://github.com/GlassineOS/hub/issues/53)) |
 | `kexec`, `hardboot` | from a minimal loader / a warm reset into a staged image | not specified here |
 | empty | none: `install` refuses ("kernel updates are paused") | the Note Air today |
@@ -372,7 +387,10 @@ initramfs from `boot/`, not from the base.
 
 1. `glassine-deploy receive --modules` (the kernel's subvolume), and `receive --boot` for
    a device tree or initramfs the device doesn't have yet.
-2. `glassine-bootimg install <release>`: checks, makes it the candidate, hands it off.
+2. `glassine-bootimg install <release> [--dtb <device>@<id>] [--initramfs <commit12>]`:
+   checks, makes it the candidate, hands it off. The device tree defaults to the entry for
+   board key `DEVICE` in the kernel's `dtbs`, the initramfs to the one in `current_img`'s
+   boot record.
 3. The trial, then accept (writes `state/kernel`). Modules of current, previous, the
    candidate and deferred are never removed; older ones may be (`bases remove` extends to
    modules).
@@ -384,7 +402,10 @@ initramfs from `boot/`, not from the base.
 
 ## What the user sees
 
-`glassine-bootimg status` is the interface; it gains a `format=1` field. The shell reads it
+`glassine-bootimg status` is the interface. In this layout it prints `format=1`, then
+`state=` (`none`, `candidate`, `trial`, `finishing`, `writing` or `failed`), then each key
+of `state/kernel` that is set, `reason=` for a failed candidate, and `default_slot=bad`
+while `writing` is set and the default slot doesn't hold that image. The shell reads it
 and notifies:
 
 - once, when a kernel is the candidate and waits for its trial reboot, with a restart

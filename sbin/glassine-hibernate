@@ -25,19 +25,22 @@
 #
 # Exit: 0 done (resumed; setup: the file is ready), 1 failed (the kernel did
 # not hibernate, a write failed), 2 usage, 3 not possible here (no deployments
-# boot, no swap file, block size, no kernel support, no space), 4 busy (a
-# switch is running, the deployment state is locked).
+# boot, no swap file, block size, no kernel support, no space, the next boot
+# could run another kernel image), 4 busy (a switch is running, the deployment
+# state is locked).
 #
 # Configuration: deploy.conf (SYSTEM_MNT, USERDATA_DEV, USERDATA_MNT: a real
 # mount point, on another device than its parent directory,
 # USERDATA_PREFIX, RUN_DIR, HIBERNATE_SIZE_MB, HIBERNATE_RESERVE_MB: free
 # space setup leaves on userdata, default 512; HIBERNATE_HOOKS). For the host test:
-# GLASSINE_SYSPOWER (/sys/power), GLASSINE_PROC_SWAPS (/proc/swaps).
+# GLASSINE_SYSPOWER (/sys/power), GLASSINE_PROC_SWAPS (/proc/swaps),
+# GLASSINE_PROC_CMDLINE (/proc/cmdline), GLASSINE_UNAME (uname -r).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 LIB=${GLASSINE_DEPLOY_LIB:-/usr/lib/glassine-boot/glassine-state.sh}
 ROOTLIB=${GLASSINE_ROOT_LIB:-${LIB%/*}/glassine-root.sh}
 SYSPOWER=${GLASSINE_SYSPOWER:-/sys/power}
+CMDLINE=${GLASSINE_PROC_CMDLINE:-/proc/cmdline}
 SWAPS=${GLASSINE_PROC_SWAPS:-/proc/swaps}
 SYSTEM_MNT=/run/glassine/system USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata
 USERDATA_PREFIX=media/glassine RUN_DIR=/run/glassine HIBERNATE_SIZE_MB='' HIBERNATE_RESERVE_MB=512
@@ -83,6 +86,10 @@ ready() {
     next=$(gr_would_pick "$SYSTEM_MNT/state")
     [ "$next" = "$booted" ] ||
         die 3 "the next boot would be ${next:-nothing}, not $booted: the image would be cancelled (accept or select $booted first)"
+    # the same for the kernel: a resume under another kernel image, or on a
+    # trial or finishing boot, never happens (docs/kernel-artifacts.md)
+    why=$(gs_kernel_refusal "$SYSTEM_MNT/state/kernel" "$CMDLINE" "${GLASSINE_UNAME:-$(uname -r)}")
+    [ -z "$why" ] || die 3 "$why: the image would be cancelled"
     grep -qw disk "$SYSPOWER/state" 2>/dev/null || die 3 "the kernel cannot hibernate (no 'disk' in $SYSPOWER/state)"
     [ -b "$USERDATA_DEV" ] || die 3 "USERDATA_DEV is not a block device: '$USERDATA_DEV'"
     mountpoint -q "$USERDATA_MNT" || die 3 "userdata is not mounted at $USERDATA_MNT"

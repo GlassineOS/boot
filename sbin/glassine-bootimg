@@ -28,6 +28,20 @@
 # health.d/* (the test boot's health checks, see health()).
 # If a write to the default slot is cut off (power loss): boot the test slot
 # (it holds the tested image) and copy it to the default slot from there.
+#
+# The deployments layout (board.conf ROOT_LAYOUT=deployments) keeps the
+# kernel records on the system partition instead, the same on every board,
+# and only the hand-off differs (HANDOFF): lib/glassine-kernel.sh,
+# docs/kernel-artifacts.md. There:
+#   glassine-bootimg install REL [--dtb DEVICE@ID] [--initramfs COMMIT12]
+#                                   pack from modules/REL and boot/, make it the candidate
+#   glassine-bootimg status         format=1, state=none|candidate|trial|finishing|writing|failed, the keys
+#   glassine-bootimg cancel         drop the kernel candidate (the default boot is untouched)
+#   glassine-bootimg reboot-test    the reboot into the candidate's trial
+#   glassine-bootimg retry          the candidate's (or the failed one's) image back on the test slot, tries=1
+#   glassine-bootimg accept         the trial boot's candidate becomes the default kernel
+#   glassine-bootimg rollback       the previous kernel's image back as the default
+#   glassine-bootimg promote        the verdict (not built in this layout yet)
 set -u
 ST=${GLASSINE_BI_STATE:-/var/lib/glassine-bootimg}
 BOARD=${GLASSINE_BI_BOARD:-/etc/glassine-bootimg/board.conf}
@@ -252,6 +266,16 @@ cmd_rollback() {
     cp "$ST/prev" "$ST/current"; sync
     log "rollback: default slot = ${k:-the previous image} again; reboot to use it"
 }
+
+if [ "${ROOT_LAYOUT:-plain}" = deployments ]; then
+    GBLIB=${GLASSINE_BI_LIB:-/usr/lib/glassine-boot}
+    # shellcheck source=../lib/glassine-state.sh
+    . "$GBLIB/glassine-state.sh" || die "cannot read $GBLIB/glassine-state.sh"
+    # shellcheck source=../lib/glassine-kernel.sh
+    . "$GBLIB/glassine-kernel.sh" || die "cannot read $GBLIB/glassine-kernel.sh"
+    gk_main "$@"
+    exit $?
+fi
 
 case "${1:-}" in
 install) shift; cmd_install "$@" ;;

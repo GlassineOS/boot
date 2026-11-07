@@ -7,6 +7,7 @@
 #
 # Files (paths relative to their file system, see glassine-deploy):
 #   system:   state/format (version=N), state/deploy, state/kernel   key=value
+#             (state/kernel's keys: docs/kernel-artifacts.md)
 #   userdata: <prefix>/swap/hibernate (swap file), <prefix>/swap/hibernate.guard
 #
 # Writes are atomic: temp file in the same directory, data synced, renamed,
@@ -63,6 +64,45 @@ gs_format_version() {
 gs_format_ok() {
     case "$1" in ''|*[!0-9]*) return 1 ;; esac
     [ "$1" -le "$GS_FORMAT_SUPPORTED" ]
+}
+
+# --- the kernel state (state/kernel, docs/kernel-artifacts.md) ---------------
+# gs_img_id CMDLINEFILE: the glassine.img= of a kernel command line (the image
+# a boot runs), empty if none
+gs_img_id() {
+    sed -n 's/.*glassine[._]img=\([0-9a-f]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
+}
+
+# gs_kernel_candidate FILE: the kernel candidate (its release, else its image
+# id), empty when none is set
+gs_kernel_candidate() {
+    _gs_c=$(gs_kv "$1" candidate)
+    [ -n "$_gs_c" ] || _gs_c=$(gs_kv "$1" candidate_img)
+    echo "$_gs_c"
+}
+
+# gs_kernel_cancel FILE: drop the kernel candidate (glassine-bootimg cancel);
+# the default boot and the image files are left alone
+gs_kernel_cancel() { gs_update "$1" candidate= candidate_img= tries= requested=; }
+
+# gs_kernel_refusal FILE CMDLINEFILE KREL: why the next boot could run another
+# kernel image than this boot (KREL = uname -r), or skip the resume; empty if
+# it can't. glassine-hibernate refuses then: the initramfs would not resume the
+# session under another kernel, or on a trial or finishing boot.
+gs_kernel_refusal() {
+    [ -r "$1" ] || return 0
+    _gs_run=$(gs_img_id "$2")
+    _gs_v=$(gs_kv "$1" writing)
+    [ -z "$_gs_v" ] || { echo "a write of the default boot slot is unfinished (image $_gs_v)"; return 0; }
+    _gs_v=$(gs_kv "$1" candidate_img)
+    [ -n "$_gs_v" ] && [ "$_gs_run" = "$_gs_v" ] && { echo "this boot is a kernel trial (image $_gs_v)"; return 0; }
+    _gs_v=$(gs_kv "$1" current_img)
+    if [ -n "$_gs_v" ]; then
+        [ "$_gs_run" = "$_gs_v" ] || echo "the next boot runs kernel image $_gs_v, this boot runs ${_gs_run:-an unknown image}"
+        return 0
+    fi
+    _gs_v=$(gs_kv "$1" current)
+    [ -z "$_gs_v" ] || [ "$_gs_v" = "$3" ] || echo "the next boot runs kernel $_gs_v, this boot runs $3"
 }
 
 # --- the hibernate swap file ------------------------------------------------

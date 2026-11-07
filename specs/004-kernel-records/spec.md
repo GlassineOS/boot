@@ -1,7 +1,8 @@
 # Feature Specification: Kernel records, trial and hand-off
 
 **Feature branch:** `kernel-records`
-**Created:** 2026-11-07 · **Status:** draft, under review; nothing implemented
+**Created:** 2026-11-07 · **Status:** phase 1 built and host-tested (nothing run on a
+device); phase 2 not built
 **Builds on:** [001-deployments](../001-deployments/spec.md) · **Interface:**
 [docs/kernel-artifacts.md](../../docs/kernel-artifacts.md) ("Kernel records, trials and
 hand-off", "Records", "Packing", "Order on the device", "What the user sees"),
