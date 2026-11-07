@@ -198,6 +198,8 @@ ok "apk: the change lands in the deployment's upper" "[ -e $U/deployments/d1/swi
 ok "apk: acknowledged once, then no more question; apk's exit code passed on" "APK_RC=3 gl apk del foo </dev/null; [ \$? = 3 ] && ro $R/usr/bin/t3"
 ok "apk while another change holds the lock: waits, then runs" "( exec 8>>$W/run2/apk.lock; flock 8; sleep 2 ) & sleep 0.5; gl apk fix 2>$W/err && grep -q 'waiting' $W/err && ro $R/usr/bin/t4"
 wait
+printf '#!/bin/sh\n[ -e /proc/$$/fd/8 ] && echo leaked > %s/fd8\nexit 0\n' $W > $W/apkfd; chmod +x $W/apkfd; rm -f $W/fd8
+ok "apk: the lock (fd 8) is not inherited by apk and its scripts" "GLASSINE_APK_ACK=1 GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apkfd sh $GL apk add foo && [ ! -e $W/fd8 ]"
 ok "unlock: / writable, status says so" "gl unlock 2>/dev/null && echo x > $R/usr/bin/manual && gl status | grep -q 'root: unlocked'"
 ok "apk while unlocked: stays unlocked after" "gl apk add bar && echo y > $R/usr/bin/manual2"
 ok "lock: read-only again" "gl lock 2>/dev/null && ro $R/usr/bin/t5 && gl status | grep -qx 'root: locked'"
