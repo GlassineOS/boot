@@ -83,34 +83,48 @@ install modules into the read-only bind: out-of-tree modules are built with the 
 ## Device data: files from the device itself
 
 Some files can only come from the device: the panel's waveform, signed firmware read from
-its own partitions (GPU zap shader, radio and DSP images, sensor registry). They are
-**never** in an artifact; a build check enforces that by content, not only by name.
+its own partitions (GPU zap shader, radio and DSP images). They are **never** in an
+artifact; a build check enforces that by content, not only by name.
 
-They get one home that survives every reset and a reformat of userdata, and that the
-initramfs and the recovery can read without userdata:
+**The seed.** They are copied once from the device's own storage into a seed, checked, and
+from then on read only from the seed (refreshed only on request). Nothing depends on the
+original partitions afterwards. The seed lives on a partition of its own, the board's
+`DEVICE_PART`, so it survives a reformat of the system partition, a format of userdata and
+every deployment reset, and the initramfs and the recovery can read it without either:
 
 ```
-system partition
-└── device/                  plain directory, not a subvolume; written under state/.lock
+DEVICE_PART (the Note Air: vendor_b, ext4, otherwise unused by GlassineOS)
+└── glassine/
+    ├── manifest             key=value: each file's source (PART:PATH) and sha256
     ├── waveform.wbf
     └── firmware/            device firmware, by the names drivers request
 ```
 
-- The device package's boot hooks fill it once from the device's own storage, read-only
-  (an ext4 source is read with `debugfs -R dump`, without mounting, or mounted
-  `ro,noload`; a btrfs source `ro,rescue=nologreplay`), and refresh it only on request.
-- At boot it is bound read-only on `/run/glassine/device`. Device firmware is reached
-  through `firmware_class.path=/run/glassine/device/firmware` (the board's constant
-  command line), searched before the `/lib/firmware` paths, so `device/firmware/` must
-  never hold a name the kernel's `firmware/` provides (the device's own older GPU
-  microcode would win over the pinned one). Drivers that request firmware
-  before `switch_root` find neither path: they stay modules, or defer.
-- Daemons read their file paths from configuration (for the panel: `waveform=` in
-  `/etc/glassine/epd.conf`), never a fixed path in the base.
-- The recovery reads the same directory first, and seeds it when it installs a system, so
-  retiring a stock partition never leaves zero copies.
+On a device with an A/B layout whose B slot belongs to GlassineOS, `DEVICE_PART` is the
+B slot's vendor partition: a clone of the stock vendor partition, already a source of
+device files. Its stock files stay untouched; only `glassine/` is added. Writing it breaks
+that partition's Android verity, which matters only if Android ever booted from it.
 
-Adding `device/` is additive in [deployments.md](deployments.md) (no format bump).
+- **Seeding:** the device package's boot hook, when `glassine/manifest` is missing or a
+  refresh is asked for. It reads each source read-only (an ext4 source with `debugfs -R
+  dump`, without mounting, or mounted `ro,noload`; a btrfs source
+  `ro,rescue=nologreplay`), checks each file (for the waveform: size and header), mounts
+  `DEVICE_PART` read-write only for the copy (temp files, then renames, then the
+  manifest), and unmounts it.
+- **At boot** the initramfs mounts `DEVICE_PART` read-only and binds `glassine/` on
+  `/run/glassine/device`. Device firmware is reached through
+  `firmware_class.path=/run/glassine/device/firmware` (the board's constant command line),
+  searched before the `/lib/firmware` paths, so `firmware/` must never hold a name the
+  kernel's `firmware/` provides (the device's own older GPU microcode would win over the
+  pinned one). Drivers that request firmware before `switch_root` find neither path: they
+  stay modules, or defer.
+- **Daemons** read their file paths from configuration (for the panel: `waveform=` in
+  `/etc/glassine/epd.conf`), never a fixed path in the base.
+- **The recovery** reads the seed first and falls back to the original sources. It never
+  needs the system partition for this.
+- **Not a backup:** the seed protects against resets and reformats, not against losing the
+  device's storage. Before any stock partition the seed came from is retired or reused,
+  the installer must have copied the device's own partitions to a backup off the device.
 
 ## Kernel state
 
