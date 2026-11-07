@@ -1,0 +1,156 @@
+#!/bin/sh
+set -u
+W=/w; mkdir -p $W
+fails=0
+ok() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
+# the test build has the hooks (GLASSINE_SLOT_CMDLINE, GLASSINE_SLOT_TEST_CUT); the plain one must not
+cc -Os -Wall -Werror -DGLASSINE_SLOT_TEST -o $W/glassine-slot /p/src/glassine-slot.c || { echo "FAIL build"; exit 1; }
+cc -Os -Wall -Werror -o $W/glassine-slot.plain /p/src/glassine-slot.c || { echo "FAIL build (plain)"; exit 1; }
+I=$W/disk.img
+S() { GLASSINE_SLOT_CMDLINE=$W/cmdline $W/glassine-slot --disk $I "$@" > $W/out 2>&1; }
+cmdline() { echo "console=ttyMSM0 androidboot.slot_suffix=_$1 rootwait" > $W/cmdline; }
+# attribute of partition N as hex, from sgdisk (not from the tool)
+attr() { sgdisk -i "$1" $I | sed -n 's/^Attribute flags: //p'; }
+field() { sed -n "s/^slot=$1\t.*$2=\([^\t]*\).*/\1/p" $W/out; }
+# a disk like the device: boot/system per slot, two type GUIDs (boot != system),
+# each _b with its _a partner's; mkdisk BOOT_B SYSTEM_A SYSTEM_B BOOT_A for other type GUIDs
+BOOT=20117f86-e985-4357-b9ee-374bc1d8487d SYS=97d7b011-54da-4835-b3c4-917ad6e73d74
+mkdisk() {
+    rm -f $I; truncate -s 64M $I
+    sgdisk -o -n 1:0:+4M -c 1:boot_a -t 1:${4:-$BOOT} \
+        -n 2:0:+8M -c 2:system_a -t 2:${2:-$SYS} \
+        -n 3:0:+4M -c 3:boot_b -t 3:${1:-$BOOT} \
+        -n 4:0:+8M -c 4:system_b -t 4:${3:-$SYS} \
+        -n 5:0:0 -c 5:userdata $I >/dev/null
+    # slot a successful + active (the device's 0x007F...), b never booted
+    sgdisk -A 1:set:48 -A 1:set:49 -A 1:set:50 -A 1:set:51 -A 1:set:52 -A 1:set:53 -A 1:set:54 $I >/dev/null
+}
+# both tables valid per sgdisk; the entry arrays differ from $1 only in the
+# attribute words of entries 1 and 3 (bytes 48..55)
+only_attrs() {
+    sgdisk -v $I | grep -q 'No problems found' || return 1
+    dd if=$I bs=512 skip=2 count=32 2>/dev/null > $W/arr.now
+    cmp -l "$1" $W/arr.now | awk '{ o = ($1 - 1) % 128; e = int(($1 - 1) / 128); if (!((e == 0 || e == 2) && o >= 48 && o < 56)) bad = 1 } END { exit bad }'
+}
+snap() { dd if=$I bs=512 skip=2 count=32 2>/dev/null > $W/arr.0; sha256sum $I | cut -d' ' -f1 > $W/sum.0; }
+unchanged() { [ "$(sha256sum $I | cut -d' ' -f1)" = "$(cat $W/sum.0)" ]; }
+
+mkdisk; cmdline a
+ok "status: slot a successful + active, next a" "S status --porcelain && grep -qx 'booted=a' $W/out && grep -qx 'next=a' $W/out && [ \$(field a successful) = 1 ] && [ \$(field a priority) = 3 ] && [ \$(field b tries) = 0 ]"
+ok "status, human" "S status && grep -q 'next boot: a' $W/out"
+
+snap
+ok "set-active b: b priority 3, active, 7 tries, not successful" "S set-active b && S status --porcelain && [ \$(field b priority) = 3 ] && [ \$(field b active) = 1 ] && [ \$(field b tries) = 7 ] && [ \$(field b successful) = 0 ] && grep -qx 'next=b' $W/out"
+ok "set-active b: a keeps successful, priority 2, not active" "[ \$(field a priority) = 2 ] && [ \$(field a active) = 0 ] && [ \$(field a successful) = 1 ]"
+ok "set-active: only the two attribute words changed, both tables valid (sgdisk -v)" "only_attrs $W/arr.0"
+ok "set-active: sgdisk reads the same bits (b: 48 49 50 51 52 53, no 54)" "[ \"\$(attr 3)\" = 003F000000000000 ] && [ \"\$(attr 1)\" = 007A000000000000 ]"
+ok "backup table = primary (sgdisk loads the backup alone)" "sgdisk -b $W/bk $I >/dev/null && dd if=$I bs=512 skip=\$((\$(stat -c %s $I) / 512 - 33)) count=32 2>/dev/null | cmp -s - $W/arr.now"
+
+cp $I $W/keep.img
+ok "set-active a --successful: a priority 3, active, successful; b priority 2" "S set-active a --successful && S status --porcelain && [ \$(field a successful) = 1 ] && [ \$(field a priority) = 3 ] && [ \$(field a active) = 1 ] && [ \$(field b priority) = 2 ] && grep -qx 'next=a' $W/out"
+ok "set-active --bogus: usage" "S set-active a --bogus; [ \$? = 2 ]"
+cp $W/keep.img $I
+cmdline b
+ok "mark-successful (the booted slot b)" "S mark-successful && S status --porcelain && [ \$(field b successful) = 1 ] && [ \$(field b tries) = 7 ]"
+snap
+ok "mark-successful again: nothing to change, no write" "S mark-successful && grep -q 'nothing to change' $W/out && unchanged"
+ok "reset-tries b: not successful, 7 tries" "S reset-tries b && S status --porcelain && [ \$(field b successful) = 0 ] && [ \$(field b tries) = 7 ] && only_attrs $W/arr.0"
+
+# the bootloader's choice when b ran out of tries: a (successful) boots
+sgdisk -A 3:clear:51 -A 3:clear:52 -A 3:clear:53 $I >/dev/null
+ok "next: b without tries and not successful -> a" "S status --porcelain && grep -qx 'next=a' $W/out"
+sgdisk -A 1:clear:54 $I >/dev/null
+ok "next: neither bootable -> none" "S status --porcelain && grep -qx 'next=' $W/out"
+# no active slot: ABL takes a only when all of a's slot bits are 0 (a first boot)
+setbits() { p=$1; shift; for b in 48 49 50 51 52 53 54 55; do sgdisk -A $p:clear:$b $I >/dev/null; done; for b; do sgdisk -A $p:set:$b $I >/dev/null; done; }
+setbits 1; setbits 3 49 54
+ok "next: none active, a all zero, b successful -> a (first boot)" "S status --porcelain && grep -qx 'next=a' $W/out"
+setbits 3
+ok "next: none active, both all zero -> a (first boot)" "S status --porcelain && grep -qx 'next=a' $W/out"
+setbits 1 49 54
+ok "next: none active, a priority 2 and successful -> none" "S status --porcelain && grep -qx 'next=' $W/out"
+
+# refusals
+mkdisk; : > $W/cmdline; snap
+ok "mark-successful without a booted slot: exit 3, no write" "S mark-successful; [ \$? = 3 ] && unchanged"
+ok "mark-successful b, named: works without the cmdline" "S mark-successful b && grep -q done $W/out"
+ok "usage: exit 2" "S set-active c; [ \$? = 2 ] && S frob; [ \$? = 2 ]"
+rm -f $I; truncate -s 16M $I; sgdisk -o -n 1:0:0 -c 1:userdata $I >/dev/null; snap
+ok "no boot_a/boot_b: exit 3, no write" "S set-active a; [ \$? = 3 ] && unchanged"
+mkdisk; printf 'X' | dd of=$I bs=1 seek=$((512 + 30)) conv=notrunc 2>/dev/null; snap
+ok "a broken primary header: rebuilt from the backup, both valid" "S set-active b && grep -q 'primary GPT is broken' $W/out && sgdisk -v $I | grep -q 'No problems found'"
+mkdisk; printf 'X' | dd of=$I bs=1 seek=$((1024 + 128 * 4 + 60)) conv=notrunc 2>/dev/null; snap
+ok "a broken primary entry array: rebuilt from the backup, both valid, the entry restored" "S set-active b && sgdisk -v $I | grep -q 'No problems found' && sgdisk -p $I | grep -q system_b"
+# the copies differ beyond the slot attributes (a renamed partition in the primary only)
+mkdisk; cp $I $W/orig.img; sgdisk -c 5:other $I >/dev/null
+dd if=$W/orig.img of=$I bs=512 skip=$(($(stat -c %s $I) / 512 - 33)) seek=$(($(stat -c %s $I) / 512 - 33)) count=33 conv=notrunc 2>/dev/null; snap
+ok "the copies differ beyond the slot attributes: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'differ' $W/out && unchanged"
+# the headers differ (the disk GUID in the primary only); arrays the same
+mkdisk; cp $I $W/orig.img; sgdisk -U 6b1e44a2-8a3c-4e55-9f61-2a7d0c3b5e10 $I >/dev/null
+dd if=$W/orig.img of=$I bs=512 skip=$(($(stat -c %s $I) / 512 - 33)) seek=$(($(stat -c %s $I) / 512 - 33)) count=33 conv=notrunc 2>/dev/null; snap
+ok "the headers differ (disk GUID): exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'headers differ' $W/out && unchanged"
+
+# cut writes: the bootloader reads the primary, or the backup when the primary
+# is broken; the tool reads the same and rebuilds a broken copy from the other
+for c in backup-array backup primary-array; do
+    mkdisk; cmdline a
+    ok "cut after $c: exit 1" "GLASSINE_SLOT_TEST_CUT=$c S set-active b; [ \$? = 1 ]"
+    case $c in
+    primary-array) want=b ;;   # the primary is broken: the backup (new) counts
+    *) want=a ;;
+    esac
+    ok "cut after $c: next boot = $want" "S status --porcelain && grep -qx 'next=$want' $W/out"
+    ok "cut after $c: a re-run completes, both tables valid" "S set-active b && S status --porcelain && grep -qx 'next=b' $W/out && sgdisk -v $I | grep -q 'No problems found'"
+done
+# a backup that is gone entirely (zeroed): rebuilt from the primary
+mkdisk; dd if=/dev/zero of=$I bs=512 seek=$(($(stat -c %s $I) / 512 - 33)) count=33 conv=notrunc 2>/dev/null
+ok "a zeroed backup GPT: set-active rebuilds it, both valid" "S set-active b && sgdisk -v $I | grep -q 'No problems found'"
+# fewer than 128 entries (the device's table has 64): ABL keeps the backup array
+# as one 16 KiB block before the last LBA, so a rebuilt backup goes there too,
+# and ABL's next attribute update (modelled by gpt.py abl-attr) leaves it valid
+mkdisk; python3 /p/test/slot/gpt.py entries $I 64
+last=$(($(stat -c %s $I) / 512 - 1))
+ok "64 entries: sgdisk reads the table" "sgdisk -v $I | grep -q 'No problems found'"
+dd if=/dev/zero of=$I bs=512 seek=$last count=1 conv=notrunc 2>/dev/null
+ok "64 entries, a zeroed backup header: rebuilt, its array 16 KiB before the header" "S set-active b && grep -q 'backup GPT is broken' $W/out && [ \$(od -An -tu8 -j \$(($last * 512 + 72)) -N8 $I) = \$(($last - 32)) ] && sgdisk -v $I | grep -q 'No problems found'"
+ok "64 entries: after ABL's own attribute write both copies stay valid" "python3 /p/test/slot/gpt.py abl-attr $I boot_b 0037000000000000 && S status --porcelain && ! grep -q broken $W/out && [ \$(field b tries) = 6 ] && sgdisk -v $I | grep -q 'No problems found'"
+# a zeroed primary: rebuilt from the backup
+mkdisk; dd if=/dev/zero of=$I bs=512 seek=1 count=33 conv=notrunc 2>/dev/null
+ok "a zeroed primary GPT: status reads the backup" "S status --porcelain && grep -qx 'next=a' $W/out"
+ok "a zeroed primary GPT: set-active rebuilds it, both valid, names kept" "S set-active b && sgdisk -v $I | grep -q 'No problems found' && sgdisk -p $I | grep -q system_b"
+# a zeroed primary, and the backup says the first usable LBA is 20: the 32
+# sectors of entries from LBA 2 would run into it, refused
+mkdisk; python3 /p/test/slot/gpt.py field $I backup 40 8 20
+dd if=/dev/zero of=$I bs=512 seek=1 count=33 conv=notrunc 2>/dev/null; snap
+ok "a primary to rebuild with no room before the first usable LBA: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'no room for the primary' $W/out && unchanged"
+# both broken: refused
+mkdisk; dd if=/dev/zero of=$I bs=512 seek=1 count=1 conv=notrunc 2>/dev/null; dd if=/dev/zero of=$I bs=512 seek=$(($(stat -c %s $I) / 512 - 1)) count=1 conv=notrunc 2>/dev/null; snap
+ok "both GPT copies broken: exit 3, no write" "S set-active b; [ \$? = 3 ] && unchanged"
+
+# set-active where ABL's own set_active would do more than the attributes
+# (swap the type GUIDs of each _a/_b pair; refuse a slot whose boot has its
+# system's type GUID): refused, no write. The rest is attributes only.
+OTHER=0fc63daf-8483-4772-8e79-3d69d8477de4
+mkdisk "" "" $OTHER; cmdline a; snap
+ok "set-active, a pair with different type GUIDs: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'type GUIDs of system_a and system_b differ' $W/out && unchanged"
+ok "set-active a (already active) there: exit 3 too" "S set-active a; [ \$? = 3 ] && unchanged"
+ok "mark-successful b there: works" "S mark-successful b && grep -q done $W/out"
+mkdisk $SYS $SYS $SYS $SYS; snap
+ok "set-active, boot_b with system_b's type GUID: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'boot_b has the type GUID of system_b' $W/out && unchanged"
+mkdisk; sgdisk -c 4:other $I >/dev/null; snap
+ok "set-active b without system_b: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'no system_b' $W/out && unchanged"
+
+# busy: another process holds a lock on the disk
+mkdisk
+ok "busy: exit 6" "flock $I sh -c 'GLASSINE_SLOT_CMDLINE=$W/cmdline $W/glassine-slot --disk $I set-active b > $W/out 2>&1; [ \$? = 6 ]' && grep -q 'another process holds a lock' $W/out"
+
+mkdisk
+ok "a read-back mismatch: exit 1, says so" "GLASSINE_SLOT_TEST_CUT=readback S set-active b; [ \$? = 1 ] && grep -q 'read-back mismatch' $W/out"
+
+# the plain build (what make installs) has no test hooks
+mkdisk; cmdline b
+ok "plain build: GLASSINE_SLOT_TEST_CUT does nothing, the write completes" "GLASSINE_SLOT_TEST_CUT=backup GLASSINE_SLOT_CMDLINE=$W/cmdline $W/glassine-slot.plain --disk $I set-active b > $W/out 2>&1 && grep -q done $W/out && sgdisk -v $I | grep -q 'No problems found'"
+ok "plain build: GLASSINE_SLOT_CMDLINE is not read" "GLASSINE_SLOT_CMDLINE=$W/cmdline $W/glassine-slot.plain --disk $I status --porcelain > $W/out 2>&1 && ! grep -qx 'booted=b' $W/out"
+
+echo "$fails failed"
+[ $fails = 0 ]

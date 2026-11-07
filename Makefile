@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-# make && make DESTDIR=… install     the tools (glassine-reboot: a C compiler + linux-headers)
+# make && make DESTDIR=… install     the tools (glassine-reboot, glassine-slot: a C compiler + linux-headers)
 # make initramfs                    the boot initramfs, inside an arm64 Alpine
 #                                   (busybox-static busybox-extras e2fsprogs cpio gzip)
 PREFIX ?= /usr
@@ -7,16 +7,19 @@ SYSCONFDIR ?= /etc
 CC ?= cc
 CFLAGS ?= -Os -Wall
 
-all: glassine-reboot
+all: glassine-reboot glassine-slot
 
 glassine-reboot: src/glassine-reboot.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
+
+glassine-slot: src/glassine-slot.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 initramfs: initramfs.cpio.gz
 initramfs.cpio.gz: initramfs/init build-initramfs.sh lib/glassine-state.sh lib/glassine-root.sh
 	sh build-initramfs.sh $@
 
-install: glassine-reboot
+install: glassine-reboot glassine-slot
 	install -Dm755 sbin/glassine-bootimg $(DESTDIR)$(PREFIX)/sbin/glassine-bootimg
 	install -Dm755 sbin/glassine-deploy $(DESTDIR)$(PREFIX)/sbin/glassine-deploy
 	install -Dm755 sbin/glassine $(DESTDIR)$(PREFIX)/sbin/glassine
@@ -33,6 +36,7 @@ install: glassine-reboot
 	install -Dm644 conf/deploy.conf.example $(DESTDIR)$(PREFIX)/share/glassine-boot/deploy.conf.example
 	install -Dm755 sbin/glassine-reboot-clean $(DESTDIR)$(PREFIX)/sbin/glassine-reboot-clean
 	install -Dm755 glassine-reboot $(DESTDIR)$(PREFIX)/sbin/glassine-reboot
+	install -Dm755 glassine-slot $(DESTDIR)$(PREFIX)/sbin/glassine-slot
 	install -Dm755 lib/glassine-bootimg-pack $(DESTDIR)$(PREFIX)/lib/glassine-bootimg/glassine-bootimg-pack
 	install -Dm755 openrc/glassine-bootimg-promote $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-bootimg-promote
 	install -Dm644 conf/board.conf.example $(DESTDIR)$(PREFIX)/share/glassine-bootimg/board.conf.example
@@ -45,8 +49,9 @@ check:
 	sh test/deploy/test.sh
 	sh test/root/test.sh
 	sh test/replay/test.sh
+	sh test/slot/test.sh
 
 clean:
-	rm -f glassine-reboot initramfs.cpio.gz
+	rm -f glassine-reboot glassine-slot initramfs.cpio.gz
 
 .PHONY: all initramfs install check clean
