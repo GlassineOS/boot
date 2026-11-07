@@ -262,6 +262,7 @@ ok "merge: passwords by name (old first, else the base's)" "[ \"\$(sh_ root)\" =
 ok "merge: shadow keeps the base's owner and mode, passwd/group 0644 root" "[ \"\$(stat -c '%u:%g %a' $AT/shadow)\" = '0:42 640' ] && [ \"\$(stat -c '%u:%g %a' $AT/passwd)\" = '0:0 644' ] && [ \"\$(stat -c '%u:%g %a' $AT/group)\" = '0:0 644' ]"
 ok "merge: subuid carried" "[ \"\$(cat $AT/subuid)\" = 'user:100000:65536' ] && [ ! -e $AT/subgid ]"
 ok "merge: the ID map (swapped system IDs, the moved group)" "[ \"\$(tr '\n' ,  < $W/acct/map)\" = 'g 1001 1002,g 101 102,g 102 101,u 100 101,u 101 100,' ]"
+ok "merge: the moved IDs of kept accounts are named (only the guest group; system IDs are not)" "[ \"\$(ga_kept_moves $W/acct/map)\" = 'gid 1001 -> 1002' ] && : > $W/acct/empty0 && [ -z \"\$(ga_kept_moves $W/acct/empty0)\" ]"
 ok "merge: no temp files left" "[ -z \"\$(ls $AT | grep '\.ga')\" ]"
 R2=$W/acct/tree; mkdir -p $R2/d
 echo a > $R2/d/mb; chown 100:101 $R2/d/mb

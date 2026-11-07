@@ -741,6 +741,8 @@ do_switch() {
             chmod "$(stat -c %a "$view/etc")" "$nd/switch/etc"; } || die "cannot create $nd/switch/etc"
         echo "glassine-deploy: accounts (base $nb + $cur's users)"
         ga_merge "$view/etc" "$ne" "$nd/switch/etc" "$nd/idmap" || die "the account merge failed; $id stays staged"
+        moved=$(ga_kept_moves "$nd/idmap")
+        [ -z "$moved" ] || die "kept accounts would change ID ($moved) because the new base has accounts at those IDs; /home is outside the deployments and would keep the old owners, and a fallback to $cur would find it changed. Nothing is switched; $id stays staged (stage another base, or free the IDs)"
         ga_remap "$nd/idmap" "$nd/switch" || die "the owner remap failed; $id stays staged"
         rm -f "$nd/idmap"
         umount "$TMP_VIEW" && rmdir "$TMP_VIEW"; TMP_VIEW=''

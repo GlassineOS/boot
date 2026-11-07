@@ -273,6 +273,14 @@ mkdir -p $W/wo/up $W/wo/low; echo 'root:x:0:root' > $W/wo/low/group; echo 'root:
 ga_lower $W/wo/out $W/wo/up $W/wo/low
 ok "ga_lower: a whiteout in the build layer (a real overlay upper has them): deleted, not read from the base" "[ ! -e $W/wo/out/shadow ] && [ -e $W/wo/out/group ]"
 ok "stage: a base without /etc/passwd: refused" "$G stage bad --yes 2>$W/err; [ \$? = 1 ] && grep -q 'no /etc/passwd' $W/err"
+# a new base with an account at the kept user's ID: the switch refuses, nothing selected
+btrfs -q subvolume snapshot $B2 $W/src/b4
+printf 'clash:x:1000:1000::/:/sbin/nologin\n' >> $W/src/b4/etc/passwd; printf 'clash:x:1000:\n' >> $W/src/b4/etc/group
+btrfs property set -ts $W/src/b4 ro true; btrfs -q send $W/src/b4 | $G receive - >/dev/null
+$G stage b4 --yes >/dev/null; SK=$(st staged); cp $S/state/deploy $W/stK
+ok "switch: a kept user's ID taken in the new base: refused, names the IDs, stays staged, nothing selected" "$G switch 2>$W/err; [ \$? = 1 ] && grep -q 'kept accounts would change ID (gid 1000 -> 1001, uid 1000 -> 1001)' $W/err && cmp -s $S/state/deploy $W/stK && [ \"\$(st staged)\" = $SK ] && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
+gs_update $S/state/deploy staged=; rm -rf $U/deployments/$SK
+btrfs property set -fts $S/bases/b4 ro false; btrfs -q subvolume delete $S/bases/b4
 # --- bases remove ---------------------------------------------------------------
 PREV0=$(gs_kv $S/state/deploy previous)
 mkdir -p $U/deployments/rm1; echo base=bad > $U/deployments/rm1/meta; gs_update $S/state/deploy previous=rm1

@@ -10,6 +10,8 @@
 #                              UPPER (the new deployment's build layer, which holds
 #                              only what the replay changed) if it has it, else from
 #                              LOWER (the base); a whiteout in UPPER means deleted
+#   ga_kept_moves MAP          the moved IDs of kept accounts (in [1000, 65534)) as
+#                              "uid 1000 -> 1001, gid …"; empty when none moved
 #   ga_remap MAP DIR           chown every file under DIR owned by a moved ID
 #
 # Kept from OLD: users and groups with an ID in [1000, 65534) that NEW lacks (their
@@ -133,6 +135,15 @@ ga_merge() {
     while read -r _k _a _b; do
         [ "$_k" = u ] && echo "  uid $_a -> $_b" || echo "  gid $_a -> $_b"
     done < "$_gm"
+}
+
+# ga_kept_moves MAP: see above. Home lives on userdata, outside the deployments and
+# shared with the one a failed boot falls back to: a kept account's ID can't move
+# without leaving /home owned by the wrong number (or changing it under the old
+# deployment), so the switch refuses.
+ga_kept_moves() {
+    awk -v first=$GA_FIRST -v nobody=$GA_NOBODY '
+        $2 + 0 >= first && $2 + 0 < nobody { printf "%s%s %s -> %s", (n++ ? ", " : ""), ($1 == "u" ? "uid" : "gid"), $2, $3 }' "$1"
 }
 
 # ga_remap MAP DIR: owners by the map (one pass: swapped IDs stay right); a
