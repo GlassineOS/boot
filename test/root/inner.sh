@@ -196,6 +196,11 @@ ok "apk info update (a package called update): / stays read-only" "gl apk info u
 ok "apk add: / writable for the run (the package lands), read-only after" "GLASSINE_APK_ACK=1 gl apk add foo && [ \"\$(cat $R/usr/bin/pkgfile)\" = pkg ] && ro $R/usr/bin/t2 && [ -e $R/etc/glassine/apk-acknowledged ]"
 ok "apk: the change lands in the deployment's upper" "[ -e $U/deployments/d1/switch/usr/bin/pkgfile ]"
 ok "apk: acknowledged once, then no more question; apk's exit code passed on" "APK_RC=3 gl apk del foo </dev/null; [ \$? = 3 ] && ro $R/usr/bin/t3"
+mv $R/etc/glassine/apk-acknowledged $W/ack.sv; : > $W/apk-calls
+ok "apk search cache, apk info fix: not changes (no acknowledgement, / stays read-only)" "gl apk search cache </dev/null && gl apk info fix </dev/null && grep -qx 'search cache' $W/apk-calls && grep -qx 'info fix' $W/apk-calls && [ ! -e $R/etc/glassine/apk-acknowledged ] && ro $R/usr/bin/t12"
+mv $W/ack.sv $R/etc/glassine/apk-acknowledged
+rm -f $R/usr/bin/pkgfile
+ok "apk -X URL add, --cache-dir DIR add: the applet is found past an option's value (the stub's write needs / writable)" "gl apk -X http://x/y --no-progress add qq </dev/null && rm -f $R/usr/bin/pkgfile && gl apk --cache-dir /x add zz </dev/null && [ \"\$(cat $R/usr/bin/pkgfile)\" = pkg ] && grep -qx -- '--cache-dir /x add zz' $W/apk-calls && ro $R/usr/bin/t13"
 ok "apk while another change holds the lock: waits, then runs" "( exec 8>>$W/run2/apk.lock; flock 8; sleep 2 ) & sleep 0.5; gl apk fix 2>$W/err && grep -q 'waiting' $W/err && ro $R/usr/bin/t4"
 wait
 printf '#!/bin/sh\n[ -e /proc/$$/fd/8 ] && echo leaked > %s/fd8\nexit 0\n' $W > $W/apkfd; chmod +x $W/apkfd; rm -f $W/fd8

@@ -75,11 +75,22 @@ cmd_lock() {
     say "/ is locked"
 }
 
-# changes: does this apk command line change packages (an applet in it)
-changes() {
-    for _a in "$@"; do
-        case "$_a" in add|del|fix|upgrade|cache) return 0 ;; esac
+# applet ARGS: apk's command, the first word that is neither an option nor the
+# value of one that takes a separate value ("apk -X URL add x", not "apk search cache")
+applet() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        -p|--root|-X|--repository|--repositories-file|-C|--cache-dir|--keys-dir|--arch|--cache-max-age|--wait|--progress-fd) shift ;;
+        -*) ;;
+        *) echo "$1"; return 0 ;;
+        esac
+        shift
     done
+}
+
+# changes: does this apk command line change packages
+changes() {
+    case "$(applet "$@")" in add|del|fix|upgrade|cache) return 0 ;; esac
     return 1
 }
 
@@ -96,12 +107,7 @@ acknowledge() {
 }
 
 # refreshes: apk update changes no package, but apk takes its lock under /
-refreshes() {
-    for _a in "$@"; do
-        case "$_a" in -*) ;; update) return 0 ;; *) return 1 ;; esac
-    done
-    return 1
-}
+refreshes() { [ "$(applet "$@")" = update ]; }
 
 # simulates: apk -s changes nothing and takes no lock, so it needs neither / nor root
 simulates() {
