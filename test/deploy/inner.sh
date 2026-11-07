@@ -288,8 +288,9 @@ ok "remap with an empty map: nothing" ": > $W/acct/empty && ga_remap $W/acct/emp
 mkdir -p $W/shimc $W/acct/o5; cp -p $AN/* $W/acct/o5/ 2>/dev/null; echo 'carried:x:1:1::/:/bin/false' > $W/acct/o5/passwd; echo 'x.ga is theirs' > $W/acct/o5/x.ga
 printf '#!/bin/sh\ncase "$2" in *passwd.ga) stat -c %%a "${2%%passwd.ga}shadow.ga" > %s/shmode; exit 1 ;; esac\nexec /bin/chown "$@"\n' $W/acct > $W/shimc/chown; chmod +x $W/shimc/chown
 um=$(umask); umask 022
+PATH=$W/shimc:$PATH ga_merge $AO $AN $W/acct/o5 $W/acct/m5 >/dev/null 2>&1
 # shellcheck disable=SC2034  # read in the eval of ok()
-PATH=$W/shimc:$PATH ga_merge $AO $AN $W/acct/o5 $W/acct/m5 >/dev/null 2>&1; rc5=$?
+rc5=$?
 # shellcheck disable=SC2034  # read in the eval of ok()
 um2=$(umask); umask $um
 ok "merge: a failure after shadow.ga exists: it was 0600 meanwhile, nothing is left, the old files and a user's own *.ga stay, the caller's umask is back" "[ \$rc5 != 0 ] && [ \"\$(cat $W/acct/shmode)\" = 600 ] && [ -z \"\$(ls $W/acct/o5 | grep -E '^(passwd|group|shadow|subuid|subgid|report)\.ga|\.ga2\$')\" ] && grep -q '^carried:' $W/acct/o5/passwd && [ -e $W/acct/o5/x.ga ] && [ \"\$um2\" = 0022 ]"
