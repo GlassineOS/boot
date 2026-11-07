@@ -394,6 +394,14 @@ int main(int argc, char **argv)
     int b_ok = !load(&bak, p_ok ? pri.alt_lba : last) && bak.alt_lba == 1;
     if (p_ok && b_ok && bak.nent != pri.nent)
         die(3, "the primary and backup GPT differ in size");
+    /* the headers too, but for where each copy is (its own and the other's
+     * LBA, its array's LBA) and the two CRCs */
+    static const uint8_t same[][2] = { { 0, 16 }, { 20, 24 }, { 40, 72 }, { 80, 88 } };
+    for (unsigned k = 0; p_ok && b_ok && k < sizeof(same) / sizeof(same[0]); k++)
+        if (memcmp(pri.hdr + same[k][0], bak.hdr + same[k][0], same[k][1] - same[k][0]))
+            die(3, "the primary and backup GPT headers differ");
+    if (p_ok && b_ok && pri.hdr_size > 92 && memcmp(pri.hdr + 92, bak.hdr + 92, pri.hdr_size - 92))
+        die(3, "the primary and backup GPT headers differ");
     if (!p_ok && !b_ok)
         die(3, "no valid GPT");
     struct gpt *src = p_ok ? &pri : &bak;

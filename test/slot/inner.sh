@@ -83,6 +83,10 @@ ok "a broken primary entry array: rebuilt from the backup, both valid, the entry
 mkdisk; cp $I $W/orig.img; sgdisk -c 5:other $I >/dev/null
 dd if=$W/orig.img of=$I bs=512 skip=$(($(stat -c %s $I) / 512 - 33)) seek=$(($(stat -c %s $I) / 512 - 33)) count=33 conv=notrunc 2>/dev/null; snap
 ok "the copies differ beyond the slot attributes: exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'differ' $W/out && unchanged"
+# the headers differ (the disk GUID in the primary only); arrays the same
+mkdisk; cp $I $W/orig.img; sgdisk -U 6b1e44a2-8a3c-4e55-9f61-2a7d0c3b5e10 $I >/dev/null
+dd if=$W/orig.img of=$I bs=512 skip=$(($(stat -c %s $I) / 512 - 33)) seek=$(($(stat -c %s $I) / 512 - 33)) count=33 conv=notrunc 2>/dev/null; snap
+ok "the headers differ (disk GUID): exit 3, no write" "S set-active b; [ \$? = 3 ] && grep -q 'headers differ' $W/out && unchanged"
 
 # cut writes: the bootloader reads the primary, or the backup when the primary
 # is broken; the tool reads the same and rebuilds a broken copy from the other
