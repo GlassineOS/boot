@@ -52,7 +52,8 @@ retry that last case: the same bytes would end up as fragmented.
 
 **What can still break the file, and what happens then.** Every one of these ends in a
 checksum mismatch and a boot of the default slot. None of them can make the bootloader
-read outside userdata or boot a damaged image:
+read outside the partition the record names (Linux only ever names `USERDATA_PART`), or
+boot a damaged image:
 
 | Event | Effect |
 |---|---|
@@ -84,7 +85,8 @@ the record must not be confused with it or overwrite it. The bootloader already 
 this partition on every boot. A header v0 image ends where its sizes say it does, so
 nothing should read past the image; #55 checks that this bootloader doesn't. Every
 image these boards boot ends before the record: the packer's limit is
-`PART_SIZE - 65536`.
+`PART_SIZE - 65536`, where `PART_SIZE` is board.conf's constant, and `install` checks
+that the real partition is at least that big.
 
 Alternatives considered, and why not:
 
@@ -132,7 +134,11 @@ with its own id ([kernel-artifacts.md](kernel-artifacts.md)).
 **The bootloader accepts a record only if** the magic and `format` match, bytes 104 to
 127 are zero, `1 ≤ extent_count ≤ 248`, every extent lies inside the named partition
 (checked without overflow), the extents add up to exactly `image_size / 4096` blocks,
-and `image_size` is at most `PART_SIZE - 65536`.
+and `image_size` is at most the boot partition's real size (from the partition table)
+minus 65536. The bootloader doesn't know board.conf. Its limit is never the smaller
+one, because the real size is at least `PART_SIZE`. It checks the partition name only
+if there is room (optional, below): without that check, a wrong name can make it read
+another partition, but never write one, and the sha256 still rejects what it reads.
 
 ## The one-shot
 
@@ -143,6 +149,17 @@ written by the kernel's reboot-mode driver into the PMIC register that already c
 a new `mode-blocklist` entry in the Note Air's device tree (`linux`). #55 picks the value
 from the ones the bootloader doesn't already use. It can't be `recovery`: that reason
 boots the recovery partition, which keeps the mainline recovery (decision 0010).
+
+The reason is written by the reboot-mode driver of the kernel that is **running** when
+`reboot-test` reboots, not the candidate. For a mode its device tree doesn't list, that
+driver writes nothing (`get_reboot_mode_magic` returns 0 and `reboot_mode_notify`
+writes only `if (magic)`, `drivers/power/reset/reboot-mode.c:75-112`, `linux@d476aaa`).
+Today the Note Air's PON node lists only `bootloader` and `recovery`
+(`arch/arm64/boot/dts/qcom/pm660.dtsi:54-55`), and the board's device tree adds none.
+On such a kernel `glassine-reboot blocklist` is a plain reboot. So `install` and
+`reboot-test` refuse unless the running kernel lists the mode
+(`/sys/class/reboot-mode/*/reboot_modes`, the same driver, `reboot-mode.c:44`), and
+`HANDOFF=blocklist` needs a current kernel built with it.
 
 **Why it's entered once:** the bootloader clears the reason after reading it, as it
 does for `recovery` today. Any later reset, whether a watchdog bite, a panic
@@ -167,6 +184,7 @@ in the initramfs changes for this hand-off.
 | the candidate hangs, with the watchdog armed | the watchdog resets, then the default slot |
 | the candidate hangs before anything arms the watchdog | **a long press**, then the default slot (below) |
 | the candidate boots but fails its health check, or ends before it | the default slot at the next boot |
+| the shutdown after `reboot-test` is cut (a hang and a long press, a power loss), so the reason never reaches the PMIC | the default slot, which reads as `no-boot` (below) |
 
 In every row, the next boot is the previous kernel, and `state/kernel` marks the
 candidate failed. A trial that reached the initramfs leaves `tries=0`. One that didn't
@@ -175,8 +193,10 @@ the initramfs. That's what kernel-artifacts.md's new generic `requested` key is 
 `reboot-test` sets it. At the next boot, `glassine-bootimg-promote` finds it set, with
 `tries=1` and a boot that isn't the candidate's. It runs the record and read-back
 checks again, and marks the candidate failed with reason `handoff` if they fail, or
-`no-boot` if they pass (the kernel died early). Then it clears `requested`. If the
-bootloader passes `glassine.handoff_err=` (optional, below), that decides it instead.
+`no-boot` if they pass. `no-boot` means the kernel died before the initramfs, or the
+shutdown never reached the reboot: `status` says both and offers `retry`, which is
+the right step for the second. Then it clears `requested`. If the bootloader passes
+`glassine.handoff_err=` (optional, below), that decides it instead.
 
 **Open: a hang before the watchdog is armed.** The Note Air page says a hang with no
 armed watchdog needs a long press
@@ -208,8 +228,10 @@ The build has about 16 bytes free (hub#53), so this is the smallest set that's s
 5. On any failure in 2 to 4, boot the default slot as if there were no reason. No retry
    and no write to storage.
 
-**Optional,** only if there's room: append `glassine.handoff_err=<step>` on a rejected
-record, so Linux can tell a rejected record from an early crash without guessing.
+**Optional,** only if there's room:
+- append `glassine.handoff_err=<step>` on a rejected record, so Linux can tell a
+  rejected record from an early crash without guessing;
+- refuse a record whose partition name isn't `userdata`.
 
 Also for #55 to check, without building anything: a bootloader without this change
 treats an unknown reason as no reason, and nothing in this bootloader reads the default
@@ -230,6 +252,10 @@ kernel-artifacts.md says. What is specific:
 
 1. The checks of kernel-artifacts.md, plus:
    - the `abl` check above;
+   - the running kernel lists `BLOCKLIST_REBOOT_REASON` in
+     `/sys/class/reboot-mode/*/reboot_modes` (the one-shot, above);
+   - the candidate's device tree has the `mode-blocklist` entry too, so accepting it
+     can't lock out the next hand-off;
    - userdata passes the file-system checks above;
    - the default slot is at least `PART_SIZE`;
    - the default image ends before the record area.
@@ -238,7 +264,9 @@ kernel-artifacts.md says. What is specific:
 3. Pack the image (`lib/glassine-bootimg-pack`) into `<prefix>/kernel/.<id>.img.new` on
    userdata (allocated, then written in full). Then `fsync`, rename it to `<id>.img`,
    `fsync` the directory, `chattr +i`, `sync`. An existing `<id>.img` with the right
-   sha256 is kept as it is.
+   sha256 is kept as it is. One with another sha256 is unlocked (`chattr -i`) and
+   removed first, because a rename can't replace an immutable file. That is safe after
+   step 2: no record names it any more.
 4. Map it with `FIEMAP` and check the extents (above).
 5. Read the image back through the raw partition at those extents with `O_DIRECT`, past
    the block device's cache, as the bootloader will, and compare the sha256. On a
@@ -252,7 +280,8 @@ The record goes before `state/kernel`, so a cut install leaves at worst a record
 candidate. That's harmless, and the next `install` or `cancel` clears it.
 
 **`reboot-test`:**
-- It refuses during a trial, and below the shutdown switch's battery rule
+- It refuses during a trial, when the running kernel no longer lists the mode (as
+  `install`), and below the shutdown switch's battery rule
   (`SWITCH_MIN_CAPACITY`, or the charger), so the trial, and an accept inside it,
   start with enough battery.
 - The record must name `candidate_img`, and steps 4 and 5 must pass again. This catches
@@ -260,25 +289,47 @@ candidate. That's harmless, and the next `install` or `cancel` clears it.
 - Then `requested=<candidate_img>` goes into `state/kernel`, followed by the orderly
   reboot with `BLOCKLIST_REBOOT_REASON` (`glassine-reboot-clean`).
 
+**Writing the default slot** (accept, `rollback`, `repair`):
+
+1. Keep the default image's own bytes in RAM (`/run`), with the length taken from its
+   header, never the whole partition.
+2. `state/kernel`: `writing=<id>` and `writing_op=accept`, `rollback` or `repair`
+   (kernel-artifacts.md).
+3. Write with `O_DIRECT`: the image's first 4 KiB as zeros, then the rest, then its
+   first 4 KiB, so a cut write leaves no valid header. Read it back with `O_DIRECT`,
+   past the block device's cache, and compare the sha256. One retry. The image ends
+   before the record area. Today's `write_dev` reads back through the page cache
+   (`dd conv=fsync`, then `head -c`, `sbin/glassine-bootimg:61-75`), so it checks the
+   cache, not the eMMC. It changes with this.
+4. If both tries fail while Linux runs, the RAM copy from step 1 goes back the same way,
+   as today's promote does with its saved slot (`sbin/glassine-bootimg:230-235`).
+   - If that passes: `writing` and `writing_op` are cleared, and `state/kernel` is as it
+     was before the command, except that a failed accept marks the candidate failed
+     (reason `default slot write`). The command exits 1.
+   - If it fails too: `repair`'s sources are tried in turn.
+   - If none passes: `writing` stays, `status` says the default slot holds no bootable
+     image, and the next boot needs the escape in the table below. Nothing reboots by
+     itself.
+
 **accept** (`glassine-bootimg-promote`, in the trial, after the health check):
 
-1. `state/kernel`: `accepting=<candidate_img>`.
-2. Write the image (from `<id>.img`) to the default slot with `write_dev`: read-back,
-   one retry. The image ends before the record area.
-3. `state/kernel`: `current` ← the candidate, the old one to `previous`; the candidate
-   keys, `requested` and `accepting` cleared.
-4. Clear the record.
+1. Write the default slot (above) from `<id>.img`, with `writing_op=accept`.
+2. `state/kernel`: `current` ← the candidate, the old one to `previous`; the candidate
+   keys, `requested`, `writing` and `writing_op` cleared.
+3. Clear the record.
 
 So a cold boot without the reason runs the accepted kernel (hub#54's last point): yes,
 accept writes the default slot. Without that, the accepted kernel would run only on
 trial boots.
 
-If accept is cut between 2 and 3, the next boot runs the candidate from the default
-slot, with `tries=0`. If it is cut during 2, nothing in the default slot is bootable
-(see the table below). So the generic trial detection changes in kernel-artifacts.md:
-a boot whose `glassine.img=` equals `accepting` finishes the accept (step 3 onwards)
-instead of failing the candidate. That boot already passed the health check in the
-trial.
+If accept or `rollback` is cut after its write and before its state write, the next
+boot runs the new image from the default slot. kernel-artifacts.md ("A kernel trial")
+calls a boot whose `glassine.img=` equals `writing` a **finishing boot**: it is not a
+trial, takes no try, and promote completes what `writing_op` names. After a finishing
+accept it also clears the record (accept step 3). For an accept, that boot's kernel
+already passed the health check in the trial. If the write was cut
+before the last header write, nothing in the default slot is bootable (the table
+below).
 
 **fail** (promote, when the candidate failed): clear the record, then the generic
 failure. The file is kept for `retry`.
@@ -291,19 +342,23 @@ and `requested`. The default image isn't touched, and the file is kept for a lat
 `install`. From the recovery (`reset --now`, `rollback`), a failed record clear is
 logged and doesn't stop the escape route: without the reason, the record is never read.
 
-**`rollback`:** as kernel-artifacts.md says. It refuses below the battery rule. The
-previous image is written to the default slot as in accept step 2, after the same
-`accepting` guard. If `<previous_img>.img` is gone (userdata formatted), it's packed
-again from `modules/<previous>/` and `boot/` on the system partition. The image file
-only caches those.
+**`rollback`:** as kernel-artifacts.md says (it cancels a kernel candidate first). It
+refuses below the battery rule. The previous image is written to the default slot
+(above, `writing_op=rollback`), then `current` and `previous` swap, and `writing` and
+`writing_op` are cleared. If `<previous_img>.img` is gone (userdata formatted), it's
+packed again from `modules/<previous>/` and `boot/` on the system partition. The image
+file only caches those.
 
 **`repair`** (new, mostly for the recovery): writes a known-good image to the default
-slot. It tries these in order: the `accepting` image (it passed the health check), the
-`current_img` file, then a fresh pack of `current` from the system partition. Each
-source is checked against its manifest's sha256 first.
+slot. Each source is checked against its manifest's sha256 first.
+- If `writing` names an accept or a rollback whose image file is there, it writes that
+  image and leaves `writing` and `writing_op` as they are, so the next boot finishes
+  that operation. For an accept, that image passed the health check.
+- Otherwise it writes `current_img`'s image (`writing_op=repair`): from its file, or
+  else a fresh pack of `current` from the system partition.
 
 **Files kept:** the images of `current_img`, `previous_img`, `candidate_img` and
-`accepting`. Others are removed (`chattr -i`, then `rm`), never while a record names
+`writing`. Others are removed (`chattr -i`, then `rm`), never while a record names
 them.
 
 ## Each step that touches the bootloader or a partition
@@ -321,13 +376,14 @@ in its form.
 | reboot-test: the reason | the PMIC register | an old bootloader ignores it (#55 checks this) | none needed |
 | the bootloader's block-list read | nothing | the default slot boots | none needed |
 | the trial kernel | nothing before its own health check | a reset, then the default slot; a long press for an early hang (open, above) | a long press |
-| accept, rollback, repair: the default image | the default slot | **a cut write leaves no bootable default image.** The record still names the accepted image, but nothing can set the reason without a running Linux | cover closed at power-on → fastboot → `fastboot oem reboot-recovery` → the recovery runs `glassine-bootimg repair`. Last resort: write the default slot over EDL from a host |
+| accept, rollback, repair: the default image | the default slot | a write that fails while Linux runs: the old image's bytes go back from RAM (above). **A cut write leaves no bootable default image**, with no valid header because the header goes last. The record still names the accepted image, but nothing can set the reason without a running Linux | cover closed at power-on → fastboot → `fastboot oem reboot-recovery` → the recovery runs `glassine-bootimg repair`. Until the recovery carries `repair`, the only escape is writing the default slot over EDL from a host. That is also the last resort afterwards |
 
 The recovery has to carry what `repair` needs: `glassine-bootimg`, and for a fresh pack,
-`lib/glassine-bootimg-pack` with its Python. Until it does, `repair` from the recovery
-works only from a file that's still on userdata.
+`lib/glassine-bootimg-pack` with its Python. `HANDOFF=blocklist` waits for that (board
+keys, below), so the fastboot route exists before the first default-slot write.
 
-#55 also says what the bootloader does with a default image that fails its own checks.
+#55 also says what the bootloader does with a default image that fails its own checks,
+including one with no valid header.
 If it could boot a valid record then, without the reason, the last row would recover by
 itself. That is optional and isn't required for a go.
 
@@ -335,7 +391,7 @@ itself. That is optional and isn't required for a go.
 
 | Key | Note Air | Meaning |
 |---|---|---|
-| `HANDOFF` | `blocklist` | set only once this page, the writer (#56) and the bootloader side (#55) are all done |
+| `HANDOFF` | `blocklist` | set only once all of these hold: this page, the writer (#56) and the bootloader side (#55) are done; the current kernel's device tree has `mode-blocklist`; and the recovery carries `glassine-bootimg repair` with the packer |
 | `BLOCKLIST_RECORD_PART` | its default slot | the default slot, which holds the record |
 | `BLOCKLIST_REBOOT_REASON` | `blocklist` | the reason that requests the one-shot |
 | `BLOCKLIST_ABL_SHA256` | the sha256 of the bootloader build(s) from #55 | the builds known to read format 1 |
@@ -349,24 +405,28 @@ What changes with it:
 
 - In this repository:
   - [kernel-artifacts.md](kernel-artifacts.md): the hand-off table links here; the
-    generic `requested` and `accepting` keys, and the trial detection for `accepting`;
-    `state/bootimg/<id>.img` isn't used with `blocklist`.
+    generic `requested`, `writing` and `writing_op` keys, and the finishing boot in "A
+    kernel trial" (both in this pull request); `state/bootimg/<id>.img` isn't used with
+    `blocklist`.
   - [boot.md](boot.md) and `conf/board.conf.example`: the board keys above.
   - `sbin/glassine-bootimg`: `install`, `reboot-test`, `retry`, `cancel`, `rollback`,
-    `repair` for `blocklist`; no whole-slot copies.
+    `repair` for `blocklist`; no whole-slot copies; `write_dev` with `O_DIRECT` and the
+    header last; the reboot-mode check.
   - `lib/glassine-blocklist` (new): the record's encoding and decoding, the `FIEMAP`
     mapping and checks, the default-image length from its header, and the raw
     read-back. The host tests and promote's `handoff` or `no-boot` verdict use the same
     reader.
-  - `openrc/glassine-bootimg-promote`: accept with `accepting`, fail clears the record,
-    the `requested` check.
+  - `openrc/glassine-bootimg-promote`: accept with `writing`, the finishing boot, fail
+    clears the record, the `requested` check.
   - `lib/glassine-bootimg-pack`: the `PART_SIZE - 65536` limit for these boards.
   - `test/bootimg`: host tests for `install`, `accept`, `cancel`, `rollback`, `retry`,
     `repair` and `reboot-test`. They cover:
     - a file whose blocks changed after `install`;
     - a torn record;
     - a default image that reaches the record area;
-    - a cut accept between its steps;
+    - a cut accept or rollback between its steps, and a finishing boot of each;
+    - a failed default-slot write, put back from RAM;
+    - a running kernel without the reboot mode;
     - too many extents;
     - unwritten extents;
     - `reboot-test` during a trial.
