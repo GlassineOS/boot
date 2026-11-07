@@ -207,6 +207,7 @@ state/bootimg/<id>.manifest  its record (below)
 | `tries` | boots the candidate has left (0–1) |
 | `failed`, `failed_img` | the last candidate that failed, and `reason` in its image record |
 | `deferred` | a release waiting for its install: it arrived during a trial, or while a deployment was a candidate or staged |
+| `deferred_dtb`, `deferred_initramfs` | the device tree (`<device>@<id>`) and initramfs (`<commit12>`) that deferred install was checked with, and installs with |
 | `requested` | the `candidate_img` that `reboot-test` asked the bootloader for; cleared at the next boot. A boot that isn't the candidate's while `tries=1` means the trial never started: the candidate is failed, with the hand-off's reason |
 | `writing`, `writing_op` | the image a command is writing to the default slot, and which command (`accept`, `rollback` or `repair`); set before the write, cleared after the state write that completes it. A boot of that image is a finishing boot (below) |
 
@@ -244,7 +245,9 @@ keeps the files for a later `install`.
   because the selected kernel isn't the running one.
 - While a deployment is a candidate or staged: `install` doesn't refuse, it puts the
   release in `deferred`, and `glassine-bootimg-promote` installs it automatically after
-  that deployment is accepted or failed.
+  that deployment is accepted or failed. `install` checks the device tree and the
+  initramfs first, so a deferral is never one it would refuse. `reboot-test` and
+  `retry` refuse then, so no kernel trial starts.
 
 The same release may be `current` and `candidate` with different `_img` ids (a new device
 tree or initramfs for the running kernel).

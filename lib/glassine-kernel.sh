@@ -9,7 +9,8 @@
 # write of state/kernel a gs_update under state/.lock:
 #   state/kernel                 current previous current_img previous_img
 #                                candidate candidate_img tries failed failed_img
-#                                deferred requested writing writing_op
+#                                deferred deferred_dtb deferred_initramfs
+#                                requested writing writing_op
 #   state/bootimg/<id>.img       a packed image, kept while a key above names it
 #   state/bootimg/<id>.manifest  its record (format=1, FR-003)
 # The kernel comes from modules/<release>/Image.gz, the device tree and the
@@ -41,6 +42,7 @@ SYS=${GLASSINE_BI_SYSTEM:-$SYSTEM_MNT}
 S=$SYS/state K=$SYS/state/kernel BI=$SYS/state/bootimg
 GK_FORMAT=1
 GK_KEYS='current previous current_img previous_img candidate candidate_img tries failed failed_img deferred requested writing writing_op'
+# also in state/kernel, not printed by status: deferred_dtb, deferred_initramfs
 HANDOFF=${HANDOFF:-} DEVICE=${DEVICE:-}
 GK_RAM=''
 GK_STARTED=$TMP/glassine-bootimg.started
@@ -107,9 +109,11 @@ gk_u32() { od -An -tu4 -j"$2" -N4 "$1" 2>/dev/null | tr -d ' '; }
 
 # gk_hdr_size FILE: the size of the boot image whose header v0 starts FILE
 # (header page + kernel + ramdisk + second, each padded to the page); empty
-# when FILE starts with no header
+# when FILE starts with no header, or with a header of another version (its
+# image has more sections than v0 sizes: the packer only writes v0)
 gk_hdr_size() {
     [ "$(head -c 8 "$1" 2>/dev/null)" = 'ANDROID!' ] || return 0
+    [ "$(gk_u32 "$1" 40)" = 0 ] || return 0
     _ks=$(gk_u32 "$1" 8) _rs=$(gk_u32 "$1" 16) _ss=$(gk_u32 "$1" 24) _ps=$(gk_u32 "$1" 36)
     case "$_ps" in 2048|4096|8192|16384) ;; *) return 0 ;; esac
     echo $((_ps + (_ks + _ps - 1) / _ps * _ps + (_rs + _ps - 1) / _ps * _ps + (_ss + _ps - 1) / _ps * _ps))
@@ -169,6 +173,15 @@ gk_slot_holds() {
     [ "$(gk_sha_dev "$1" "$_sz")" = "$(man "$2" sha256)" ]
 }
 
+# gk_deploy_trial: why a deployment trial is pending (a staged deployment or a
+# deployment candidate), empty if none: one trial at a time
+gk_deploy_trial() {
+    _dc=$(gs_kv "$S/deploy" candidate) _dcur=$(gs_kv "$S/deploy" current) _dst=$(gs_kv "$S/deploy" staged)
+    if [ -n "$_dst" ]; then echo "the staged deployment $_dst"
+    elif [ -n "$_dc" ] && [ "$_dc" != "$_dcur" ]; then echo "the deployment candidate $_dc"
+    fi
+}
+
 # --- records -------------------------------------------------------------------
 # gk_prune: drop every state/bootimg/*.img no key names (FR-003); the
 # manifests stay
@@ -212,31 +225,37 @@ gk_seed() {
     echo "$_id"
 }
 
-# gk_write_default ID OP: FR-009, the default slot gets ID's image for OP
-# (accept, rollback). The image the slot holds is in RAM first (gk_ram), and
-# with no current_img it is seeded (FR-015: current_img set in the same write
-# as `writing`, so whatever completes OP later finds it). 0 = written;
-# 1 = failed, the old image back on the slot, writing cleared; 2 = failed and
-# so did the restore: writing stays set, the default slot can't boot.
+# gk_write_default ID OP [KEY=VALUE...]: FR-009, the default slot gets ID's
+# image for OP (accept, rollback). The image the slot holds is in RAM first
+# (gk_ram), and with no current_img it is seeded (FR-015: current_img set in
+# the same write as `writing`, so whatever completes OP later finds it). The
+# KEY=VALUEs go in that write too, and get their old values back with the
+# restore. 0 = written; 1 = failed, the old image back on the slot, writing
+# cleared; 2 = failed and so did the restore: writing stays set, the default
+# slot can't boot.
 gk_write_default() {
-    gk_ram "$DEFDEV" || log "$2: the default slot holds no image to keep: nothing to put back if this write fails"
+    _wid=$1 _wop=$2; shift 2
+    _undo=''
+    for _a in "$@"; do _undo="$_undo ${_a%%=*}=$(k "${_a%%=*}")"; done
+    gk_ram "$DEFDEV" || log "$_wop: the default slot holds no image to keep: nothing to put back if this write fails"
     _seed=''
     [ -n "$(k current_img)" ] || _seed=$(gk_seed)
     # this boot started the write (in RAM: a later boot of that image is a
     # finishing boot, this one isn't)
-    echo "$1" > "$GK_STARTED" || die "cannot write $GK_STARTED"
-    kset "writing=$1" "writing_op=$2" ${_seed:+"current_img=$_seed"}
-    log "$2: writing image $1 to the default slot ($DEFDEV)"
-    if gk_put "$BI/$1.img" "$DEFDEV"; then rm -f "$GK_RAM"; return 0; fi
+    echo "$_wid" > "$GK_STARTED" || die "cannot write $GK_STARTED"
+    kset "writing=$_wid" "writing_op=$_wop" ${_seed:+"current_img=$_seed"} "$@"
+    log "$_wop: writing image $_wid to the default slot ($DEFDEV)"
+    if gk_put "$BI/$_wid.img" "$DEFDEV"; then rm -f "$GK_RAM"; return 0; fi
     if [ -n "$GK_RAM" ] && gk_put "$GK_RAM" "$DEFDEV"; then
         rm -f "$GK_RAM"
-        kset writing= writing_op=
+        # shellcheck disable=SC2086  # KEY=VALUE words without spaces
+        kset writing= writing_op= $_undo
         rm -f "$GK_STARTED"
-        log "$2: writing the default slot failed; its old image is back"
+        log "$_wop: writing the default slot failed; its old image is back"
         return 1
     fi
     rm -f "$GK_RAM"
-    log "$2: writing the default slot failed, and putting its old image back failed too: the default slot cannot boot (writing=$1 stays)"
+    log "$_wop: writing the default slot failed, and putting its old image back failed too: the default slot cannot boot (writing=$_wid stays)"
     return 2
 }
 
@@ -261,30 +280,17 @@ gk_install() {
     [ -r "$_md/kernel.manifest" ] && [ -r "$_md/Image.gz" ] || die "install $_rel: $_md has no kernel.manifest or Image.gz"
     gk_record_ok "$_md/kernel.manifest"
 
-    # one trial at a time: during a deployment candidate, a staged deployment
-    # or a kernel trial, the release waits in deferred (Story 1.5)
-    _dc=$(gs_kv "$S/deploy" candidate) _dcur=$(gs_kv "$S/deploy" current) _ds=$(gs_kv "$S/deploy" staged)
-    _ci=$(k candidate_img) _run=$(run_id) _why=''
-    if [ -n "$_ds" ]; then _why="the staged deployment $_ds has switched and been accepted or failed"
-    elif [ -n "$_dc" ] && [ "$_dc" != "$_dcur" ]; then _why="the deployment candidate $_dc is accepted or failed"
-    elif [ -n "$_ci" ] && [ "$_run" = "$_ci" ]; then _why="this kernel trial's verdict"
-    fi
-    if [ -n "$_why" ]; then
-        kset "deferred=$_rel"
-        log "install $_rel: deferred until $_why"
-        echo "glassine-bootimg: kernel $_rel will be installed after $_why"
-        return 0
-    fi
-    # a candidate whose trial ended without a verdict: the verdict promote
-    # would give (Story 1.7)
-    [ -n "$_ci" ] && [ "$(k tries)" = 0 ] && gk_fail no-verdict
-
     # the device tree and the initramfs (FR-005)
     if [ -z "$_dtb" ]; then
         [ -n "$DEVICE" ] || die "install $_rel: no DEVICE in $BOARD; name the device tree with --dtb DEVICE@ID"
-        _dtb=$(gs_kv "$_md/kernel.manifest" dtbs | tr ' ' '\n' | grep -E "^$DEVICE@[0-9a-f]+\$")
-        [ -n "$_dtb" ] || die "install $_rel: its kernel.manifest lists no device tree for $DEVICE; name one with --dtb DEVICE@ID"
-        [ "$(echo "$_dtb" | wc -l)" = 1 ] || die "install $_rel: its kernel.manifest lists several device trees for $DEVICE; name one with --dtb"
+        _n=0
+        for _e in $(gs_kv "$_md/kernel.manifest" dtbs); do
+            [ "${_e%@*}" = "$DEVICE" ] || continue
+            case "${_e##*@}" in ''|*[!0-9a-f]*) continue ;; esac
+            _dtb=$_e _n=$((_n + 1))
+        done
+        [ "$_n" != 0 ] || die "install $_rel: its kernel.manifest lists no device tree for $DEVICE; name one with --dtb DEVICE@ID"
+        [ "$_n" = 1 ] || die "install $_rel: its kernel.manifest lists several device trees for $DEVICE; name one with --dtb"
     fi
     case "$_dtb" in *@*) ;; *) die "install $_rel: --dtb takes DEVICE@ID" ;; esac
     [ -r "$SYS/boot/dtb/$_dtb.dtb" ] || die "install $_rel: no $SYS/boot/dtb/$_dtb.dtb"
@@ -293,12 +299,13 @@ gk_install() {
         [ -z "$_cimg" ] || _ird=$(man "$_cimg" initramfs)
         [ -n "$_ird" ] || die "install $_rel: the current image names no initramfs; name one with --initramfs COMMIT12"
     fi
-    _irf=$SYS/boot/initramfs/$_ird.cpio.gz
+    _irf=$SYS/boot/initramfs/$_ird.cpio.gz _irm=$SYS/boot/initramfs/$_ird.manifest
     [ -r "$_irf" ] || die "install $_rel: no $_irf"
     # rule 1 (refuse) and rule 2 (warn) of "Which combinations boot" (FR-006)
-    [ ! -r "$SYS/boot/initramfs/$_ird.manifest" ] || gk_record_ok "$SYS/boot/initramfs/$_ird.manifest"
+    [ -r "$_irm" ] || die "install $_rel: no $_irm (rule 1 can't be checked)"
+    gk_record_ok "$_irm"
     _prov=" $(gs_kv "$_md/kernel.manifest" provides) " _miss=''
-    for _n in $(gs_kv "$SYS/boot/initramfs/$_ird.manifest" needs); do
+    for _n in $(gs_kv "$_irm" needs); do
         case "$_prov" in *" $_n "*) ;; *) _miss="$_miss $_n" ;; esac
     done
     [ -z "$_miss" ] || die "install $_rel: the kernel doesn't provide what initramfs $_ird needs:$_miss"
@@ -306,6 +313,24 @@ gk_install() {
     *" $_dtb "*) ;;
     *) log "install $_rel: warning: device tree $_dtb was not built with this kernel; its trial decides" ;;
     esac
+
+    # one trial at a time: during a deployment candidate, a staged deployment
+    # or a kernel trial, the release waits in deferred, with the device tree
+    # and initramfs checked above (Story 1.5)
+    _ci=$(k candidate_img) _run=$(run_id)
+    _why=$(gk_deploy_trial)
+    if [ -n "$_why" ]; then _why="$_why is accepted or failed"
+    elif [ -n "$_ci" ] && [ "$_run" = "$_ci" ]; then _why="this kernel trial's verdict"
+    fi
+    if [ -n "$_why" ]; then
+        kset "deferred=$_rel" "deferred_dtb=$_dtb" "deferred_initramfs=$_ird"
+        log "install $_rel: deferred until $_why (device tree $_dtb, initramfs $_ird)"
+        echo "glassine-bootimg: kernel $_rel will be installed after $_why"
+        return 0
+    fi
+    # a candidate whose trial ended without a verdict: the verdict promote
+    # would give (Story 1.7)
+    [ -n "$_ci" ] && [ "$(k tries)" = 0 ] && gk_fail no-verdict
 
     # pack (rule 3: the packer checks PART_SIZE; the slots are checked here)
     _img=$(mktemp "$TMP/glassine-bootimg.XXXXXX") || die "mktemp in $TMP failed"
@@ -339,7 +364,7 @@ gk_install() {
         gk_prune
         die "install $_rel: writing the test slot failed: there is no kernel candidate now (the default slot is untouched)"
     fi
-    if [ "$(k deferred)" = "$_rel" ]; then kset "candidate=$_rel" "candidate_img=$_id" tries=1 deferred=
+    if [ "$(k deferred)" = "$_rel" ]; then kset "candidate=$_rel" "candidate_img=$_id" tries=1 deferred= deferred_dtb= deferred_initramfs=
     else kset "candidate=$_rel" "candidate_img=$_id" tries=1; fi
     gk_prune
     log "install $_rel: the candidate, on the test slot (image $_id, $_size bytes)"
@@ -392,11 +417,13 @@ gk_reboot_test() {
     _ci=$(k candidate_img)
     [ -n "$_ci" ] || die "reboot-test: no kernel candidate"
     [ "$(run_id)" != "$_ci" ] || die "reboot-test: this is the candidate's trial boot already"
+    _why=$(gk_deploy_trial)
+    [ -z "$_why" ] || die "reboot-test: $_why is waiting for its trial: one trial at a time"
     gk_slot_holds "$TESTDEV" "$_ci" || die "reboot-test: the test slot doesn't hold the candidate's image any more; run glassine-bootimg retry"
     kset "requested=$_ci"
     log "reboot-test: $(k candidate) ($_ci)"
     [ -n "${GLASSINE_BI_NOREBOOT:-}" ] && return 0
-    exec 9>&-       # the lock stays here: the shutdown's own steps need it
+    exec 9>&-       # the lock released: the shutdown's own steps (the switch) take it
     exec "$REBOOT_CLEAN" "$TEST_REBOOT_REASON"
 }
 
@@ -407,6 +434,8 @@ gk_retry() {
     _id=$(k candidate_img) _from=candidate
     if [ -z "$_id" ]; then _id=$(k failed_img) _from=failed; fi
     [ -n "$_id" ] || die "retry: no kernel candidate and no failed one"
+    _why=$(gk_deploy_trial)
+    [ -z "$_why" ] || die "retry: $_why is waiting for its trial: one trial at a time"
     gk_img_ok "$_id" || die "retry: $BI/$_id.img is gone or damaged; install the kernel again"
     _rel=$(man "$_id" release)
     if ! gk_slot_holds "$TESTDEV" "$_id"; then
@@ -457,13 +486,16 @@ gk_rollback() {
     _pi=$(k previous_img) _p=$(k previous)
     [ -n "$_pi" ] && gk_img_ok "$_pi" || die "rollback: no previous image"
     [ -z "$_p" ] || [ -d "$SYS/modules/$_p" ] || log "rollback: warning: $SYS/modules/$_p is gone (that kernel boots without modules)"
+    # a candidate is cancelled in the same state write as `writing`, so a
+    # write that fails and is put back leaves it as it was (FR-009)
     _c=$(gs_kernel_candidate "$K")
     if [ -n "$_c" ]; then
-        gs_kernel_cancel "$K" || die "cannot write $K"
-        log "rollback: the kernel candidate $_c is cancelled first"
-        echo "glassine-bootimg: kernel candidate $_c cancelled first"
+        gk_write_default "$_pi" rollback candidate= candidate_img= tries= requested= || exit 1
+        log "rollback: the kernel candidate $_c is cancelled"
+        echo "glassine-bootimg: kernel candidate $_c cancelled"
+    else
+        gk_write_default "$_pi" rollback || exit 1
     fi
-    gk_write_default "$_pi" rollback || exit 1
     kset "current=$_p" "previous=$(k current)" "current_img=$_pi" "previous_img=$(k current_img)" writing= writing_op=
     rm -f "$GK_STARTED"
     gk_prune

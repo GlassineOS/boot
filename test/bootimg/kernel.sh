@@ -20,6 +20,9 @@ boot() { echo "panic=5 rdinit=/init glassine.img=$1" > $W/cmdline; }
 bset() { sed -i "s#^$1=.*#$1=$2#" $W/board.conf; }
 # holds DEV ID: DEV's first bytes are ID's image
 holds() { [ "$(head -c "$(gs_kv $BI/$2.manifest size)" "$1" | sha256sum | cut -d' ' -f1)" = "$(gs_kv $BI/$2.manifest sha256)" ]; }
+# same A B: the same keys set to the same values (gs_update may reorder them,
+# or write a key empty)
+same() { [ "$(grep -v '=$' "$1" | sort)" = "$(grep -v '=$' "$2" | sort)" ]; }
 # the counter hook: the next N writes are corrupted after their body
 corrupt() { echo "$1" > $W/cnt; }
 export GLASSINE_BI_AFTER_BODY='n=$(cat /k/cnt 2>/dev/null || echo 0); echo $((n - 1)) > /k/cnt; [ "$n" -le 0 ] || printf X | dd of="$2" bs=1 seek=5000 conv=notrunc 2>/dev/null; true'
@@ -70,8 +73,13 @@ ok "a release without modules/: refused, nothing written" "! $B install 9.9.9 --
 ok "Image.gz of another release: refused, no image, no temp file" "! $B install 7.1.0-bad --initramfs c1 2>$W/err && grep -q 'is not kernel release 7.1.0-bad' $W/err && cmp -s $K $W/k0 && [ -z \"\$(ls $BI)\" ] && [ -z \"\$(ls $W/run)\" ]"
 ok "no --initramfs and no current image to take it from: refused, names the flag" "! $B install 7.1.0-a 2>$W/err && grep -q -- '--initramfs COMMIT12' $W/err && cmp -s $K $W/k0"
 ok "rule 1: the initramfs needs what the kernel doesn't provide: refused" "! $B install 7.1.0-a --initramfs c2 2>$W/err && grep -q 'needs: zram-writeback' $W/err && cmp -s $K $W/k0"
+mv $SYS/boot/initramfs/c2.manifest $W/c2.manifest
+ok "rule 1: an initramfs without a manifest: refused" "! $B install 7.1.0-a --initramfs c2 2>$W/err && grep -q 'c2.manifest' $W/err && cmp -s $K $W/k0"
+mv $W/c2.manifest $SYS/boot/initramfs/c2.manifest
 bset DEVICE ''
 ok "no DEVICE and no --dtb: refused, names the flag" "! $B install 7.1.0-a --initramfs c1 2>$W/err && grep -q -- '--dtb DEVICE@ID' $W/err && cmp -s $K $W/k0"
+bset DEVICE 'dev.'
+ok "DEVICE is a name, not a pattern: dev. doesn't pick dev1's tree" "! $B install 7.1.0-a --initramfs c1 2>$W/err && grep -q 'lists no device tree for dev\.' $W/err && cmp -s $K $W/k0"
 bset DEVICE dev1
 head -c 8192 /dev/zero > $W/small
 ok "rule 3: an image that doesn't fit the test slot: refused, slot untouched" "! GLASSINE_BI_TEST_DEV=$W/small $B install 7.1.0-a --initramfs c1 2>$W/err && grep -q \"doesn't fit $W/small\" $W/err && cmp -s $K $W/k0 && [ \$(tr -d '\\000' < $W/small | wc -c) = 0 ]"
@@ -102,9 +110,16 @@ ok "retry: the test slot written again, tries=1" "$B retry >/dev/null 2>&1 && ho
 # --- deferral (Story 1.5) -------------------------------------------------------
 printf 'current=d1\ncandidate=d2\ntries=2\n' > $SYS/state/deploy
 ok "a deployment candidate: install deferred, exit 0, the candidate kept" "$B install 7.1.0-a --initramfs c1 >$W/out 2>&1 && [ \"\$(kv deferred)\" = 7.1.0-a ] && [ \"\$(kv candidate_img)\" = $IDB ] && grep -q 'after the deployment candidate d2' $W/out"
-printf 'current=d1\nstaged=d3\n' > $SYS/state/deploy; gs_update $K deferred=
+ok "the deferred install keeps its device tree and initramfs" "[ \"\$(kv deferred_dtb)\" = dev1@aaaa ] && [ \"\$(kv deferred_initramfs)\" = c1 ]"
+ok "a deferred install with flags: the flags kept" "$B install 7.1.0-b --initramfs c1 --dtb dev1@bbbb >/dev/null 2>&1 && [ \"\$(kv deferred)\" = 7.1.0-b ] && [ \"\$(kv deferred_dtb)\" = dev1@bbbb ] && [ \"\$(kv deferred_initramfs)\" = c1 ]"
+cp $K $W/k0
+ok "an install that would be refused isn't deferred (rule 1, no initramfs to take)" "! $B install 7.1.0-a --initramfs c2 2>/dev/null && ! $B install 7.1.0-a 2>/dev/null && cmp -s $K $W/k0"
+ok "reboot-test during a deployment candidate: refused, nothing requested" "! $B reboot-test 2>$W/err && grep -q 'deployment candidate d2' $W/err && [ -z \"\$(kv requested)\" ]"
+ok "retry during a deployment candidate: refused, unchanged" "! $B retry 2>/dev/null && cmp -s $K $W/k0"
+printf 'current=d1\nstaged=d3\n' > $SYS/state/deploy; gs_update $K deferred= deferred_dtb= deferred_initramfs=
 ok "a staged deployment: deferred" "$B install 7.1.0-a --initramfs c1 >/dev/null 2>&1 && [ \"\$(kv deferred)\" = 7.1.0-a ]"
-printf 'current=d1\n' > $SYS/state/deploy; gs_update $K deferred=
+ok "reboot-test with a staged deployment: refused" "! $B reboot-test 2>$W/err && grep -q 'staged deployment d3' $W/err && [ -z \"\$(kv requested)\" ]"
+printf 'current=d1\n' > $SYS/state/deploy; gs_update $K deferred= deferred_dtb= deferred_initramfs=
 boot $IDB
 ok "status on the candidate's boot: state=trial" "[ \"\$(st state)\" = trial ]"
 ok "during the trial: install deferred" "$B install 7.1.0-a --initramfs c1 >/dev/null 2>&1 && [ \"\$(kv deferred)\" = 7.1.0-a ] && [ \"\$(kv candidate_img)\" = $IDB ]"
@@ -119,11 +134,25 @@ ok "cancel with no candidate: exit 0" "$B cancel >/dev/null 2>&1"
 boot $OLDID
 $B install 7.1.0-b --initramfs c1 --dtb dev1@bbbb >/dev/null 2>&1; gs_update $K tries=0
 ok "install with tries=0 on another boot: the old one failed (no-verdict) first, then installed" "$B install 7.1.0-a --initramfs c1 >/dev/null 2>&1 && [ \"\$(kv failed)\" = 7.1.0-b ] && [ \"\$(kv failed_img)\" = $IDB ] && [ \"\$(gs_kv $BI/$IDB.manifest reason)\" = no-verdict ] && [ \"\$(kv candidate_img)\" = $IDA ] && [ \"\$(kv tries)\" = 1 ]"
-ok "installing the deferred release clears deferred; the failed image is kept" "[ -z \"\$(kv deferred)\" ] && [ -e $BI/$IDB.img ]"
+ok "installing the deferred release clears deferred and its flags; the failed image is kept" "[ -z \"\$(kv deferred)\$(kv deferred_dtb)\$(kv deferred_initramfs)\" ] && [ -e $BI/$IDB.img ]"
 
 # --- accept, the first one: seeding (FR-015) ------------------------------------
 ok "accept on a boot that isn't the trial: refused, nothing written" "cp $K $W/k0; ! $B accept 2>$W/err && grep -q \"not the candidate's\" $W/err && cmp -s $K $W/k0 && oldslot"
 boot $IDA
+# the first accept in a copy of the state, with another image on the default slot (FR-015)
+seedcase() {   # seedcase SLOT [CURRENT]: accept there; the copy is $W/c
+    rm -rf $W/c; mkdir -p $W/c; cp -a $SYS $W/c/sys; cp $W/testslot $W/c/testslot; cp "$1" $W/c/defslot
+    [ -z "${2:-}" ] || gs_update $W/c/sys/state/kernel "current=$2"
+    GLASSINE_BI_SYSTEM=$W/c/sys GLASSINE_BI_DEFAULT_DEV=$W/c/defslot GLASSINE_BI_TEST_DEV=$W/c/testslot $B accept 2>$W/c/err
+}
+cnot() { [ "$(gs_kv $W/c/sys/state/kernel current_img)" = $IDA ] && [ -z "$(gs_kv $W/c/sys/state/kernel previous_img)" ] && [ ! -e $W/c/sys/state/bootimg/$OLDID.manifest ]; }
+ok "accept, the default slot's kernel isn't release current: accepted, nothing seeded" "seedcase $W/defslot 6.0.0-other && cnot && grep -q 'is not release 6.0.0-other' $W/c/err"
+ok "... then rollback: no previous image" "! GLASSINE_BI_SYSTEM=$W/c/sys GLASSINE_BI_DEFAULT_DEV=$W/c/defslot GLASSINE_BI_TEST_DEV=$W/c/testslot $B rollback 2>$W/c/err && grep -q 'no previous image' $W/c/err"
+cp $W/defslot $W/slot.v1; printf '\001' | dd of=$W/slot.v1 bs=1 seek=40 conv=notrunc 2>/dev/null
+ok "accept, a header v1 image on the default slot: no image to keep, nothing seeded" "seedcase $W/slot.v1 && cnot && grep -q 'holds no image to keep' $W/c/err"
+head -c $SLOT /dev/zero > $W/slot.none
+ok "accept, no image on the default slot: nothing seeded" "seedcase $W/slot.none && cnot"
+rm -rf $W/c $W/slot.v1 $W/slot.none
 ok "accept: the default slot = the candidate" "$B accept 2>/dev/null && holds $W/defslot $IDA && [ \"\$(kv current)\" = 7.1.0-a ] && [ \"\$(kv current_img)\" = $IDA ]"
 ok "accept: the candidate keys, requested and writing cleared" "[ -z \"\$(kv candidate)\$(kv candidate_img)\$(kv tries)\$(kv requested)\$(kv writing)\$(kv writing_op)\" ]"
 ok "seeded: previous = the old release and the default slot's image, marked seeded=1" "[ \"\$(kv previous)\" = 6.0.0-old ] && [ \"\$(kv previous_img)\" = $OLDID ] && [ \"\$(gs_kv $BI/$OLDID.manifest seeded)\" = 1 ] && [ \"\$(gs_kv $BI/$OLDID.manifest release)\" = 6.0.0-old ] && cmp -s $BI/$OLDID.img $W/old.img"
@@ -144,6 +173,9 @@ boot $IDA; cp $W/k0 $K                          # the write undone by hand (phas
 ok "rollback with no image on the default slot to keep: written anyway, logged" "$B rollback >$W/out 2>/dev/null && holds $W/defslot $OLDID && grep -q 'holds no image to keep' $W/log"
 ok "rollback: current and previous swapped" "[ \"\$(kv current)\" = 6.0.0-old ] && [ \"\$(kv current_img)\" = $OLDID ] && [ \"\$(kv previous)\" = 7.1.0-a ] && [ \"\$(kv previous_img)\" = $IDA ] && [ -z \"\$(kv writing)\" ]"
 ok "glassine-hibernate's check: refused after the rollback (this boot runs the other image)" "gs_kernel_refusal $K $W/cmdline 7.1.0-a | grep -q 'next boot runs kernel image $OLDID'"
+gs_update $K candidate=7.1.0-b candidate_img=$IDB tries=1; cp $K $W/k1; corrupt 2
+ok "a failed rollback with a candidate set: exit 1, the old image back, state/kernel as before" "! $B rollback >/dev/null 2>&1 && holds $W/defslot $OLDID && same $K $W/k1"
+corrupt 0; gs_update $K candidate= candidate_img= tries=
 boot $OLDID
 ok "rollback again: back to 7.1.0-a" "$B rollback >/dev/null 2>&1 && holds $W/defslot $IDA && [ \"\$(kv current_img)\" = $IDA ] && [ \"\$(kv previous_img)\" = $OLDID ]"
 
