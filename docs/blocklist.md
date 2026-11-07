@@ -57,7 +57,7 @@ read outside userdata or boot a damaged image:
 | Event | Effect |
 |---|---|
 | Android's Format Data, or a `mke2fs` of userdata | the file is gone; its blocks hold other data |
-| Android full-disk encryption turned on | the blocks become ciphertext. On this device that also erases or locks `/home` ([Storage, slots and data](https://docs.glassine.org/devices/onyx-noteair/#storage-slots-and-data)), so it isn't a supported state anyway |
+| Android full-disk encryption turned on | the blocks become ciphertext. On this device that also erases or locks `/home` (the Note Air page on docs.glassine.org, "Storage, slots and data"), so it isn't a supported state anyway |
 | `resize2fs` shrinking userdata (from Android, a recovery or a host) | blocks may move |
 | `e2fsck` cloning blocks that two files claim (the initramfs runs `e2fsck -p` on every boot, and Android runs its own) | that file's blocks change |
 | someone with root runs `chattr -i` and rewrites or deletes it | anything |
@@ -78,7 +78,7 @@ ciphertext, the checksum fails, and the default slot boots.
 
 **Where:** 4096 bytes at offset `size - 65536` of the default slot, where `size` is the
 partition's real size (`blockdev --getsize64`) and the default slot is board key
-`BLOCKLIST_RECORD_PART`, on the Note Air `boot_b` (64 MiB). The last 64 KiB stay
+`BLOCKLIST_RECORD_PART` (on the Note Air, the 64 MiB default slot). The last 64 KiB stay
 untouched: Android verified boot keeps its footer at the very end of a partition, and
 the record must not be confused with it or overwrite it. The bootloader already opens
 this partition on every boot. A header v0 image ends where its sizes say it does, so
@@ -90,7 +90,7 @@ Alternatives considered, and why not:
 
 | Place | Why not |
 |---|---|
-| `misc` beyond Android's 64 KiB | Android and the bootloader keep the boot control block there (the stale recovery request in [Undoing each step](https://docs.glassine.org/devices/onyx-noteair/#undoing-each-step)), and how Onyx's Android uses the rest isn't documented |
+| `misc` beyond Android's 64 KiB | Android and the bootloader keep the boot control block there (the stale recovery request in the Note Air page on docs.glassine.org, "Undoing each step"), and how the vendor's Android uses the rest isn't documented |
 | userdata's last 16 KiB (outside the ext4 file system) | the room Android's encryption footer needs, and Android's to write |
 | a new GPT partition | a partition-table change, on a layout that isn't final yet |
 | a file on userdata | the bootloader would need a block list to find the block list |
@@ -139,7 +139,7 @@ and `image_size` is at most `PART_SIZE - 65536`.
 **Key: a reboot reason of its own,** `BLOCKLIST_REBOOT_REASON` (board key, `blocklist`),
 written by the kernel's reboot-mode driver into the PMIC register that already carries
 `recovery` (1) and `bootloader` (2)
-([Boot chain](https://docs.glassine.org/devices/onyx-noteair/#boot-chain)). Its value is
+(the Note Air page on docs.glassine.org, "Boot chain"). Its value is
 a new `mode-blocklist` entry in the Note Air's device tree (`linux`). #55 picks the value
 from the ones the bootloader doesn't already use. It can't be `recovery`: that reason
 boots the recovery partition, which keeps the mainline recovery (decision 0010).
@@ -180,13 +180,13 @@ bootloader passes `glassine.handoff_err=` (optional, below), that decides it ins
 
 **Open: a hang before the watchdog is armed.** The Note Air page says a hang with no
 armed watchdog needs a long press
-([Suspend and debugging](https://docs.glassine.org/devices/onyx-noteair/#suspend-and-debugging)).
+(the Note Air page on docs.glassine.org, "Suspend and debugging").
 Today the kernel arms it when its watchdog driver probes. A candidate that dies before
 that (a bad device tree, an early panic with no console) waits for a long press, and
 hub#57's "without manual steps" fails for it. #55 must answer whether the boot chain
 leaves the SoC watchdog armed into Linux, or whether the bootloader can arm it through
 a UEFI protocol, never by touching a raw register
-([Bricks](https://docs.glassine.org/devices/onyx-noteair/#bricks)). If neither is
+(the Note Air page on docs.glassine.org, "Bricks"). If neither is
 possible, the person decides whether a long press for this case is acceptable.
 
 ## What the bootloader has to do (for #55)
@@ -198,7 +198,7 @@ The build has about 16 bytes free (hub#53), so this is the smallest set that's s
 1. On every boot, read the reason and clear the register, whatever its value. On
    `BLOCKLIST_REBOOT_REASON`, go on to 2; otherwise boot as today.
 2. Read the record from the boot partition of the slot it would boot now (the active
-   slot, not `boot_b` by name, so a slot switch can't make it read the other slot's
+   slot, not a partition by name, so a slot switch can't make it read the other slot's
    record) and check it (above).
 3. Allocate a buffer through UEFI (no fixed address, nothing the UEFI memory map
    doesn't cover). Read the extents of the named partition with the block I/O it
@@ -336,7 +336,7 @@ itself. That is optional and isn't required for a go.
 | Key | Note Air | Meaning |
 |---|---|---|
 | `HANDOFF` | `blocklist` | set only once this page, the writer (#56) and the bootloader side (#55) are all done |
-| `BLOCKLIST_RECORD_PART` | `boot_b` | the default slot, which holds the record |
+| `BLOCKLIST_RECORD_PART` | its default slot | the default slot, which holds the record |
 | `BLOCKLIST_REBOOT_REASON` | `blocklist` | the reason that requests the one-shot |
 | `BLOCKLIST_ABL_SHA256` | the sha256 of the bootloader build(s) from #55 | the builds known to read format 1 |
 
