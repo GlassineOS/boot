@@ -1,7 +1,7 @@
 # Feature Specification: Packages on a locked root
 
 **Feature branch:** `deploy-0.3-packages`
-**Created:** 2026-10-31 · **Status:** built, host-tested; `apk add` and the replay run on hardware, booting a replayed deployment not yet
+**Created:** 2026-10-31 · **Status:** built, host-tested; `apk add` and the replay ran on the Note Air (live packages replayed onto a new base across an Alpine branch change, 2026-10-31 to 2026-11-01, as the [status page](https://docs.glassine.org/architecture/root-and-deployments/) has it); booting a replayed deployment is not recorded as run
 **Builds on:** [001-deployments](../001-deployments/spec.md),
 [002-stage-base](../002-stage-base/spec.md) · **Interface:**
 [docs/deployments.md](../../docs/deployments.md)

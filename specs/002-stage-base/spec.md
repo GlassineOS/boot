@@ -1,7 +1,7 @@
 # Feature Specification: Stage a deployment on a new base
 
 **Feature branch:** `deploy-0.2-stage-base`
-**Created:** 2026-10-31 · **Status:** built, host-tested, not yet run on hardware
+**Created:** 2026-10-31 · **Status:** built, host-tested; a base update through an incremental stream ran on the Note Air (2026-10-31 to 2026-11-01, as the [status page](https://docs.glassine.org/architecture/root-and-deployments/) has it); SC-002, the switched update booting as the candidate and being accepted, is not recorded as run
 **Builds on:** [001-deployments](../001-deployments/spec.md) · **Formats and interface:**
 [docs/deployments.md](../../docs/deployments.md)
 
