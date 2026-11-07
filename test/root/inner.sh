@@ -212,6 +212,7 @@ ok "GLASSINE_APK_MIX=1: goes on" "GLASSINE_APK_ACK=1 GLASSINE_APK_MIX=1 glm apk 
 : > $W/apk-calls
 ok "a plain add: no simulation, no question" "GLASSINE_APK_ACK=1 glm apk add foo </dev/null 2>/dev/null && ! grep -q simulate $W/apk-calls && grep -qx 'add foo' $W/apk-calls"
 ok "called as apk: the wrapper" "mkdir -p $W/bin && ln -sf $GL $W/bin/apk && GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/apk $W/bin/apk add baz && ro $R/usr/bin/t6 && grep -qx 'add baz' $W/apk-calls"
+ok "apk: GLASSINE_APK is the wrapper itself (a link): refused, no loop, nothing run" "ln -sf $GL $W/selfapk && : > $W/apk-calls && GLASSINE_APK_ACK=1 GLASSINE_DEPLOY_CONF=$W/gl.conf GLASSINE_ROOT=$R GLASSINE_APK=$W/selfapk sh $GL apk search foo </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'is this wrapper' $W/err && [ ! -s $W/apk-calls ]"
 rm -f $W/run2/booted
 ok "not booted from a deployment: apk-tools unchanged (no unlock: the stub's write fails)" "gl apk add qux </dev/null 2>/dev/null; [ \$? = 9 ] && grep -qx 'add qux' $W/apk-calls && gl status | grep -q 'plain'"
 ok "unlock refused when not booted from a deployment" "gl unlock 2>/dev/null; [ \$? = 1 ]"

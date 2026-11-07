@@ -111,7 +111,13 @@ simulates() {
     return 1
 }
 
+# apk_is_self: $APK is this wrapper (the /usr/sbin/apk link): exec'ing it would loop
+apk_is_self() {
+    _me=$(readlink -f "$0" 2>/dev/null) && [ -n "$_me" ] && [ "$(readlink -f "$APK" 2>/dev/null)" = "$_me" ]
+}
+
 cmd_apk() {
+    ! apk_is_self || die "$APK is this wrapper: the real apk-tools binary is not where GLASSINE_APK or the default says"
     booted || exec "$APK" "$@"
     # no lock and no / for these: a simulation, and any user but root (who can't
     # open either; a real change then fails with apk's own message)
