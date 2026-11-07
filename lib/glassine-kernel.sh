@@ -32,7 +32,8 @@
 # busybox ash only, except the packer (python3). Test hooks: GLASSINE_BI_SYSTEM
 # (the system partition's top level), GLASSINE_BI_SYSBLOCK (/sys/class/block),
 # GLASSINE_BI_AFTER_BODY (eval'd in gk_put after an image's body is written and
-# before its header: the tests cut or corrupt writes with it).
+# before its header: the tests cut or corrupt writes with it; only with
+# GLASSINE_BI_TEST=1, never on an ordinary write).
 
 GK_CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 SYSTEM_MNT=/run/glassine/system
@@ -133,7 +134,7 @@ gk_put() {
     for _try in 1 2; do
         if dd if=/dev/zero of="$2" bs=4096 count=1 conv=notrunc,fsync oflag=direct 2>/dev/null &&
             dd if="$1" of="$2" bs=4096 skip=1 seek=1 conv=sync,notrunc,fsync oflag=direct 2>/dev/null &&
-            { [ -z "${GLASSINE_BI_AFTER_BODY:-}" ] || eval "$GLASSINE_BI_AFTER_BODY"; } &&
+            { [ "${GLASSINE_BI_TEST:-}" != 1 ] || [ -z "${GLASSINE_BI_AFTER_BODY:-}" ] || eval "$GLASSINE_BI_AFTER_BODY"; } &&
             dd if="$1" of="$2" bs=4096 count=1 conv=sync,notrunc,fsync oflag=direct 2>/dev/null &&
             [ "$(gk_sha_dev "$2" "$_n")" = "$_sha" ]; then
             rm -f "$TMP/glassine-bootimg.writing"

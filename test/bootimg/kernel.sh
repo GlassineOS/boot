@@ -11,7 +11,7 @@ B=/p/sbin/glassine-bootimg
 export GLASSINE_BI_SYSTEM=$SYS GLASSINE_BI_LIB=/p/lib GLASSINE_DEPLOY_CONF=$W/none GLASSINE_BI_BOARD=$W/board.conf \
     GLASSINE_BI_TEST_DEV=$W/testslot GLASSINE_BI_DEFAULT_DEV=$W/defslot GLASSINE_BI_CMDLINE=$W/cmdline \
     GLASSINE_BI_PACK=/p/lib/glassine-bootimg-pack GLASSINE_BI_LOG=$W/log GLASSINE_BI_TMP=$W/run GLASSINE_BI_NOREBOOT=1 \
-    GLASSINE_BI_SYSBLOCK=$W/sysblock
+    GLASSINE_BI_SYSBLOCK=$W/sysblock GLASSINE_BI_TEST=1
 fails=0
 ok() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
 kv() { gs_kv $K "$1"; }
@@ -106,6 +106,9 @@ $B install 7.1.0-b --initramfs c1 --dtb dev1@bbbb >/dev/null 2>&1
 printf X | dd of=$W/testslot bs=1 seek=5000 conv=notrunc 2>/dev/null
 ok "reboot-test with a test slot that doesn't match: refused, names retry, nothing requested" "! $B reboot-test 2>$W/err && grep -q 'glassine-bootimg retry' $W/err && [ -z \"\$(kv requested)\" ]"
 ok "retry: the test slot written again, tries=1" "$B retry >/dev/null 2>&1 && holds $W/testslot $IDB && [ \"\$(kv tries)\" = 1 ] && [ \"\$(kv candidate_img)\" = $IDB ]"
+printf X | dd of=$W/testslot bs=1 seek=5000 conv=notrunc 2>/dev/null; corrupt 2
+ok "the write hook runs only with GLASSINE_BI_TEST=1" "env -u GLASSINE_BI_TEST $B retry >/dev/null 2>&1 && holds $W/testslot $IDB && [ \"\$(cat $W/cnt)\" = 2 ]"
+corrupt 0
 
 # --- deferral (Story 1.5) -------------------------------------------------------
 printf 'current=d1\ncandidate=d2\ntries=2\n' > $SYS/state/deploy
