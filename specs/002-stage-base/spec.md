@@ -68,9 +68,13 @@ memberships survive a base change and a reset alike.
 
 - **FR-001** `receive` needs `btrfs` (btrfs-progs) and, for a `.zst` stream, `zstd`;
   every other verb keeps 001's FR-015 (busybox, e2fsprogs, the kernel).
-- **FR-002** `receive` writes only into a temporary directory on the system partition
-  and moves the subvolume into place after it checked it: exactly one subvolume,
-  read-only, a received UUID, a valid name not taken. Anything else is deleted.
+- **FR-002** `receive` writes straight into `bases/` (`modules/` with `--modules`): a
+  read-only subvolume cannot be renamed, and clearing `ro` would drop its received UUID,
+  so there is no temporary directory to move from. A stream for a name that exists
+  fails in `btrfs receive` itself. After it, `receive` checks that exactly one
+  subvolume was added, with a valid name, read-only and with a received UUID. When
+  any of that fails, or `receive` is interrupted, whatever it added since it started
+  is deleted.
 - **FR-003** `stage` writes a deployment with `kind=update`, `carry=migrate`, the given
   base, and replaces a staged one, like `reset`.
 - **FR-004** The account merge and the owner remap run in the switch, after the copy
