@@ -85,6 +85,13 @@ ok "a version that would go down: exit 7, named, nothing staged" "$G stage b2 --
 ok "--accept-downgrades: staged" "$G stage b2 --accept-downgrades --yes >/dev/null 2>&1 && [ -n \"\$(st staged)\" ]"
 clear_staged; cp $W/inst $R/lib/apk/db/installed
 
+# a replay staged from a deployment that is not the booted one (the recovery): its view is
+# read-only, the cache must still be writable (apk update and the downloads)
+echo recovery > $W/run/booted; rm -rf $R/var/cache/apk/*
+ok "not the booted deployment: the replay downloads into a writable cache and installs" "$G stage b2 --yes >$W/o 2>&1 && grep -q 'add tree' $W/o && [ -x $U/deployments/\$(st staged)/build/usr/bin/tree ] && nomnt"
+ok "not the booted deployment: no cache directory left in the new deployment, none mounted" "[ ! -e $U/deployments/\$(st staged)/apk-cache ] && ! grep -q 'apk-cache' /proc/mounts"
+clear_staged; echo c1 > $W/run/booted
+
 umount $R/proc $R/dev $R; umount $S $W/udmnt; losetup -d $SD; losetup -d $UDEV; cd /; umount $W
 echo "$fails failed"
 [ "$fails" = 0 ]

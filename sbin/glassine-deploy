@@ -629,7 +629,13 @@ do_replay() {
         mount -t proc proc "$M/proc" && REPLAY_BINDS="/proc $REPLAY_BINDS" || die "cannot mount /proc"
         mount -t tmpfs tmpfs "$M/run" && REPLAY_BINDS="/run $REPLAY_BINDS" || die "cannot mount /run"
         mount -t tmpfs tmpfs "$M/tmp" && REPLAY_BINDS="/tmp $REPLAY_BINDS" || die "cannot mount /tmp"
-        if [ -d "$view/var/cache/apk" ]; then
+        if [ -n "$TMP_VIEW" ]; then
+            # not the booted deployment: its view is read-only, and so is a bind of a
+            # directory in it (apk could not write the lists or the downloads): the
+            # cache is a directory of the new deployment, on userdata, gone after the replay
+            mkdir -p "$NEW_DEP/apk-cache" && mount --bind "$NEW_DEP/apk-cache" "$M/var/cache/apk" &&
+                REPLAY_BINDS="/var/cache/apk $REPLAY_BINDS" || die "cannot set up a writable package cache in $NEW_DEP"
+        elif [ -d "$view/var/cache/apk" ]; then
             mount --bind "$view/var/cache/apk" "$M/var/cache/apk" && REPLAY_BINDS="/var/cache/apk $REPLAY_BINDS" || die "cannot bind the package cache"
         fi
         if [ -e /etc/resolv.conf ] && [ ! -L "$M/etc/resolv.conf" ]; then
@@ -648,6 +654,7 @@ do_replay() {
             fail 7 "your upgraded packages do not upgrade on base $base; nothing staged. --no-replay stages the bare base"
         pkg_db "$M/lib/apk/db/installed" > "$t/ri"
         replay_umount
+        rm -rf "$NEW_DEP/apk-cache"
     fi
     # no silent downgrade: every package the running deployment has, against the new one
     down=''
