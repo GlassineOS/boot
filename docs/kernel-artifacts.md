@@ -1,9 +1,9 @@
 # Kernel artifacts: what a build hands to a device
 
-Status: **agreed design; nothing here is implemented yet.** It builds on `glassine-deploy`
-0.4 (`receive --modules`, `stage`, `bases remove`; branches `deploy-0.3-*`, not yet on
-main), which this repository merges first. Today kernel updates are paused in the
-deployments layout (no staged test boot, [boot.md](boot.md)). Once implemented, `images`
+Status: **agreed design; nothing here is implemented yet.** It builds on the
+`glassine-deploy` of branch `deploy-0.3-apk-simulate` (812eedb7c2ae, which contains
+`deploy-0.3-packages`: `receive --modules`, `stage`, `bases remove`), which this repository
+merges first. Kernel updates stay paused on a device until its hand-off (below) exists. Once implemented, `images`
 builds to this page and the tools here consume it. Changes go through this repository
 first ([constitution](../.specify/memory/constitution.md), principle IV).
 
@@ -25,14 +25,15 @@ board.conf's `KERNEL`, `DTB`, `INITRAMFS`, as today.
 | initramfs | this repository (`build-initramfs.sh`) | `<commit12>` of this repository | `boot/initramfs/<commit12>.cpio.gz` |
 | base | `images` stages | `<base-id>` | `bases/<base-id>/` ([deployments.md](deployments.md)) |
 
-Each has its own place, so a new initramfs or a device tree for a new device reaches a
-device without a new kernel, and a new kernel without a new initramfs.
+Each has its own place, so a new initramfs, a device tree for a new device or a fixed
+device tree reaches a device without a new kernel (within the rules under "Which
+combinations boot"), and a new kernel without a new initramfs.
 
-The **boot image** joins kernel, device tree, initramfs and the board's command line. Today
-it is **device-level**: one default slot, and every deployment boots whatever kernel the
-slot holds. So a base never contains a kernel, modules, or firmware tied to a kernel
-release, and is never built for one. Deployment rollback and kernel rollback stay
-independent; their state lives in one place (below), so neither loses track of the other.
+The kernel is **device-level** ([decision 0010](https://github.com/GlassineOS/docs/blob/main/docs/decisions/0010-root-and-deployments.md)):
+the device selects one kernel, and every deployment boots under it. So a base never
+contains a kernel, modules, or firmware tied to a kernel release, and is never built for
+one. Kernel and deployment each have their own records, tries and rollback, kept apart
+(below): one trial at a time, and a kernel trial never touches a deployment's tries.
 
 ## Kernel release
 
@@ -76,7 +77,9 @@ system partition (btrfs, top level)
 
 `boot/` files are named by their content, so a file once written never changes; a new
 device tree or initramfs is a new file, added by `glassine-deploy receive --boot FILE`
-(new). Files that no image in `state/bootimg/` names may be removed.
+(new). A file may be removed only when no kernel record names it and it was received
+before the last `glassine-bootimg install` (so a file received for an install that hasn't
+happened yet stays).
 
 At boot the initramfs (after `gr_boot`, through the merged root, whose upper is on
 userdata, or the tmpfs on a bare boot) makes the mount points, then binds:
@@ -124,11 +127,14 @@ that partition's Android verity, which matters only if Android ever booted from 
 **At boot (initramfs).** After `gr_resume` (boot.md rule 1: nothing is mounted before the
 hibernation step) and after `gr_carry` has put the tmpfs on the new root's `/run`:
 
-1. `debugfs -R 'stat /glassine/manifest'` on `DEVICE_PART`, without mounting.
-2. If the manifest exists: mount `DEVICE_PART` `ro,noload` (no journal replay, nothing
-   written) and bind its `glassine/` on `$NEWROOT/run/glassine/device`, read-only. The
-   mount moves to the new root with the others.
-3. If not: nothing is mounted; the seed hook runs later.
+1. `dumpe2fs -h` on `DEVICE_PART`: if its journal needs recovery, nothing is mounted (the
+   seed hook replays it).
+2. `debugfs -R 'stat /glassine/manifest'`, without mounting.
+3. If the manifest exists: mount `DEVICE_PART` `ro,noload` (no journal replay, nothing
+   written) directly under the new root, `$NEWROOT/run/glassine/device-part`, and bind its
+   `glassine/` on `$NEWROOT/run/glassine/device`, read-only. Both are made after
+   `gr_carry`'s tmpfs, so they need no move.
+4. If not: nothing is mounted; the seed hook runs later.
 
 Device firmware is reached through `firmware_class.path=/run/glassine/device/firmware`
 (the board's constant command line), searched before the `/lib/firmware` paths, so
@@ -136,8 +142,15 @@ Device firmware is reached through `firmware_class.path=/run/glassine/device/fir
 older GPU microcode would win over the pinned one). Drivers that request firmware before
 `switch_root` find neither path: they stay modules, or defer.
 
-**Seeding (OpenRC, the device package's hook, early in boot).** Only when nothing is on
-`/run/glassine/device` (no manifest at boot) or a refresh is asked for (a refresh
+**The seed hook (OpenRC, the device package's, early in boot)** runs at every boot:
+
+- If the journal needs recovery: one read-write mount and unmount replays it, then the
+  checks below run.
+- **Verify:** every file against the manifest's sha256. A file that doesn't match is
+  treated like a missing seed (it is copied again from its source, below); until then the
+  seed isn't bound.
+
+**Seeding** happens only when there is no valid seed or a refresh is asked for (a refresh
 unmounts the boot mount first, so the read-write mount below is the only one):
 
 1. Each source is read read-only: an ext4 source with `debugfs -R dump` (no mount), a
@@ -149,9 +162,10 @@ unmounts the boot mount first, so the read-write mount below is the only one):
 
 `glassine-hibernate` refuses (exit 3) while `DEVICE_PART` is mounted read-write.
 
-**Failure and escape:** a copy cut off has no manifest, so it is no seed: the hook tries
-again at the next boot, and the daemons and the recovery read the original sources
-meanwhile. The recovery can remove `glassine/`; the stock files on `DEVICE_PART` stay. A
+**Failure and escape:** a copy cut off before the manifest's rename has no manifest, so
+it is no seed. Cut off after it, the journal may need recovery, or a file may not match:
+the next boot's hook replays the journal and verifies, and copies again what fails. Either
+way the daemons and the recovery read the original sources meanwhile. The recovery can remove `glassine/`; the stock files on `DEVICE_PART` stay. A
 seed write never touches the original sources.
 
 - **Daemons** read their file paths from configuration (for the panel: `waveform=` in
@@ -162,43 +176,65 @@ seed write never touches the original sources.
   device's storage. Before any stock partition the seed came from is retired or reused,
   the installer must have copied the device's own partitions to a backup off the device.
 
-## Kernel state
+## Kernel records, trials and hand-off
 
-On the system partition, written through `gs_write` under `state/.lock`:
+As decision 0010 sets out: the kernels are kept on the device's storage with a try counter
+and a fallback; records, selection, tries and acceptance are the same on every device; only
+the **hand-off** to the bootloader differs. All of it on the system partition, written
+through `gs_write` under `state/.lock`:
 
 ```
 state/kernel                 the device's kernel state (keys below)
-state/bootimg/<id>.img       an image staged or promoted, kept for rollback
+state/bootimg/<id>.img       a packed image, where the hand-off needs one
 state/bootimg/<id>.manifest  its record (below)
 ```
 
-`state/kernel` keeps today's meaning of its keys and adds new ones (no format bump):
+`state/kernel` keeps today's meaning of `current` and `previous` (releases) and adds keys
+(no format bump):
 
 | Key | Meaning |
 |---|---|
 | `current`, `previous` | releases (unchanged) |
-| `current_img`, `previous_img` | image ids the default slot holds now / held before the last promote |
-| `pending_img` | the image staged in the test slot, or empty |
-| `failed_img` | the last image whose test boot failed, or empty |
-| `deferred` | a release that arrived during a test boot |
+| `current_img`, `previous_img` | their image ids |
+| `candidate`, `candidate_img` | the kernel on trial, or empty |
+| `tries` | boots the candidate has left (0–1) |
+| `failed`, `failed_img` | the last candidate that failed, and `reason` in its image record |
+| `deferred` | a release that arrived during a trial |
 
 Per image, in `state/bootimg/<id>.manifest`: `release`, `size`, `sha256`, `staged` (UTC),
-`tries` (0 or 1), `reason` (why it failed), plus the boot record fields below. These
-replace today's files under `/var/lib/glassine-bootimg` (`pending`, `failed`, `current`,
-`deferred`, `prev`, `prev.img`). Those were per deployment, so a test boot staged from one
-deployment was invisible after a switch to another.
+`reason` (why it failed), plus the boot record fields below. These replace today's files
+under `/var/lib/glassine-bootimg` (`pending`, `failed`, `current`, `deferred`, `prev`,
+`prev.img`), which were per deployment.
 
-Writers: `glassine-bootimg` (install, promote, rollback, retry) and the initramfs (one try).
+Writers: `glassine-bootimg` (install, accept, rollback, retry) and the initramfs (one try).
 
-**The test boot in the deployments layout:**
+**One trial at a time.** `glassine-bootimg install` refuses while a deployment is a
+candidate, and `glassine-deploy select`/`stage` refuse (exit 8, below) while a kernel is.
 
-1. Before `gr_resume`, the initramfs may read `state/kernel` with the system partition
-   mounted `ro,rescue=nologreplay` (boot.md rule 1) to know whether this boot is the
-   pending image's test (`glassine.img=` on the command line equals `pending_img`). A test
-   boot never resumes a hibernated session.
-2. After `gr_boot` has the partition read-write and the lock, it writes `tries=1` into the
-   pending image's manifest. A test boot then runs the default boot by itself.
-3. `glassine-bootimg-promote` (OpenRC, last) checks the boot and promotes, as today.
+**A kernel trial:**
+
+1. The initramfs knows the boot is the candidate kernel's when `glassine.img=` on the
+   command line equals `candidate_img` (read before `gr_resume` with the system partition
+   mounted `ro,rescue=nologreplay`, boot.md rule 1). A trial never resumes a hibernated
+   session.
+2. After the system partition is read-write and locked, it takes the try (`tries=0`).
+3. It boots **current** (the deployment), without picking a candidate and without taking a
+   deployment try (`gr_boot` gets a mode for this).
+4. `glassine-deploy-accept` doesn't run on a trial. `glassine-bootimg-promote` (OpenRC,
+   last) checks the boot and accepts the kernel (`current` ← candidate, the old one to
+   `previous`). A trial that fails, hangs or ends before the check leaves the candidate at
+   `tries=0`: the next boot is the old kernel, and it marks the candidate failed.
+
+**Hand-off** (board key `HANDOFF`): how the bootloader gets the selected kernel.
+
+| Value | How | Boards |
+|---|---|---|
+| `bootpart-test` | the candidate's image written to a one-shot test slot, the default slot written on accept (today's `glassine-bootimg`) | boards with a spare slot |
+| `blocklist` | a cold boot of a kernel file whose storage blocks the bootloader reads | the Note Air (planned; [hub#53](https://github.com/GlassineOS/hub/issues/53)) |
+| `kexec`, `hardboot` | from a minimal loader / a warm reset into a staged image | not specified here |
+| empty | none: `install` refuses ("kernel updates are paused") | the Note Air today |
+
+The records, the trial and acceptance above are the same for every value.
 
 ## Records
 
@@ -221,7 +257,10 @@ Every record is `key=value`, one per line, the format of the state files
 | `features` | the version of that table used |
 
 **dtb manifest** (`boot/dtb/<device>@<id>.manifest`): `device`, `source` (`URL@COMMIT`),
-`sha256`.
+`sha256`, `kernels`: the releases it is valid for. The build adds a release when the
+tree's commit is the kernel's commit or descends from it, with the same
+`VERSION.PATCHLEVEL` (git ancestry is checked at build time; the device only reads the
+list). So a fixed tree ships for an installed kernel without recompiling it.
 
 **initramfs manifest** (`boot/initramfs/<commit12>.manifest`): `commit`, `sha256`,
 `state_format` (newest it writes), `needs`, `features`.
@@ -230,21 +269,24 @@ Every record is `key=value`, one per line, the format of the state files
 `device`, `kernel` (release), `dtb` (identity), `initramfs` (commit12), `cmdline`,
 `board` (sha256 of the `board.conf` the header fields came from).
 
-**Base manifest:** `/usr/share/glassine/base.manifest` in the base tree, written by
-`images` (base id, its stage locks' checksums); this page adds `needs` and `features`.
+**Base manifest:** `/usr/share/glassine/base.manifest` in the base tree, defined here:
+`format`, `base` (id), `locks` (sha256 of the stage locks), `needs`, `features`. `images`
+doesn't write it yet; it adds it as part of hub#8 step 6.
 
 **Feature names** are this repository's: a versioned table (`conf/kernel-features`, first
 line `features=<N>`) maps each name to the config options that provide it (`btrfs` =
 `CONFIG_BTRFS_FS=y`, `overlayfs` = `CONFIG_OVERLAY_FS=y`, `zram-writeback` =
 `CONFIG_ZRAM_WRITEBACK=y`, …). The build derives `provides` from `.config` with it; nobody
 writes it by hand. Renaming a feature or changing its options bumps `features`.
+Records compared by `install`, `select` or `stage` must carry the same `features`
+version; otherwise the check refuses until the records are rebuilt.
 
 ## Which combinations boot
 
 A boot image is **valid** when:
 
 1. the kernel's `provides` covers the initramfs's `needs`;
-2. kernel and device tree come from the same source commit (`source` in both manifests);
+2. the device tree's manifest lists the kernel's release in `kernels` (below);
 3. it fits the board's limits (slot size, the bootloader's ramdisk limit).
 
 A kernel **covers** a deployment when its `provides` covers the base's `needs` and its
@@ -257,12 +299,14 @@ Checked by:
   deployment that may boot (current, previous, candidate, staged). The modules are checked
   at `<system>/modules/<release>`, not under `/lib/modules`, where a new release can't
   appear until it boots;
-- `glassine-deploy select` and `stage`: refuse a deployment the slot's kernel doesn't cover,
-  with a new exit code 8 ("the kernel in the boot slot doesn't cover this base").
+- `glassine-deploy select` and `stage`: refuse a deployment the current kernel doesn't
+  cover, and anything while a kernel is on trial, with a new exit code 8 ("kernel: not
+  covered, or a kernel trial is running").
 
 ## Packing
 
-`lib/glassine-bootimg-pack` packs on the device with header fields from `board.conf`.
+Where the hand-off needs a boot image, `lib/glassine-bootimg-pack` packs it on the device
+with header fields from `board.conf`.
 `images` keeps each device's target description, and its boot section **is** that
 `board.conf`, verbatim; nothing is taken from a reference image. In the deployments layout
 the packer takes the kernel from `modules/<release>/Image.gz` and the device tree and
@@ -272,25 +316,26 @@ initramfs from `boot/`, not from the base.
 
 1. `glassine-deploy receive --modules` (the kernel's subvolume), and `receive --boot` for
    a device tree or initramfs the device doesn't have yet.
-2. `glassine-bootimg install <release>`: checks, packs, stages.
-3. Test boot, promote (writes `state/kernel`). Modules of current, previous, pending and
-   deferred are never removed; older ones may be (`bases remove` extends to modules).
-4. Promote runs inside the test boot, where no hibernation image can exist, so it never
-   waits. A `rollback` rewrites the default slot while the system runs; until the next
-   reboot the slot then holds a different kernel from the running one, and a resume under
-   it would be cancelled. So `glassine-hibernate` refuses (exit 3, with that reason) while
-   `state/kernel` says the slot's kernel isn't the running one.
+2. `glassine-bootimg install <release>`: checks, makes it the candidate, hands it off.
+3. The trial, then accept (writes `state/kernel`). Modules of current, previous, the
+   candidate and deferred are never removed; older ones may be (`bases remove` extends to
+   modules).
+4. Accept runs inside the trial, where no hibernation image can exist, so it never waits.
+   A `rollback` changes the selected kernel while the system runs; until the next reboot
+   the selected kernel isn't the running one, and a resume under it would be cancelled.
+   So `glassine-hibernate` refuses (exit 3, with that reason) while `state/kernel` selects
+   another kernel than the running one, and during a trial.
 
 ## What the user sees
 
 `glassine-bootimg status` is the interface; it gains a `format=1` field. The shell reads it
 and notifies:
 
-- once, when an image is staged and waits for its test reboot, with a restart action
-  (`glassine-bootimg reboot-test`);
-- when a test boot failed, with its `reason`.
+- once, when a kernel is the candidate and waits for its trial reboot, with a restart
+  action (`glassine-bootimg reboot-test`);
+- when a trial failed, with its `reason`.
 
-A successful promote needs no message.
+A successful accept needs no message.
 
 ## Deployment meta
 
@@ -304,9 +349,10 @@ kernel (with a kexec loader) is a loader change, not a format change: an empty v
 | Where | What |
 |---|---|
 | `glassine-deploy` | `receive --boot FILE`; exit 8 for `select`/`stage`; `bases remove` also removes unused modules and `boot/` files |
-| `glassine-bootimg` | state on the system partition in the deployments layout; `status` `format=1` |
-| `glassine-hibernate` | exit 3 after a rollback until reboot, and while `DEVICE_PART` is read-write |
-| `board.conf` | `DEVICE_PART`; `KERNEL`, `DTB`, `INITRAMFS` only for the plain layout |
+| `glassine-bootimg` | kernel records, trial and accept on the system partition in the deployments layout; refuses `install` during a deployment trial; `status` `format=1` |
+| initramfs | the kernel trial (boots current, no deployment try, no accept); the `DEVICE_PART` mount |
+| `glassine-hibernate` | exit 3 while another kernel than the running one is selected, during a kernel trial, and while `DEVICE_PART` is read-write |
+| `board.conf` | `DEVICE_PART`, `HANDOFF`; `KERNEL`, `DTB`, `INITRAMFS` only for the plain layout |
 
 ## When this is implemented
 
@@ -315,12 +361,13 @@ What changes with it:
 - [deployments.md](deployments.md): the on-disk layout (`modules/<release>/` contents,
   `boot/`), `state/kernel` keys, `state/bootimg/`, `kernel=` in the meta table, the
   interface additions and exit 8.
-- [boot.md](boot.md): `DEVICE_PART` in the board keys; the boot steps (the two binds,
-  `DEVICE_PART` after `gr_carry`, the test boot in the deployments layout); its line that
-  the Note Air uses `plain`, which is out of date.
+- [boot.md](boot.md): `DEVICE_PART` and `HANDOFF` in the board keys; the boot steps (the
+  two binds, `DEVICE_PART` after `gr_carry`, the kernel trial); its line that the Note Air
+  uses `plain`, which is out of date.
 - `initramfs/init` (`TRIES=1` and `ID=` from `/var/lib/glassine-bootimg`, and the "no staged
-  test boot in this layout" path), `lib/glassine-root.sh` (`gr_modules` `mkdir -p`; the
-  `DEVICE_PART` mount), `sbin/glassine-bootimg` (`ST`, `MODS`, the inputs it packs from),
+  test boot in this layout" path), `lib/glassine-root.sh` (`gr_modules` `mkdir -p`; a
+  `gr_boot` mode that boots current without a try; the `DEVICE_PART` mount),
+  `openrc/glassine-deploy-accept` (skips a kernel trial), `sbin/glassine-bootimg` (`ST`, `MODS`, the inputs it packs from),
   `test/root/inner.sh` (the base's `/lib/modules/<release>`), README.md (Kernel updates),
   `conf/board.conf.example`.
 - docs.glassine.org, Boot flow: vendor partitions are mounted read-only without replaying a
