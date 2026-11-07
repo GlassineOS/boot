@@ -203,6 +203,8 @@ state/bootimg/<id>.manifest  its record (below)
 | `tries` | boots the candidate has left (0–1) |
 | `failed`, `failed_img` | the last candidate that failed, and `reason` in its image record |
 | `deferred` | a release waiting for its install: it arrived during a trial, or while a deployment was a candidate or staged |
+| `requested` | the `candidate_img` that `reboot-test` asked the bootloader for; cleared at the next boot. A boot that isn't the candidate's while `tries=1` means the trial never started: the candidate is failed, with the hand-off's reason |
+| `accepting` | the image an accept is writing to the default slot; a boot of that image finishes the accept instead of failing it ([blocklist.md](blocklist.md)) |
 
 Per image, in `state/bootimg/<id>.manifest`: `release`, `size`, `sha256`, `staged` (UTC),
 `reason` (why it failed), plus the boot record fields below. These replace today's files
