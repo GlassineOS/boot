@@ -274,7 +274,8 @@ static char *default_disk(void)
         if (!realpath(sys, real))
             continue;
         const char *base = strrchr(real, '/');
-        snprintf(out, sizeof(out), "/dev/%s", base ? base + 1 : real);
+        if (snprintf(out, sizeof(out), "/dev/%s", base ? base + 1 : real) >= (int)sizeof(out))
+            continue;
         return out;
     }
     return NULL;
