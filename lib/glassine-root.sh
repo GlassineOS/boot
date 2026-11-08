@@ -177,6 +177,37 @@ gr_umount() {
 gr_unlock() { mount -o remount,bind,rw "$1"; }
 gr_lock() { mount -o remount,bind,ro "$1"; }
 
+# gr_shutdown_ro DEV: at power-off, after OpenRC's mount-ro: DEV's file system
+# read-only, and with it every mount and bind of it. In the deployments layout
+# userdata is no longer in the mount table by then (localmount's stop unmounts
+# /run/glassine/*, while the overlay's upper layer keeps the file system alive),
+# so mount-ro never reaches it and its ext4 journal would need a replay at the
+# next boot. Mounting DEV again gets that same live file system; remounting
+# the new mount read-only makes the file system read-only (ext4 clean), then
+# the mount goes. A file system that is not alive (a bare boot never mounted
+# userdata) is left alone: no mount, no write. 0 = read-only or not in use;
+# 1 = still writable (said).
+gr_shutdown_ro() {
+    _gr_k=$(readlink -f "$1" 2>/dev/null) && [ -b "$_gr_k" ] || return 0
+    _gr_k=${_gr_k##*/}
+    if [ -d "/sys/fs/ext4/$_gr_k" ]; then _gr_t=ext4
+    elif ls -d /sys/fs/btrfs/*/devices/"$_gr_k" >/dev/null 2>&1; then _gr_t=btrfs
+    else return 0; fi
+    sync
+    mkdir -p "$GR_TMP/ro" || { gr_log "$1: cannot make $GR_TMP/ro, left writable"; return 1; }
+    # read-write, as the live file system is (an ext4 already read-only refuses
+    # it: then ro below; btrfs turns a read-only one read-write for it, and the
+    # remount turns it back)
+    if mount -t "$_gr_t" "$1" "$GR_TMP/ro" 2>/dev/null; then
+        mount -o remount,ro "$GR_TMP/ro"; _gr_rc=$?
+        umount "$GR_TMP/ro" 2>/dev/null || umount -l "$GR_TMP/ro"
+        [ $_gr_rc = 0 ] && return 0
+        gr_log "$1: cannot remount read-only (still in use), left writable"; return 1
+    fi
+    mount -t "$_gr_t" -o ro "$1" "$GR_TMP/ro" 2>/dev/null && { umount "$GR_TMP/ro"; return 0; }
+    gr_log "$1: cannot mount it again, left writable"; return 1
+}
+
 # gr_merged_ro SYSMNT DEPDIR DIR: a read-only view of a deployment (all its
 # layers, no upper) at DIR, for copying its state while it is not running
 gr_merged_ro() {
