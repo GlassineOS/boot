@@ -59,6 +59,7 @@ for t in ext2 ext3 ext4; do ln -s e2fsck "$I/sbin/fsck.$t"; done
 # the deployments layout (ROOT_LAYOUT=deployments)
 install -D -m 644 "$HERE/lib/glassine-state.sh" "$I/lib/glassine-boot/glassine-state.sh"
 install -D -m 644 "$HERE/lib/glassine-root.sh" "$I/lib/glassine-boot/glassine-root.sh"
+install -D -m 644 "$HERE/lib/glassine-device.sh" "$I/lib/glassine-boot/glassine-device.sh"
 if [ -n "$HELPERS" ]; then
     for c in "$HELPERS"/*.c; do
         t=$(basename "$c" .c)
@@ -67,7 +68,7 @@ if [ -n "$HELPERS" ]; then
         strip "$I/bin/$t"
     done
 fi
-for a in watchdog ifconfig seq reboot head sed mount mountpoint flock stat killall blockdev awk; do
+for a in watchdog ifconfig seq reboot head sed mount mountpoint flock stat killall blockdev awk sha256sum find sort cut tail grep; do
     "$I/bin/busybox" --list | grep -qx "$a" || { echo "busybox.static lacks $a" >&2; exit 1; }
 done
 for a in telnetd udhcpd httpd; do

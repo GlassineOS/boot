@@ -6,15 +6,17 @@
 #                    repository installed) and the modules tree, as tar files
 #   build.sh disk    privileged container of the host's own architecture
 #                    (btrfs ioctls don't pass user emulation): a GPT disk with a btrfs "system"
-#                    partition (base b1, modules subvolume, state/) and an ext4
-#                    "userdata" partition (deployment d1)
+#                    partition (base b1, modules subvolume, state/), an ext4
+#                    "userdata" partition (deployment d1), and for device data
+#                    an empty ext4 "devdata" (the board's DEVICE_PART) and two
+#                    source partitions, ext4 "srcext" and vfat "srcvfat"
 # Output in $OUT: Image, initramfs.cpio.gz, disk.img.
 set -eu
 R=/p                                  # this repository, read-only
 OUT=${OUT:-/out}
 W=/w; mkdir -p $W $OUT && mount -t tmpfs -o size=2200m tmpfs $W
 if [ "${1:-}" = disk ]; then
-    apk add -q btrfs-progs e2fsprogs sgdisk coreutils tar >/dev/null
+    apk add -q btrfs-progs e2fsprogs sgdisk coreutils tar dosfstools mtools python3 >/dev/null
 else
 apk add -q linux-virt kmod e2fsprogs e2fsprogs-extra coreutils tar \
     busybox-static busybox-extras cpio gzip build-base linux-headers >/dev/null
@@ -30,11 +32,12 @@ ROOT_LAYOUT=deployments
 USERDATA_PART=userdata
 USERDATA_PREFIX=media/glassine
 DEFAULT_ROLE_MATCH=''
+DEVICE_PART=devdata
 EOF
 sh build-initramfs.sh --board $W/board.conf $W/base.cpio.gz >/dev/null
 S=$W/shim; mkdir -p $S/mods
 : > $S/load.list
-for m in virtio_blk ext4 btrfs overlay; do
+for m in virtio_blk ext4 btrfs overlay vfat nls_cp437 nls_iso8859_1 nls_utf8 dummy; do
     modprobe -S "$KREL" --show-depends $m | sed -n 's/^insmod \([^ ]*\).*/\1/p'
 done | awk '!seen[$0]++' | while read -r k; do
     b=${k##*/}; b=${b%.gz}; b=${b%.zst}
@@ -61,7 +64,7 @@ cat $W/base.cpio.gz $W/shim.cpio.gz > $OUT/initramfs.cpio.gz
 # --- the base tree --------------------------------------------------------------
 B=$W/base; mkdir -p $B
 mkdir -p $B/etc/apk && cp -a /etc/apk/keys $B/etc/apk/ && cp /etc/apk/repositories $B/etc/apk/
-apk add -q --root $B --initdb alpine-base e2fsprogs e2fsprogs-extra >/dev/null
+apk add -q --root $B --initdb alpine-base e2fsprogs e2fsprogs-extra openssh busybox-extras >/dev/null
 make -s glassine-reboot >/dev/null && make -s DESTDIR=$B install >/dev/null
 cat > $B/etc/inittab <<'EOF'
 ::sysinit:/sbin/openrc sysinit
@@ -74,7 +77,20 @@ EOF
 # fstab entries makes the whole overlay read-only (/etc and /var too)
 echo 'overlay / overlay bind,ro 0 0' > $B/etc/fstab
 echo qtest > $B/etc/hostname
-mkdir -p $B/etc/glassine $B/usr/share/glassine
+mkdir -p $B/etc/glassine $B/usr/share/glassine $B/etc/glassine-bootimg
+# the board keys as the image builder installs them (the seed tool reads DEVICE_PART)
+cp $W/board.conf $B/etc/glassine-bootimg/board.conf
+# developer mode in the booted system (the initramfs's copy has no DEVMODE_ADDR, so
+# its own developer mode stays off): dm0, a dummy interface, stands in for the USB
+# gadget (made by qtest-netdev in the boot runlevel)
+printf 'DEVMODE_ADDR=10.0.9.1\nDEVMODE_NETMASK=255.255.255.0\nDEVMODE_DHCP_START=10.0.9.2\nDEVMODE_DHCP_END=10.0.9.10\n' >> $B/etc/glassine-bootimg/board.conf
+mkdir -p $B/etc/conf.d
+printf 'DEVMODE_NETDEV=dm0\nrc_after="qtest-netdev"\n' > $B/etc/conf.d/glassine-devmode
+cat > $B/etc/init.d/qtest-netdev <<'EOF2'
+#!/sbin/openrc-run
+start() { ip link set lo up; ip link add dm0 type dummy && ip link set dm0 up; }
+EOF2
+chmod 755 $B/etc/init.d/qtest-netdev
 cat > $B/etc/glassine/deploy.conf <<'EOF'
 SYSTEM_DEV=/dev/vda1
 USERDATA_DEV=/dev/vda2
@@ -93,8 +109,9 @@ depend() { after *; }
 start() { setsid /usr/sbin/qtest-agent </dev/null >/dev/console 2>&1 & }
 EOF
 chmod 755 $B/etc/init.d/qtest
-for s in devfs dmesg sysfs; do ln -s /etc/init.d/$s $B/etc/runlevels/sysinit/$s; done
-for s in localmount hostname bootmisc; do ln -s /etc/init.d/$s $B/etc/runlevels/boot/$s; done
+for s in devfs dmesg sysfs glassine-device-seed; do ln -s /etc/init.d/$s $B/etc/runlevels/sysinit/$s; done
+for s in localmount hostname bootmisc qtest-netdev; do ln -s /etc/init.d/$s $B/etc/runlevels/boot/$s; done
+ln -s /etc/init.d/glassine-devmode $B/etc/runlevels/default/glassine-devmode
 ln -s /etc/init.d/qtest $B/etc/runlevels/default/qtest
 ln -s /etc/init.d/glassine-deploy-accept $B/etc/runlevels/default/glassine-deploy-accept
 for s in killprocs mount-ro glassine-switch; do ln -s /etc/init.d/$s $B/etc/runlevels/shutdown/$s; done
@@ -118,6 +135,9 @@ btrfs property set -ts $W/sys/bases/b1 ro true
 btrfs -q subvolume create $W/sys/modules/$KREL
 tar -C $W/sys/modules/$KREL -xf $OUT/modules.tar
 mkdir -p $W/sys/modules/$KREL/firmware/qtest; echo fw > $W/sys/modules/$KREL/firmware/qtest/a.fw
+# its record: the firmware list the seed's names are checked against
+printf 'format=1\nrelease=%s\nfirmware=qtest/a.fw@%s\n' "$KREL" "$(sha256sum $W/sys/modules/$KREL/firmware/qtest/a.fw | cut -c1-16)" \
+    > $W/sys/modules/$KREL/kernel.manifest
 btrfs property set -ts $W/sys/modules/$KREL ro true
 echo version=1 > $W/sys/state/format
 printf 'current=d1\nprevious=\ncandidate=\ntries=0\nstaged=\n' > $W/sys/state/deploy
@@ -130,15 +150,43 @@ D=$W/ud/media/glassine/deployments/d1; mkdir -p $D/build $D/switch $D/work
 mkdir -p $D/build/home && echo own > $D/build/home/own-file    # hidden by the storage bind
 printf 'base=b1\nkind=install\ncreated=qtest\n' > $D/meta
 mkdir -p $W/ud/qtest && echo 0 > $W/ud/qtest/stage
+
+# --- device data: DEVICE_PART (no seed yet) and the source partitions ---------------
+# a waveform: a header whose 32-bit length at offset 4 is the file's size
+wbf() {
+    { printf 'WBF\0'; printf "\\$(printf %o $(($1 & 255)))\\$(printf %o $(($1 >> 8 & 255)))\\$(printf %o $(($1 >> 16 & 255)))\\$(printf %o $(($1 >> 24 & 255)))"
+      head -c $(($1 - 8)) /dev/urandom; } > "$2"
+}
+mkdir -p $W/dd $W/sx/waveform $W/sx/fw $W/sx/image
+echo keep > $W/dd/other
+wbf 4096 $W/sx/waveform/panel.wbf
+head -c 3000 /dev/urandom > $W/sx/fw/x.bin; head -c 100 /dev/urandom > $W/sx/fw/y.bin
+# split images (test/seed/mkmdt.py): dsp needs b00 and b02 (index 1 has no file
+# bytes, its b01 is not needed); gap needs b00 and b01, and only b00 is there
+python3 $R/test/seed/mkmdt.py $W/sx/image/dsp.mdt 32 1,0,4096,500,500 1,0,0,0,500 1,0,8192,500,500
+for p in b00 b01 b02; do head -c 500 /dev/urandom > $W/sx/image/dsp.$p; done
+python3 $R/test/seed/mkmdt.py $W/sx/image/gap.mdt 32 1,0,4096,50,50 1,0,8192,50,50
+head -c 50 /dev/urandom > $W/sx/image/gap.b00
+mke2fs -q -F -t ext4 -L devdata -d $W/dd $W/dd.img 64M
+mke2fs -q -F -t ext4 -L srcext -d $W/sx $W/sx.img 32M
+truncate -s 32M $W/sv.img; mkfs.vfat -n SRCVFAT $W/sv.img >/dev/null
+head -c 200 /dev/urandom > $W/BOARD.BIN; mcopy -i $W/sv.img $W/BOARD.BIN ::/BOARD.BIN
+# what each partition reads as now: devdata untouched while no list names files,
+# the sources never written by the seed (SC-003)
+sha256sum $W/dd.img | cut -d' ' -f1 > $W/ud/qtest/devdata.sum
+cat $W/sx.img $W/sv.img | sha256sum | cut -d' ' -f1 > $W/ud/qtest/src.sum
 umount $W/ud
 
 # --- the disk: GPT with named partitions ----------------------------------------
-rm -f $OUT/disk.img; truncate -s 2400M $OUT/disk.img
-sgdisk -o -n 1:2048:+1400M -c 1:system -n 2:0:+900M -c 2:userdata $OUT/disk.img >/dev/null
-s1=$(sgdisk -i 1 $OUT/disk.img | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
-s2=$(sgdisk -i 2 $OUT/disk.img | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
-dd if=$W/sys.img of=$OUT/disk.img bs=512 seek="$s1" conv=notrunc,sparse status=none
-dd if=$W/ud.img of=$OUT/disk.img bs=512 seek="$s2" conv=notrunc,sparse status=none
+rm -f $OUT/disk.img; truncate -s 2600M $OUT/disk.img
+sgdisk -o -n 1:2048:+1400M -c 1:system -n 2:0:+900M -c 2:userdata -n 3:0:+64M -c 3:devdata \
+    -n 4:0:+32M -c 4:srcext -n 5:0:+32M -c 5:srcvfat $OUT/disk.img >/dev/null
+n=1
+for img in sys ud dd sx sv; do
+    s=$(sgdisk -i $n $OUT/disk.img | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+    dd if=$W/$img.img of=$OUT/disk.img bs=512 seek="$s" conv=notrunc,sparse status=none
+    n=$((n + 1))
+done
 rm -f $OUT/base.tar $OUT/modules.tar
 echo "disk: $(du -h $OUT/disk.img | cut -f1) used"
 cd /; umount $W
