@@ -11,6 +11,7 @@ C=$W/calls
 stub() { printf '#!/bin/sh\necho "%s $*" >> %s\n%s\n' "$1" $C "${2:-}" > $W/bin/$1; chmod +x $W/bin/$1; }
 stub ifconfig
 stub modprobe
+stub nmcli
 stub mount
 # udhcpd and sshd: a sleeping process whose pid goes where their config says
 stub busybox-extras 'p=$(sed -n "s/^pidfile //p" "$2"); sleep 300 & echo $! > "$p"'
@@ -48,6 +49,7 @@ ok "the developer folder: root:root 0700 (a looser mode fixed)" "[ \"\$(stat -c 
 ok "the host key made in the developer folder, said; no authorized_keys yet said" "[ -s $DM/ssh_host_ed25519_key ] && grep -q 'made the ed25519 host key' $W/out && grep -q 'no .*authorized_keys yet' $W/out"
 ok "the USB gadget: NCM on the first UDC, the board's identity" "[ \"\$(cat $W/cfg/usb_gadget/glassine-devmode/UDC)\" = dummy_udc.0 ] && [ -L $W/cfg/usb_gadget/glassine-devmode/configs/c.1/ncm.usb0 ] && [ \"\$(cat $W/cfg/usb_gadget/glassine-devmode/idVendor)\" = 0x1d6b ]"
 ok "the address on the gadget's interface" "grep -qx 'ifconfig usb0 10.0.9.1 netmask 255.255.255.0 up' $C"
+ok "NetworkManager told to leave the interface alone, before the address" "[ \"\$(grep -n -m1 '^nmcli device set usb0 managed no\$' $C | cut -d: -f1)\" -lt \"\$(grep -n -m1 '^ifconfig usb0' $C | cut -d: -f1)\" ]"
 ok "the address server: the board's range, on that interface only" "grep -qx 'start 10.0.9.2' $R/udhcpd.conf && grep -qx 'end 10.0.9.10' $R/udhcpd.conf && grep -qx 'interface usb0' $R/udhcpd.conf && grep -q '^busybox-extras udhcpd ' $C"
 ok "the SSH server: only on DEVMODE_ADDR, keys only from the developer folder, no passwords" "grep -qx 'ListenAddress 10.0.9.1' $R/sshd_config && [ \$(grep -c '^ListenAddress' $R/sshd_config) = 1 ] && grep -qx 'AuthorizedKeysFile $DM/authorized_keys' $R/sshd_config && grep -qx 'HostKey $DM/ssh_host_ed25519_key' $R/sshd_config && grep -qx 'PasswordAuthentication no' $R/sshd_config && grep -qx 'KbdInteractiveAuthentication no' $R/sshd_config && grep -q '^sshd -f $R/sshd_config' $C"
 ok "status: running" "dm status && grep -q 'running: SSH on 10.0.9.1' $W/out"
@@ -63,7 +65,12 @@ reset
 ok "DEVMODE_NETDEV: that interface, no USB gadget" "DEVMODE_NETDEV=veth9 dm start && grep -qx 'ifconfig veth9 10.0.9.1 netmask 255.255.255.0 up' $C && [ ! -e $W/cfg/usb_gadget/glassine-devmode ] && grep -qx 'interface veth9' $R/udhcpd.conf"
 DEVMODE_NETDEV=veth9 dm stop; rm -rf $R; : > $C
 rmdir $W/udc/dummy_udc.0
-ok "no USB device controller: exit 1, said, the gadget removed, no server" "dm start; [ \$? = 1 ] && grep -q 'no USB device controller' $W/out && gone && ! grep -q '^sshd\|udhcpd' $C"
+ok "no USB device controller: waits, then exit 1, said, the gadget removed, no server" "GLASSINE_DEVMODE_UDC_WAIT=2 dm start; [ \$? = 1 ] && grep -q 'waiting up to 2 s for a USB device controller' $W/out && grep -q 'no USB device controller after 2 s' $W/out && gone && ! grep -q '^sshd\|udhcpd' $C"
+reset
+# a controller that appears while start waits (the PHY binds after coldplug)
+( sleep 2; mkdir -p $W/udc/late_udc.0 ) &
+ok "a controller that appears late: start waits for it, then the gadget on it and SSH" "GLASSINE_DEVMODE_UDC_WAIT=20 dm start && grep -q 'waiting up to 20 s' $W/out && [ \"\$(cat $W/cfg/usb_gadget/glassine-devmode/UDC)\" = late_udc.0 ] && grep -q '^sshd -f' $C"
+reset; rmdir $W/udc/late_udc.0
 ok "usage" "dm frob; [ \$? = 2 ]"
 
 echo "$fails failed"

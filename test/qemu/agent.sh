@@ -226,6 +226,8 @@ firmware/vendor/y.bin srcext:/fw/y.bin"
     next 10
     poweroff ;;
 10) # glassine.devmode=usb: SSH on DEVMODE_ADDR with the developer folder's keys
+    # the service starts it in the background: give it up to 30 s
+    i=0; while ! glassine-devmode status >/dev/null 2>&1 && [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done
     chk "devmode: the developer folder root:root 0700, the host key made there" "[ \"\$(stat -c '%u:%g %a' $DMD)\" = '0:0 700' ] && [ -s $DMD/ssh_host_ed25519_key ]"
     chk "devmode: running, the address on the interface, the address server up" "glassine-devmode status >/dev/null && ip addr show dm0 | grep -q 'inet $A/' && kill -0 \$(cat /run/glassine-devmode/udhcpd.pid)"
     chk "devmode: SSH listens on DEVMODE_ADDR:22 and nowhere else" "netstat -ltn | grep -q ' $A:22 ' && [ \$(netstat -ltn | grep -c ':22 ') = 1 ]"
@@ -239,6 +241,7 @@ firmware/vendor/y.bin srcext:/fw/y.bin"
     next 11
     poweroff ;;
 11) # after a reset: the developer folder and its host key kept
+    i=0; while ! glassine-devmode status >/dev/null 2>&1 && [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done
     chk "devmode after a reset: the new deployment, the same host key" "[ \"$booted\" = \"\$(cat $Q/staged2)\" ] && [ \"\$(ssh-keygen -l -f $DMD/ssh_host_ed25519_key.pub)\" = \"\$(cat $Q/hostkey.fp)\" ]"
     chk "devmode after a reset: SSH with the key" "sshq -i $Q/devkey root@$A true"
     next 12
