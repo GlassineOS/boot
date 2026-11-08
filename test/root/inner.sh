@@ -39,7 +39,7 @@ S=$W/sysmnt
 mkdir -p $S/bases $S/modules $S/state
 btrfs -q subvolume create $S/bases/b1
 B=$S/bases/b1
-mkdir -p $B/etc/apk $B/etc/eink $B/usr/bin $B/usr/local $B/opt $B/var/lib $B/lib/modules/7.3.0 $B/usr/share/glassine
+mkdir -p $B/etc/apk $B/etc/eink $B/usr/bin $B/usr/local $B/opt $B/var/lib $B/lib/modules $B/lib/firmware $B/usr/share/glassine
 echo alpine-base > $B/etc/apk/world
 echo glassine > $B/etc/hostname
 echo welcome > $B/etc/motd
@@ -49,7 +49,7 @@ printf '#!/bin/sh\necho hello\n' > $B/usr/bin/hello; chmod 755 $B/usr/bin/hello
 printf '# shipped\n/etc/eink/\n/etc/hostname\n/etc/passwd\n/var/lib/bluetooth/\n../escape\nrelative/path\n' > $B/usr/share/glassine/migrate.list
 btrfs property set -ts $B ro true
 btrfs -q subvolume create $S/modules/7.3.0
-mkdir -p $S/modules/7.3.0/kernel; echo ko > $S/modules/7.3.0/kernel/x.ko
+mkdir -p $S/modules/7.3.0/kernel $S/modules/7.3.0/firmware/qcom; echo ko > $S/modules/7.3.0/kernel/x.ko; echo fw > $S/modules/7.3.0/firmware/qcom/a.fw
 btrfs property set -ts $S/modules/7.3.0 ro true
 echo version=1 > $S/state/format
 printf 'current=d1\nprevious=\ncandidate=\ntries=0\n' > $S/state/deploy
@@ -61,6 +61,7 @@ basesum() { find $B -print0 | sort -z | xargs -0 ls -ld --full-time 2>/dev/null 
 SUM0=$(basesum)
 R=$W/root
 ro() { ! sh -c "echo x > $1" 2>/dev/null; }
+roflag() { awk -v m="$1" '$2 == m { split($4, o, ","); r = o[1] } END { exit r != "ro" }' /proc/mounts; }   # the mount itself is ro
 
 # --- a deployment's root, locked ---------------------------------------------
 ok "gr_assemble d1" "gr_assemble $S $U d1 $R 7.3.0"
@@ -70,7 +71,9 @@ ok "the writes go through the overlay: copy-up into d1's switch layer" "[ \"\$(c
 rm $R/etc/motd
 ok "a deletion in /etc: a whiteout in the switch layer, the base keeps the file" "[ ! -e $R/etc/motd ] && [ -c $U/deployments/d1/switch/etc/motd ] && [ \"\$(cat $B/etc/motd)\" = welcome ]"
 ok "rename-replace in /etc works (passwd-style)" "printf 'root:x:0:0:root:/root:/bin/ash\nuser:x:1000:1000::/home/user:/bin/ash\n' > $R/etc/passwd.new && mv $R/etc/passwd.new $R/etc/passwd && grep -q ash $R/etc/passwd"
-ok "modules: on /lib/modules/7.3.0, read-only" "[ \"\$(cat $R/lib/modules/7.3.0/kernel/x.ko)\" = ko ] && ro $R/lib/modules/7.3.0/kernel/y.ko"
+ok "modules: on /lib/modules/7.3.0 (the base has no such directory), read-only" "[ ! -e $B/lib/modules/7.3.0 ] && [ \"\$(cat $R/lib/modules/7.3.0/kernel/x.ko)\" = ko ] && ro $R/lib/modules/7.3.0/kernel/y.ko"
+ok "the kernel's firmware: on /lib/firmware/updates, read-only" "[ \"\$(cat $R/lib/firmware/updates/qcom/a.fw)\" = fw ] && ro $R/lib/firmware/updates/b.fw"
+ok "both binds carry the ro flag (not only the read-only subvolume)" "roflag $R/lib/modules/7.3.0 && roflag $R/lib/firmware/updates"
 ok "unlock: / writable" "gr_unlock $R && echo new > $R/usr/bin/new && [ -e $U/deployments/d1/switch/usr/bin/new ]"
 ok "lock: / read-only again" "gr_lock $R && ro $R/usr/bin/new2"
 ok "the base is unchanged" "[ \"\$(basesum)\" = \"\$SUM0\" ]"
@@ -80,6 +83,15 @@ ok "persistence: reassembled, edits still there" "gr_assemble $S $U d1 $R 7.3.0 
 gr_umount $R
 ok "a kernel without modules: boots, says so" "gr_assemble $S $U d1 $R 9.9.9 2>$W/err && grep -q 'no modules for 9.9.9' $W/err && [ -z \"\$(ls $R/lib/modules/7.3.0)\" ]"
 gr_umount $R
+btrfs -q subvolume create $S/modules/7.3.1; mkdir -p $S/modules/7.3.1/kernel; btrfs property set -ts $S/modules/7.3.1 ro true
+ok "a kernel without firmware/: modules bound, nothing on /lib/firmware/updates" "gr_assemble $S $U d1 $R 7.3.1 2>$W/err && mountpoint -q $R/lib/modules/7.3.1 && ! mountpoint -q $R/lib/firmware/updates && [ ! -s $W/err ]"
+gr_umount $R
+# the firmware's read-only remount fails: the bind undone, said, the modules stay
+ok "a failed firmware bind: unbound, said, the modules stay" "(mount() { case \"\$*\" in *remount*/lib/firmware/updates) return 1 ;; esac; command mount \"\$@\"; }; gr_assemble $S $U d1 $R 7.3.0) 2>$W/err && grep -q \"7.3.0's firmware not bound\" $W/err && ! grep -q 'no modules' $W/err && mountpoint -q $R/lib/modules/7.3.0 && ! mountpoint -q $R/lib/firmware/updates"
+gr_umount $R
+ok "a failed modules remount: unbound, booting without" "(mount() { case \"\$*\" in *remount*/lib/modules/7.3.0) return 1 ;; esac; command mount \"\$@\"; }; gr_assemble $S $U d1 $R 7.3.0) 2>$W/err && grep -q 'no modules for 7.3.0' $W/err && ! mountpoint -q $R/lib/modules/7.3.0"
+gr_umount $R
+btrfs property set -fts $S/modules/7.3.1 ro false; btrfs -q subvolume delete $S/modules/7.3.1
 ok "a deployment whose base is missing: refused, nothing mounted" "mkdir -p $U/deployments/dx && echo base=gone > $U/deployments/dx/meta && ! gr_assemble $S $U dx $R 2>/dev/null && ! grep -q \" $R\" /proc/mounts"
 rm -rf $U/deployments/dx
 

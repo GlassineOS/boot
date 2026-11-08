@@ -67,13 +67,22 @@ gr_bind_locked() {
 }
 
 # gr_modules SYSMNT NEWROOT KREL: modules/<krel> (a subvolume) on
-# /lib/modules/<krel>, its mount point made through the merged root at
-# NEWROOT.rw (a base carries no release's directory); 1 (and nothing mounted)
-# if the kernel has none
+# /lib/modules/<krel>, and its firmware/ on /lib/firmware/updates (searched before
+# /lib/firmware), both read-only; 1 (and nothing mounted) if the kernel has none.
+# The base needs no knowledge of the release: the mount points are made through the
+# merged root NEWROOT.rw, since NEWROOT itself is the locked (read-only) view.
 gr_modules() {
     [ -d "$1/modules/$3" ] || return 1
-    [ -d "$2/lib/modules/$3" ] || mkdir -p "$2.rw/lib/modules/$3" || return 1
-    mount --bind "$1/modules/$3" "$2/lib/modules/$3" && mount -o remount,bind,ro "$2/lib/modules/$3"
+    mkdir -p "$2.rw/lib/modules/$3" || return 1
+    mount --bind "$1/modules/$3" "$2/lib/modules/$3" || return 1
+    mount -o remount,bind,ro "$2/lib/modules/$3" || { umount "$2/lib/modules/$3"; return 1; }
+    [ -d "$1/modules/$3/firmware" ] || return 0
+    if mkdir -p "$2.rw/lib/firmware/updates" && mount --bind "$1/modules/$3/firmware" "$2/lib/firmware/updates"; then
+        mount -o remount,bind,ro "$2/lib/firmware/updates" && return 0
+        umount "$2/lib/firmware/updates"
+    fi
+    gr_log "$3's firmware not bound on /lib/firmware/updates (its modules are)"
+    return 0
 }
 
 # gr_assemble SYSMNT UDDIR ID NEWROOT [KREL]: the deployment's root, locked, at
@@ -86,7 +95,7 @@ gr_assemble() {
     _gr_l=$(gr_lowers "$1" "$_gr_d") || { echo "glassine-root: $3: its base is missing" >&2; return 1; }
     gr_mount_overlay "$4.rw" "$_gr_l" "$_gr_d/switch" "$_gr_d/work" || return 1
     gr_bind_locked "$4.rw" "$4" || { gr_umount "$4"; return 1; }
-    [ -z "${5:-}" ] || gr_modules "$1" "$4" "$5" || echo "glassine-root: no modules for $5 (booting without)" >&2
+    [ -z "${5:-}" ] || gr_modules "$1" "$4" "$5" || gr_log "no modules for $5 (booting without)"
     return 0
 }
 
@@ -97,7 +106,7 @@ gr_assemble_bare() {
     mkdir -p "$3.tmp" && mount -t tmpfs -o mode=0755 tmpfs "$3.tmp" || return 1
     gr_mount_overlay "$3.rw" "$1/bases/$2" "$3.tmp/upper" "$3.tmp/work" || return 1
     gr_bind_locked "$3.rw" "$3" || return 1
-    [ -z "${4:-}" ] || gr_modules "$1" "$3" "$4" || echo "glassine-root: no modules for $4 (booting without)" >&2
+    [ -z "${4:-}" ] || gr_modules "$1" "$3" "$4" || gr_log "no modules for $4 (booting without)"
     return 0
 }
 

@@ -280,7 +280,7 @@ Each story says which phase it belongs to.
 - `receive --boot`, and `bases remove` for modules and `boot/` files.
 - The feature table (`conf/kernel-features`), the `provides`/`needs` coverage of a
   deployment, and exit 8 "not covered by the current kernel".
-- The `DEVICE_PART` seed, and the firmware bind of "On the system partition".
+- The `DEVICE_PART` seed.
 - `glassine-hibernate`'s refusal while `DEVICE_PART` is read-write (it comes with the
   seed).
 - The `blocklist` hand-off (hub#56) and `repair`, which the recovery runs.

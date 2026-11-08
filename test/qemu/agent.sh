@@ -36,6 +36,7 @@ case $stage in
     chk "/proc/mounts: /var read-write, as glassine-bootimg's health check reads it here" "awk '\$2 == \"/var\" && \$4 ~ /^rw(,|\$)/ {ok = 1} END {exit !ok}' /proc/mounts"
     chk "kernel-boot recorded, empty (no kernel trial)" "[ -e /run/glassine/kernel-boot ] && [ -z \"\$(cat /run/glassine/kernel-boot)\" ]"
     chk "modules subvolume on /lib/modules" "mountpoint -q /lib/modules/$(uname -r)"
+    chk "the kernel's firmware on /lib/firmware/updates, read-only" "[ \"\$(cat /lib/firmware/updates/qtest/a.fw)\" = fw ] && grep -q ' /lib/firmware/updates [^ ]* ro[, ]' /proc/mounts"
     chk "state lock free for the system" "flock -n /run/glassine/system/state/.lock true"
     glassine-deploy reset --yes > /dev/console 2>&1
     S=$(st staged)
