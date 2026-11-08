@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+# Developer access over USB (glassine-devmode): only with glassine.devmode=usb
+# on the kernel command line; without it the service starts nothing and says
+# nothing. DEVMODE_NETDEV in /etc/conf.d/glassine-devmode names an existing
+# network interface instead of the USB gadget (a test harness).
+# shellcheck disable=SC2034  # read by openrc-run
+description="glassine: developer access over USB (SSH with keys), with glassine.devmode=usb only"
+
+depend() {
+	after localmount
+	keyword -docker -lxc -podman
+}
+
+start() {
+	grep -qw 'glassine.devmode=usb' /proc/cmdline || return 0
+	ebegin "glassine-devmode: developer access over USB"
+	DEVMODE_NETDEV=${DEVMODE_NETDEV:-} /usr/sbin/glassine-devmode start
+	eend $?
+}
+
+stop() {
+	DEVMODE_NETDEV=${DEVMODE_NETDEV:-} /usr/sbin/glassine-devmode stop
+}

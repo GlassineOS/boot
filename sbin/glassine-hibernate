@@ -34,7 +34,10 @@
 # USERDATA_PREFIX, RUN_DIR, HIBERNATE_SIZE_MB, HIBERNATE_RESERVE_MB: free
 # space setup leaves on userdata, default 512; HIBERNATE_HOOKS). For the host test:
 # GLASSINE_SYSPOWER (/sys/power), GLASSINE_PROC_SWAPS (/proc/swaps),
-# GLASSINE_PROC_CMDLINE (/proc/cmdline), GLASSINE_UNAME (uname -r).
+# GLASSINE_PROC_CMDLINE (/proc/cmdline), GLASSINE_UNAME (uname -r),
+# GLASSINE_PROC_MOUNTS (/proc/mounts), GLASSINE_BOARD_CONF (the board keys,
+# /etc/glassine-bootimg/board.conf: DEVICE_PART), GD_SYS_BLOCK
+# (/sys/class/block).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 LIB=${GLASSINE_DEPLOY_LIB:-/usr/lib/glassine-boot/glassine-state.sh}
@@ -42,6 +45,9 @@ ROOTLIB=${GLASSINE_ROOT_LIB:-${LIB%/*}/glassine-root.sh}
 SYSPOWER=${GLASSINE_SYSPOWER:-/sys/power}
 CMDLINE=${GLASSINE_PROC_CMDLINE:-/proc/cmdline}
 SWAPS=${GLASSINE_PROC_SWAPS:-/proc/swaps}
+MOUNTS=${GLASSINE_PROC_MOUNTS:-/proc/mounts}
+BOARD=${GLASSINE_BOARD_CONF:-/etc/glassine-bootimg/board.conf}
+DEVLIB=${LIB%/*}/glassine-device.sh
 SYSTEM_MNT=/run/glassine/system USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata
 USERDATA_PREFIX=media/glassine RUN_DIR=/run/glassine HIBERNATE_SIZE_MB='' HIBERNATE_RESERVE_MB=512
 HIBERNATE_HOOKS=/etc/glassine/hibernate.d
@@ -51,6 +57,8 @@ HIBERNATE_HOOKS=/etc/glassine/hibernate.d
 . "$LIB" || { echo "glassine-hibernate: cannot read $LIB" >&2; exit 3; }
 # shellcheck source=../lib/glassine-root.sh
 . "$ROOTLIB" || { echo "glassine-hibernate: cannot read $ROOTLIB" >&2; exit 3; }
+# shellcheck source=../lib/glassine-device.sh
+. "$DEVLIB" || { echo "glassine-hibernate: cannot read $DEVLIB" >&2; exit 3; }
 
 REL=$USERDATA_PREFIX/swap/hibernate
 SWAP=$USERDATA_MNT/$REL
@@ -74,6 +82,13 @@ swap_active() { awk -v f="$SWAP" '$1 == f { on = 1 } END { exit !on }' "$SWAPS" 
 # ready: every refusal of `now` before anything is written; sets BLOCK and MM
 ready() {
     [ -e "$RUN_DIR/switching" ] && die 4 "a deployment switch is running"
+    # the device seed's partition: an image would freeze a write to it half done
+    # (docs/kernel-artifacts.md, "Device data")
+    # shellcheck source=/dev/null
+    _dp=$( [ -r "$BOARD" ] && . "$BOARD" >/dev/null 2>&1; echo "${DEVICE_PART:-}")
+    if [ -n "$_dp" ] && _dd=$(gd_part_dev "$_dp") && gd_mounted_rw "$_dd" "$MOUNTS"; then
+        die 3 "$_dp (the device seed's partition, $_dd) is mounted read-write"
+    fi
     booted=$(cat "$RUN_DIR/booted" 2>/dev/null)
     case $booted in
     '') die 3 "not a deployments boot ($RUN_DIR/booted missing)" ;;

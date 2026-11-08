@@ -1,0 +1,156 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-devmode: developer access to the booted system over USB, only when
+# the kernel command line has glassine.devmode=usb (README, "Developer mode").
+#
+#   glassine-devmode start   the USB network at the board's DEVMODE_ADDR, an
+#                            address server for its developer range, and an SSH
+#                            server listening only on DEVMODE_ADDR: keys only,
+#                            from the developer folder; no passwords
+#   glassine-devmode stop    all of it down again
+#   glassine-devmode status  what runs (exit 0 = running)
+#
+# The developer folder is devmode/ under the userdata prefix (root:root, 0700):
+# authorized_keys (put there by an administrator of the running system, or by
+# the recovery) and the SSH host keys, made on the first start. No reset
+# touches it. A bare boot has no developer folder, so no SSH; the initramfs's
+# developer shell stays the way in.
+#
+# Without glassine.devmode=usb nothing starts: no USB function, no address
+# server, no SSH server. The board keys (DEVMODE_ADDR, DEVMODE_NETMASK,
+# DEVMODE_DHCP_START, DEVMODE_DHCP_END, USB_VENDOR, USB_PRODUCT,
+# USB_MANUFACTURER) come from /etc/glassine-bootimg/board.conf; the userdata
+# mount and prefix from deploy.conf.
+#
+# Exit: 0 done (or nothing to do), 1 failed, 2 usage.
+#
+# DEVMODE_NETDEV (environment, the service's conf.d): an existing network
+# interface instead of the USB gadget (a test harness has no USB device side).
+# For the host test: GLASSINE_PROC_CMDLINE, GLASSINE_DEVMODE_RUN,
+# GLASSINE_DEVMODE_GADGET (configfs gadget directory), GLASSINE_DEVMODE_UDC
+# (/sys/class/udc), GLASSINE_DEVMODE_SSHD (/usr/sbin/sshd), GLASSINE_BOARD_CONF,
+# GLASSINE_DEPLOY_CONF.
+set -u
+CMDLINE=${GLASSINE_PROC_CMDLINE:-/proc/cmdline}
+BOARD=${GLASSINE_BOARD_CONF:-/etc/glassine-bootimg/board.conf}
+CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+RUN=${GLASSINE_DEVMODE_RUN:-/run/glassine-devmode}
+G=${GLASSINE_DEVMODE_GADGET:-/sys/kernel/config/usb_gadget/glassine-devmode}
+UDCDIR=${GLASSINE_DEVMODE_UDC:-/sys/class/udc}
+NETDEV=${DEVMODE_NETDEV:-}
+SSHD=${GLASSINE_DEVMODE_SSHD:-/usr/sbin/sshd}
+
+USERDATA_MNT=/run/glassine/userdata USERDATA_PREFIX=media/glassine RUN_DIR=/run/glassine
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+DEVMODE_ADDR='' DEVMODE_NETMASK=255.255.255.0 DEVMODE_DHCP_START='' DEVMODE_DHCP_END=''
+USB_VENDOR=0x1d6b USB_PRODUCT=0x0104 USB_MANUFACTURER=GlassineOS
+# shellcheck source=/dev/null
+[ -r "$BOARD" ] && . "$BOARD"
+D=$USERDATA_MNT/$USERDATA_PREFIX/devmode
+
+say() {
+    echo "glassine-devmode: $*" >&2
+    { [ -w /dev/kmsg ] && echo "<5>glassine-devmode: $*" > /dev/kmsg; } 2>/dev/null
+    return 0
+}
+
+asked() { grep -qw 'glassine.devmode=usb' "$CMDLINE" 2>/dev/null; }
+
+# the developer folder: only on a deployment's boot with userdata mounted
+folder() {
+    _b=$(cat "$RUN_DIR/booted" 2>/dev/null)
+    case $_b in
+    '') say "not a deployments boot: no developer folder, no SSH"; return 1 ;;
+    bare:*) say "a bare boot: no developer folder, no SSH (the initramfs's developer shell is the way in)"; return 1 ;;
+    esac
+    [ -d "$USERDATA_MNT/$USERDATA_PREFIX" ] || { say "userdata is not mounted at $USERDATA_MNT: no SSH"; return 1; }
+    mkdir -p "$D" && chown 0:0 "$D" && chmod 0700 "$D" || { say "cannot make $D"; return 1; }
+}
+
+# the USB network function (NCM), or DEVMODE_NETDEV; prints the interface
+usbnet() {
+    if [ -n "$NETDEV" ]; then echo "$NETDEV"; return 0; fi
+    [ -d "${G%/*}" ] || { modprobe libcomposite 2>/dev/null; mount -t configfs configfs /sys/kernel/config 2>/dev/null; }
+    mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409" "$G/functions/ncm.usb0" || return 1
+    echo "$USB_VENDOR" > "$G/idVendor"
+    echo "$USB_PRODUCT" > "$G/idProduct"
+    echo "$USB_MANUFACTURER" > "$G/strings/0x409/manufacturer"
+    echo "GlassineOS ($(uname -r))" > "$G/strings/0x409/product"
+    echo glassine > "$G/strings/0x409/serialnumber"
+    echo NCM > "$G/configs/c.1/strings/0x409/configuration"
+    [ -e "$G/configs/c.1/ncm.usb0" ] || ln -s "$G/functions/ncm.usb0" "$G/configs/c.1/"
+    _udc=$(ls "$UDCDIR" 2>/dev/null | head -n 1)
+    [ -n "$_udc" ] || { say "no USB device controller"; return 1; }
+    echo "$_udc" > "$G/UDC" || return 1
+    _if=$(cat "$G/functions/ncm.usb0/ifname" 2>/dev/null)
+    echo "${_if:-usb0}"
+}
+usbnet_down() {
+    [ -z "$NETDEV" ] && [ -d "$G" ] || return 0
+    echo "" > "$G/UDC" 2>/dev/null
+    rm -f "$G/configs/c.1/ncm.usb0"
+    rmdir "$G/configs/c.1/strings/0x409" "$G/configs/c.1" "$G/functions/ncm.usb0" "$G/strings/0x409" "$G" 2>/dev/null
+    return 0
+}
+
+running() { [ -s "$RUN/$1.pid" ] && kill -0 "$(cat "$RUN/$1.pid")" 2>/dev/null; }
+
+start() {
+    asked || return 0
+    [ -n "$DEVMODE_ADDR" ] || { say "glassine.devmode=usb, but $BOARD has no DEVMODE_ADDR: nothing started"; return 0; }
+    folder || return 0
+    running sshd && { say "already running"; return 0; }
+    mkdir -p "$RUN" && chmod 0700 "$RUN" || return 1
+    if [ ! -s "$D/ssh_host_ed25519_key" ]; then
+        ssh-keygen -q -t ed25519 -N '' -C glassine-devmode -f "$D/ssh_host_ed25519_key" || { say "cannot make the ed25519 host key"; return 1; }
+        say "made the ed25519 host key in $D"
+    fi
+    [ -e "$D/authorized_keys" ] || say "no $D/authorized_keys yet: nobody can log in (an administrator or the recovery puts the keys there)"
+    IF=$(usbnet) || { say "the USB network did not come up"; usbnet_down; return 1; }
+    ifconfig "$IF" "$DEVMODE_ADDR" netmask "$DEVMODE_NETMASK" up || { say "cannot set $DEVMODE_ADDR on $IF"; usbnet_down; return 1; }
+    if [ -n "$DEVMODE_DHCP_START" ] && [ -n "$DEVMODE_DHCP_END" ]; then
+        printf 'start %s\nend %s\ninterface %s\noption subnet %s\nlease_file %s/udhcpd.leases\npidfile %s/udhcpd.pid\n' \
+            "$DEVMODE_DHCP_START" "$DEVMODE_DHCP_END" "$IF" "$DEVMODE_NETMASK" "$RUN" "$RUN" > "$RUN/udhcpd.conf"
+        touch "$RUN/udhcpd.leases"
+        busybox-extras udhcpd "$RUN/udhcpd.conf" || say "the address server did not start"
+    fi
+    cat > "$RUN/sshd_config" <<EOC
+# glassine-devmode: made at each start; the developer folder is $D
+ListenAddress $DEVMODE_ADDR
+Port 22
+HostKey $D/ssh_host_ed25519_key
+AuthorizedKeysFile $D/authorized_keys
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+PermitEmptyPasswords no
+StrictModes yes
+PidFile $RUN/sshd.pid
+EOC
+    "$SSHD" -f "$RUN/sshd_config" || { say "the SSH server did not start"; stop; return 1; }
+    say "SSH on $DEVMODE_ADDR ($IF), keys from $D/authorized_keys"
+}
+
+stop() {
+    for _p in sshd udhcpd; do
+        running "$_p" && kill "$(cat "$RUN/$_p.pid")" 2>/dev/null
+        rm -f "$RUN/$_p.pid"
+    done
+    usbnet_down
+    return 0
+}
+
+status() {
+    if running sshd; then echo "running: SSH on $DEVMODE_ADDR"; return 0; fi
+    asked || { echo "off (no glassine.devmode=usb)"; return 1; }
+    echo "not running"; return 1
+}
+
+case ${1:-} in
+start) start ;;
+stop) stop ;;
+status) status ;;
+*) echo "usage: glassine-devmode start|stop|status" >&2; exit 2 ;;
+esac

@@ -66,6 +66,7 @@ GK_ABLDEV=${GLASSINE_BI_ABL_DEV:-/dev/disk/by-partlabel/$BLOCKLIST_ABL_PART}
 GK_BLTOOL=${GLASSINE_BI_BLOCKLIST:-/usr/lib/glassine-bootimg/glassine-blocklist}
 GK_MODES=${GLASSINE_BI_REBOOT_MODES:-/sys/class/reboot-mode}
 GK_PSDIR=${GLASSINE_POWER_SUPPLY:-/sys/class/power_supply}
+GK_SEED=${GLASSINE_BI_DEVICE_SEED:-/run/glassine/device}
 GK_RAM=''
 GK_STARTED=$TMP/glassine-bootimg.started
 GK_REQUESTED=$TMP/glassine-bootimg.requested    # reboot-test ran on this boot (in RAM)
@@ -540,6 +541,17 @@ gk_write_default() {
     return 2
 }
 
+# gk_seed_clash MANIFEST: the names in a kernel.manifest's firmware list that the
+# bound device seed holds under firmware/ (docs/kernel-artifacts.md, "Device
+# data": the seed is searched first, so its copy would win), space-separated
+gk_seed_clash() {
+    [ -d "$GK_SEED/firmware" ] || return 0
+    for _f in $(gs_kv "$1" firmware); do
+        _f=${_f%@*}
+        [ ! -e "$GK_SEED/firmware/$_f" ] || printf ' %s' "$_f"
+    done
+}
+
 # --- commands ------------------------------------------------------------------
 gk_install() {
     _rel='' _dtb='' _ird=''
@@ -560,6 +572,8 @@ gk_install() {
     [ -d "$_md" ] || die "install $_rel: no $_md (receive the kernel's modules first)"
     [ -r "$_md/kernel.manifest" ] && [ -r "$_md/Image.gz" ] || die "install $_rel: $_md has no kernel.manifest or Image.gz"
     gk_record_ok "$_md/kernel.manifest"
+    _clash=$(gk_seed_clash "$_md/kernel.manifest")
+    [ -z "$_clash" ] || die "install $_rel: the kernel's firmware provides files the device seed holds:$_clash (the seed's copy would win; the device package must drop them from its list)"
 
     # the device tree and the initramfs (FR-005)
     # no --dtb: the tree of the running image (the device's update names a new one)

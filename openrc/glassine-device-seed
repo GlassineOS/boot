@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+# The device seed (glassine-device-seed): the files a device takes from its own
+# partitions, verified and bound read-only on /run/glassine/device. In sysinit,
+# before the device manager's coldplug, so the drivers find their firmware. A
+# device whose list names no files has no device data: nothing runs, nothing
+# is said. When the initramfs bound a complete seed, the tool only sets the
+# firmware path.
+# shellcheck disable=SC2034  # read by openrc-run
+description="glassine: the device seed, files from the device's own partitions"
+
+LIST=/usr/share/glassine/device-data.list
+
+depend() {
+	after devfs
+	before udev-trigger mdev hwdrivers glassine-splash
+	keyword -docker -lxc -podman
+}
+
+start() {
+	# shellcheck source=../lib/glassine-device.sh
+	. /usr/lib/glassine-boot/glassine-device.sh || return 1
+	gd_has_entries "$LIST" || return 0
+	ebegin "glassine-device-seed: checking the device seed"
+	timeout 120 /usr/sbin/glassine-device-seed
+	eend $? "the device seed is incomplete (glassine-device-seed status)"
+}
