@@ -15,6 +15,9 @@ chk() { if eval "$2"; then say "ok $1"; else say "FAIL $1"; fi; }
 next() { echo "$1" > "$Q/stage"; sync; }
 booted=$(cat /run/glassine/booted 2>/dev/null)
 st() { glassine-deploy status --porcelain | sed -n 2p | tr '\t' '\n' | sed -n "s/^$1=//p"; }
+# the person's storage: a mount of userdata's directory NAME on PATH
+bound() { awk -v p="$2" -v r="/$P/$1" '$5 == p && $4 == r { ok = 1 } END { exit !ok }' /proc/self/mountinfo; }
+shared() { awk -v m="$1" '$5 == m { for (i = 7; $i != "-"; i++) if ($i ~ /^shared:/) s = 1 } END { exit !s }' /proc/self/mountinfo; }
 
 # hibernate: the real hibernate step (glassine-hibernate); returns after the resume
 hibernate() {
@@ -38,6 +41,9 @@ case $stage in
     chk "modules subvolume on /lib/modules" "mountpoint -q /lib/modules/$(uname -r)"
     chk "the kernel's firmware on /lib/firmware/updates, read-only" "[ \"\$(cat /lib/firmware/updates/qtest/a.fw)\" = fw ] && grep -q ' /lib/firmware/updates [^ ]* ro[, ]' /proc/mounts"
     chk "state lock free for the system" "flock -n /run/glassine/system/state/.lock true"
+    chk "storage: home/ and flatpak/ bound on /home and /var/lib/flatpak, /var/tmp shared" "bound home /home && bound flatpak /var/lib/flatpak && shared /var/tmp"
+    chk "storage: d1's own /home hidden, status says so" "[ ! -e /home/own-file ] && [ \"\$(st home)\" = bound ] && [ \"\$(st home_hidden)\" = yes ] && [ \"\$(st flatpak)\" = bound ]"
+    mkdir -p /home/1000 && echo mine > /home/1000/f && echo app > /var/lib/flatpak/app
     glassine-deploy reset --yes > /dev/console 2>&1
     S=$(st staged)
     chk "reset staged" "[ -n \"$S\" ]"
@@ -55,6 +61,7 @@ case $stage in
     chk "carried: the edit made before the reset" "[ \"\$(cat /etc/qtest/a 2>/dev/null)\" = first ]"
     chk "carried: the change made after the reset" "[ \"\$(cat /etc/qtest/b 2>/dev/null)\" = late ]"
     chk "not carried: a file outside the migrate list" "[ ! -e /etc/qtest-junk ]"
+    chk "storage after a reset: the same home and Flatpak data, nothing hidden" "bound home /home && [ \"\$(cat /home/1000/f)\" = mine ] && [ \"\$(cat /var/lib/flatpak/app)\" = app ] && [ \"\$(st home_hidden)\" = no ]"
     # the boot-success service accepts it once it has been up ACCEPT_AFTER (40 s) and healthy
     n=0; while [ "$(st current)" != "$S" ] && [ $n -lt 60 ]; do sleep 5; n=$((n + 1)); done
     chk "accepted by glassine-deploy-accept after a healthy boot" "dmesg | grep -q 'glassine-deploy-accept: $S accepted'"
@@ -77,7 +84,29 @@ case $stage in
     chk "noresume: the accepted deployment boots" "[ \"$booted\" = \"$(cat "$Q/staged")\" ]"
     sleep 50
     chk "accept step: nothing to judge on a boot of the current deployment" "! dmesg | grep -q 'glassine-deploy-accept: .* not accepted'"
+    # a full reset: nothing carried, home and Flatpak's data kept
+    echo later > /home/1000/g
+    glassine-deploy reset --full --yes > /dev/console 2>&1
+    F=$(st staged)
+    chk "full reset staged" "[ -n \"$F\" ]"
+    echo "$F" > "$Q/full"
+    glassine-switch-hook --user-shutdown
     next 4
+    say "poweroff (user shutdown, full reset expected)"
+    poweroff ;;
+4)  # the full reset as the candidate: home and Flatpak's data are the same
+    chk "the full reset boots as the candidate" "[ \"$booted\" = \"\$(cat $Q/full)\" ]"
+    chk "full reset: nothing carried" "[ ! -e /etc/qtest/a ]"
+    chk "storage after a full reset: the same home and Flatpak data" "bound home /home && bound flatpak /var/lib/flatpak && [ \"\$(cat /home/1000/f)\" = mine ] && [ \"\$(cat /home/1000/g)\" = later ] && [ \"\$(cat /var/lib/flatpak/app)\" = app ]"
+    # the next boot can't make flatpak/: a file of that name on userdata
+    mv $UD/$P/flatpak $UD/$P/flatpak.saved && echo notadir > $UD/$P/flatpak
+    next 5
+    poweroff ;;
+5)  # a storage step that fails: logged, the deployment's own directory, the boot goes on
+    chk "a failed flatpak/: logged, status says so, the deployment's own /var/lib/flatpak" "dmesg | grep -q '/var/lib/flatpak: cannot create flatpak/ on userdata' && [ \"\$(st flatpak)\" = failed ] && ! bound flatpak /var/lib/flatpak && [ ! -e /var/lib/flatpak/app ]"
+    chk "a failed flatpak/: nothing written there, home still bound" "[ \"\$(cat $UD/$P/flatpak)\" = notadir ] && bound home /home && [ \"\$(st home)\" = bound ]"
+    rm $UD/$P/flatpak && mv $UD/$P/flatpak.saved $UD/$P/flatpak
+    next 6
     say DONE
     poweroff ;;
 *)  say "FAIL unknown stage $stage"; poweroff ;;

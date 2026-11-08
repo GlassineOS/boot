@@ -110,6 +110,62 @@ gr_assemble_bare() {
     return 0
 }
 
+# The person's storage (docs/deployments.md, "The person's storage"): directories
+# under the userdata prefix, outside the deployments, bound into the booted
+# deployment by the boot (gr_boot), never by glassine-deploy's views. NAME:PATH,
+# PATH relative to the root.
+GR_STORAGE_DIRS='home:home flatpak:var/lib/flatpak'
+
+# gr_vartmp NEWROOT: /var/tmp a bind of itself, made shared (Flatpak's sandboxes
+# see mounts made under it later); its files stay in the deployment's /var.
+# Sets GR_VARTMP (shared, or failed).
+gr_vartmp() {
+    GR_VARTMP=failed
+    [ -d "$1/var/tmp" ] || mkdir -p "$1.rw/var/tmp" || { gr_log "/var/tmp: cannot create it, not shared"; return 0; }
+    mount --bind "$1/var/tmp" "$1/var/tmp" || { gr_log "/var/tmp: cannot bind it, not shared"; return 0; }
+    if mount --make-shared "$1/var/tmp"; then GR_VARTMP=shared
+    else umount "$1/var/tmp"; gr_log "/var/tmp: cannot make it shared"; fi
+    return 0
+}
+
+# gr_storage UDDIR NEWROOT: each GR_STORAGE_DIRS entry: UDDIR/NAME (created on
+# first use, root:root 0755) bound on NEWROOT/PATH (its mount point made through
+# the merged root NEWROOT.rw when the deployment has none). The deployment's own
+# directory is hidden by the bind, never moved or deleted. A directory that
+# can't be created, or a bind that fails, is logged and left out: the boot goes
+# on with the deployment's own directory, and nothing is written into UDDIR.
+# Never fails. Sets GR_STORAGE: key=value lines for /run/glassine/storage
+# (gr_carry): NAME=bound|failed, NAME_error=<why>, vartmp=shared|failed.
+gr_storage() {
+    GR_STORAGE=''
+    for _gr_e in $GR_STORAGE_DIRS; do
+        _gr_n=${_gr_e%%:*} _gr_p=${_gr_e#*:} _gr_why=''
+        _gr_src=$1/$_gr_n
+        if [ ! -d "$_gr_src" ]; then
+            if mkdir "$_gr_src" 2>/dev/null; then
+                chown 0:0 "$_gr_src" && chmod 0755 "$_gr_src" || _gr_why="cannot set the owner and mode of $_gr_n/"
+            else _gr_why="cannot create $_gr_n/ on userdata"; fi
+        fi
+        if [ -z "$_gr_why" ] && [ ! -d "$2/$_gr_p" ]; then
+            mkdir -p "$2.rw/$_gr_p" 2>/dev/null || _gr_why="cannot create the mount point /$_gr_p"
+        fi
+        [ -n "$_gr_why" ] || mount --bind "$_gr_src" "$2/$_gr_p" || _gr_why="the bind on /$_gr_p failed"
+        if [ -z "$_gr_why" ]; then
+            GR_STORAGE="$GR_STORAGE$_gr_n=bound
+"
+        else
+            gr_log "/$_gr_p: $_gr_why; the deployment's own /$_gr_p stays (tried again at the next boot)"
+            GR_STORAGE="$GR_STORAGE$_gr_n=failed
+${_gr_n}_error=$_gr_why
+"
+        fi
+    done
+    gr_vartmp "$2"
+    GR_STORAGE="${GR_STORAGE}vartmp=$GR_VARTMP
+"
+    return 0
+}
+
 # gr_umount NEWROOT: everything gr_assemble* mounted, innermost first
 gr_umount() {
     for _gr_m in $(awk -v r="$1" '$2 == r || index($2, r "/") == 1 || $2 == r ".rw" || $2 == r ".tmp" { print $2 }' /proc/mounts | sort -r); do
@@ -239,10 +295,12 @@ gr_resume() {
 # current deployment's base or else the last base by name. A state format
 # newer than this code, or a held lock: the state is read, never written.
 # A hibernate guard left on userdata (the image was invalidated) is removed.
-# Sets GR_BOOTED (the id, or bare:<base>) and GR_KBOOT. 1 = nothing
+# A deployment gets the person's storage (gr_storage), a bare boot only the
+# shared /var/tmp (nothing from userdata).
+# Sets GR_BOOTED (the id, or bare:<base>), GR_KBOOT and GR_STORAGE. 1 = nothing
 # bootable, nothing left mounted.
 gr_boot() {
-    _gr_sm=$4.sys _gr_um=$4.ud GR_BOOTED='' GR_KBOOT='' _gr_ud=''
+    _gr_sm=$4.sys _gr_um=$4.ud GR_BOOTED='' GR_KBOOT='' GR_STORAGE='' _gr_ud=''
     mkdir -p "$_gr_sm" && mount -t btrfs -o rw,noatime "$1" "$_gr_sm" || { gr_log "cannot mount $1"; return 1; }
     _gr_f=$(gs_format_version "$_gr_sm")
     [ "$_gr_f" != none ] || { gr_log "the system partition has no state/ (not migrated)"; umount "$_gr_sm"; return 1; }
@@ -271,7 +329,11 @@ gr_boot() {
         elif [ $_gr_rw = 1 ]; then _gr_id=$(gr_pick "$_gr_sm/state"); else _gr_id=$(gr_would_pick "$_gr_sm/state"); fi
         for _gr_try in "$_gr_id" "$(gs_kv "$_gr_st" current)" "$(gs_kv "$_gr_st" previous)"; do
             [ -n "$_gr_try" ] || continue
-            if gr_assemble "$_gr_sm" "$_gr_ud" "$_gr_try" "$4" "$5"; then GR_BOOTED=$_gr_try; return 0; fi
+            if gr_assemble "$_gr_sm" "$_gr_ud" "$_gr_try" "$4" "$5"; then
+                GR_BOOTED=$_gr_try
+                gr_storage "$_gr_ud" "$4"
+                return 0
+            fi
             gr_log "deployment $_gr_try does not assemble"
             [ $_gr_rw = 1 ] && [ "$_gr_try" = "$(gs_kv "$_gr_st" candidate)" ] &&
                 gs_update "$_gr_st" candidate= tries=0 "failed=$_gr_try"
@@ -282,7 +344,11 @@ gr_boot() {
     [ -n "$_gr_base" ] && [ -d "$_gr_sm/bases/$_gr_base" ] || _gr_base=$(ls -1 "$_gr_sm/bases" 2>/dev/null | sort | tail -n 1)
     if [ -n "$_gr_base" ] && gr_assemble_bare "$_gr_sm" "$_gr_base" "$4" "$5"; then
         gr_log "bare boot on base $_gr_base (nothing kept)"
-        GR_BOOTED=bare:$_gr_base; return 0
+        GR_BOOTED=bare:$_gr_base
+        gr_vartmp "$4"
+        GR_STORAGE="vartmp=$GR_VARTMP
+"
+        return 0
     fi
     gr_log "nothing to boot"
     gr_boot_umount "$4"
@@ -302,7 +368,9 @@ gr_boot_umount() {
 # SYSTEM_MNT, USERDATA_MNT), a bare boot's tmpfs to /run/glassine/bare, the
 # booted deployment in /run/glassine/booted (for the boot-success service's
 # accept), GR_KBOOT in /run/glassine/kernel-boot (that service skips a kernel
-# trial or finishing boot); the state lock released, so the system's glassine-deploy can take it.
+# trial or finishing boot), GR_STORAGE in /run/glassine/storage (what
+# glassine-deploy status reports); the state lock released, so the system's
+# glassine-deploy can take it.
 gr_carry() {
     _gr_r=$1/run/glassine
     # a base without /run: made in the overlay underneath (/ is read-only)
@@ -315,5 +383,6 @@ gr_carry() {
     if mountpoint -q "$1.tmp"; then mkdir -p "$_gr_r/bare" && mount --move "$1.tmp" "$_gr_r/bare" || return 1; fi
     echo "$GR_BOOTED" > "$_gr_r/booted"
     echo "${GR_KBOOT:-}" > "$_gr_r/kernel-boot"
+    printf '%s' "${GR_STORAGE:-}" > "$_gr_r/storage"
     exec 9>&-
 }

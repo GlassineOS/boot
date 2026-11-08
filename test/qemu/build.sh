@@ -127,6 +127,7 @@ umount $W/sys
 truncate -s 900M $W/ud.img; mke2fs -q -F -t ext4 -b 4096 -L userdata $W/ud.img
 mkdir -p $W/ud && mount -t ext4 -o loop $W/ud.img $W/ud
 D=$W/ud/media/glassine/deployments/d1; mkdir -p $D/build $D/switch $D/work
+mkdir -p $D/build/home && echo own > $D/build/home/own-file    # hidden by the storage bind
 printf 'base=b1\nkind=install\ncreated=qtest\n' > $D/meta
 mkdir -p $W/ud/qtest && echo 0 > $W/ud/qtest/stage
 umount $W/ud
