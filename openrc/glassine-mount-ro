@@ -1,0 +1,35 @@
+#!/sbin/openrc-run
+# The deployments layout's partitions read-only for power-off: a service of the
+# shutdown runlevel (rc-update add glassine-mount-ro shutdown), after OpenRC's
+# mount-ro. mount-ro skips what is no longer in the mount table, and by then
+# userdata isn't (localmount's stop unmounted /run/glassine/*, the overlay keeps
+# it alive): without this step its ext4 journal needs a replay at every boot.
+# gr_shutdown_ro (lib/glassine-root.sh) makes userdata, then the system
+# partition, read-only with every mount and bind of them. Never stops the
+# shutdown.
+# shellcheck disable=SC2034  # read by openrc-run
+description="glassine: userdata and the system partition read-only for power-off"
+
+depend() {
+	after mount-ro glassine-switch
+}
+
+start() {
+	ebegin "glassine: userdata and the system partition read-only"
+	(
+		CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+		SYSTEM_DEV='' USERDATA_DEV=''
+		# shellcheck source=/dev/null
+		[ -r "$CONF" ] && . "$CONF"
+		# shellcheck source=../lib/glassine-state.sh
+		. /usr/lib/glassine-boot/glassine-state.sh
+		# shellcheck source=../lib/glassine-root.sh
+		. /usr/lib/glassine-boot/glassine-root.sh
+		rc=0
+		for dev in "$USERDATA_DEV" "$SYSTEM_DEV"; do
+			[ -z "$dev" ] || gr_shutdown_ro "$dev" || rc=1
+		done
+		exit $rc
+	)
+	eend $?
+}

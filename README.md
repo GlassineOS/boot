@@ -36,6 +36,7 @@ the deployment's layers on userdata) and manages them with `glassine-deploy`:
 | `lib/glassine-accounts.sh` | the account merge of a switch (busybox awk): users, groups, passwords, memberships carried by name onto a new base; carried files follow renumbered IDs |
 | `lib/glassine-root.sh` | assembling a deployment's root: btrfs base + build layer + live upper (overlayfs), `/` read-only with writable `/etc`, `/var`, `/usr/local`, `/opt`; the interim try counter; the initramfs boot steps for `ROOT_LAYOUT=deployments` (hibernation resume or invalidate, pick + assemble with fallbacks, mounts carried to `/run/glassine/`) |
 | `sbin/glassine-switch-hook`, `openrc/glassine-switch` | the shutdown switch: a staged deployment is carried and selected at a shutdown the user started (`--user-shutdown` from the power menu) with the charger or enough battery; a service of the OpenRC shutdown runlevel |
+| `openrc/glassine-mount-ro` | userdata and the system partition read-only at power-off, after OpenRC's `mount-ro` (which no longer sees them): no journal replay at the next boot; a service of the OpenRC shutdown runlevel |
 | `conf/deploy.conf.example` | where the system partition and userdata are |
 | `test/` | host tests in an Alpine container |
 

@@ -33,6 +33,7 @@ finish() {
 truncate -s 256M $W/sys.img; mkfs.btrfs -q $W/sys.img
 truncate -s 160M $W/ud.img; mke2fs -q -F -t ext4 -b 4096 $W/ud.img
 loop $W/sys.img; SD=$LOOP; loop $W/ud.img; UDEV=$LOOP
+truncate -s 16M $W/ud2.img; mke2fs -q -F -t ext4 -b 4096 $W/ud2.img; loop $W/ud2.img; UD2=$LOOP   # never mounted
 mkdir -p $W/sysmnt $W/udmnt
 mount -t btrfs "$SD" $W/sysmnt && mount -t ext4 "$UDEV" $W/udmnt || { echo "FAIL cannot mount the loop devices"; finish; exit 1; }
 S=$W/sysmnt
@@ -497,6 +498,26 @@ umount $R/run/glassine/root $R/run/glassine/userdata $R/run/glassine/system
 ok "switch in the running deployment: carries from its live root, selects, leaves nothing mounted" "GLASSINE_DEPLOY_CONF=$W/deploy3.conf GLASSINE_DEPLOY_ROOT=$R $G switch >/dev/null && LSW=$U/deployments/$LS/switch && mount -t ext4 $UDEV $W/udmnt && [ \"\$(cat $W/udmnt/$P/deployments/$LS/switch/etc/eink/eink.conf)\" = live ] && ! grep -q 'view\.' /proc/mounts"
 ok "switch in the running deployment: a mount on top of / is not carried" "[ -e $W/udmnt/$P/deployments/$LS/switch/var/lib/bluetooth/k ] && [ ! -e $W/udmnt/$P/deployments/$LS/switch/var/lib/bluetooth/fromsubmount ]"
 umount $W/udmnt $R/var/lib/bluetooth
+# power-off (glassine-mount-ro, after OpenRC's mount-ro, which remounted the /etc
+# bind read-only and with it the overlay): userdata is in no mount table any more,
+# only the overlay keeps it alive, so its journal still needs a replay
+needs_rec() { dumpe2fs -h $UDEV 2>/dev/null | grep -q '^Filesystem features:.*needs_recovery'; }
+ok "power-off, before the step: userdata in no mount table, alive and dirty" "! grep -q '^$UDEV ' /proc/mounts && needs_rec"
+exec 8>$R/var/busy
+ok "gr_shutdown_ro with a writer left (a file open for writing): refused, said, still writable, no mount left" "! gr_shutdown_ro $UDEV 2>$W/err && grep -q 'cannot remount read-only (still in use), left writable' $W/err && needs_rec && echo y > $R/var/still && ! grep -q ' $GR_TMP/ro ' /proc/mounts"
+exec 8>&-
+mount -o remount,ro $R/etc
+ok "gr_shutdown_ro userdata: read-only, journal clean, the extra mount gone" "gr_shutdown_ro $UDEV 2>$W/err && ! needs_rec && [ ! -s $W/err ] && ! grep -q '^$UDEV ' /proc/mounts"
+ok "gr_shutdown_ro: the overlay's upper is read-only (a write through it fails)" "mount -o remount,rw $R/etc 2>/dev/null; ! sh -c 'echo x > $R/etc/after-ro' 2>/dev/null"
+mount -t btrfs $SD $W/sysmnt
+ok "gr_shutdown_ro system: read-only, with a mount of it that is still in the table" "gr_shutdown_ro $SD 2>$W/err && [ ! -s $W/err ] && roflag $W/sysmnt && ro $W/sysmnt/after-ro && [ \$(grep -c '^$SD ' /proc/mounts) = 3 ]"
+umount $W/sysmnt
+ok "gr_shutdown_ro of a file system that isn't mounted: nothing mounted, nothing written" "S0=\$(md5sum < $W/ud2.img) && gr_shutdown_ro $UD2 && [ \"\$(md5sum < $W/ud2.img)\" = \"\$S0\" ] && ! grep -q '^$UD2 ' /proc/mounts"
+ok "gr_shutdown_ro of a path that isn't a device: nothing" "gr_shutdown_ro $W/nodev"
+# the rest of the test: both writable again
+mkdir -p $W/rw && mount -t ext4 -o ro $UDEV $W/rw && mount -o remount,rw $W/rw && umount $W/rw
+mount -t btrfs $SD $W/rw && umount $W/rw    # btrfs: a read-write mount of a read-only one makes it read-write
+mount -o remount,rw $R/etc
 mkdir -p $R/run/glassine/system $R/run/glassine/userdata && mount -t btrfs $SD $R/run/glassine/system && mount -t ext4 $UDEV $R/run/glassine/userdata
 ok "after the switch: the staged one is the candidate" "[ \"\$(gs_kv $R/run/glassine/system/state/deploy candidate)\" = $LS ]"
 GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G select $CUR >/dev/null; rm -rf $R/run/glassine/userdata/$P/deployments/$LS
