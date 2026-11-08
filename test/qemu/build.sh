@@ -8,13 +8,41 @@
 #                    (btrfs ioctls don't pass user emulation): a GPT disk with a btrfs "system"
 #                    partition (base b1, modules subvolume, state/) and an ext4
 #                    "userdata" partition (deployment d1)
+#   build.sh fsck N  the same container after boot N: both file systems of
+#                    disk.img checked read-only (e2fsck -fn, btrfs check
+#                    --readonly), one QTEST line each
+# QTEST_BASE=1 (test.sh --base): files leaves the base out; disk receives the
+# outside base from /in/base.btrfs.zst (and copies /in/base2.btrfs.zst, a delta,
+# onto userdata for the agent), and builds d1's build layer: agent-base.sh and
+# its test configuration (below).
 # Output in $OUT: Image, initramfs.cpio.gz, disk.img.
 set -eu
 R=/p                                  # this repository, read-only
 OUT=${OUT:-/out}
-W=/w; mkdir -p $W $OUT && mount -t tmpfs -o size=2200m tmpfs $W
+if [ "${1:-}" = fsck ]; then
+    apk add -q btrfs-progs e2fsprogs e2fsprogs-extra sgdisk losetup >/dev/null
+    for i in 1 2; do
+        s=$(sgdisk -i $i $OUT/disk.img | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+        e=$(sgdisk -i $i $OUT/disk.img | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
+        l=$(losetup -f --show -r -o $((s * 512)) --sizelimit $(((e - s + 1) * 512)) $OUT/disk.img)
+        if [ $i = 1 ]; then
+            if btrfs check --readonly "$l" > /tmp/c 2>&1; then echo "QTEST ok after boot $2: system (btrfs) clean"
+            else cat /tmp/c; echo "QTEST FAIL after boot $2: system (btrfs) clean"; fi
+        else
+            # an unclean ext4 has needs_recovery set (its journal would be replayed)
+            if dumpe2fs -h "$l" 2>/dev/null | grep -q '^Filesystem features:.*needs_recovery'; then
+                echo "QTEST FAIL after boot $2: userdata (ext4) clean: the journal needs a replay"
+            elif e2fsck -fn "$l" > /tmp/c 2>&1; then echo "QTEST ok after boot $2: userdata (ext4) clean"
+            else cat /tmp/c; echo "QTEST FAIL after boot $2: userdata (ext4) clean (e2fsck -fn)"; fi
+        fi
+        losetup -d "$l"
+    done
+    exit 0
+fi
+TMPSZ=2200m; [ -z "${QTEST_BASE:-}" ] || TMPSZ=4400m
+W=/w; mkdir -p $W $OUT && mount -t tmpfs -o size=$TMPSZ tmpfs $W
 if [ "${1:-}" = disk ]; then
-    apk add -q btrfs-progs e2fsprogs sgdisk coreutils tar >/dev/null
+    apk add -q btrfs-progs e2fsprogs sgdisk coreutils tar zstd >/dev/null
 else
 apk add -q linux-virt kmod e2fsprogs e2fsprogs-extra coreutils tar \
     busybox-static busybox-extras cpio gzip build-base linux-headers >/dev/null
@@ -57,6 +85,14 @@ EOF
 chmod 755 $S/x/init $S/x/init.glassine
 (cd $S/x && find . | sort | cpio -o -H newc -R 0:0 --quiet | gzip -9n) > $W/shim.cpio.gz
 cat $W/base.cpio.gz $W/shim.cpio.gz > $OUT/initramfs.cpio.gz
+
+if [ -n "${QTEST_BASE:-}" ]; then     # an outside base: only the kernel side here
+    tar -C /lib/modules/$KREL -cf $OUT/modules.tar .
+    echo "$KREL" > $OUT/krel
+    echo "files: kernel $KREL (outside base)"
+    cd /; umount $W
+    exit 0
+fi
 
 # --- the base tree --------------------------------------------------------------
 B=$W/base; mkdir -p $B
@@ -109,6 +145,7 @@ fi
 
 # --- the system partition (disk step) --------------------------------------------
 KREL=$(cat $OUT/krel)
+[ -z "${QTEST_BASE:-}" ] || exec sh $R/test/qemu/build-base.sh "$W" "$KREL"
 truncate -s 1400M $W/sys.img; mkfs.btrfs -q -L system $W/sys.img
 mkdir -p $W/sys && mount -t btrfs -o loop $W/sys.img $W/sys
 mkdir -p $W/sys/bases $W/sys/modules $W/sys/state
