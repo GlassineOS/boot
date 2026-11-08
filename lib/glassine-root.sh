@@ -67,11 +67,20 @@ gr_bind_locked() {
 }
 
 # gr_modules SYSMNT NEWROOT KREL: modules/<krel> (a subvolume) on
-# /lib/modules/<krel>; 1 (and nothing mounted) if the kernel has none
+# /lib/modules/<krel>, and its firmware/ on /lib/firmware/updates (searched before
+# /lib/firmware), both read-only; 1 (and nothing mounted) if the kernel has none.
+# The base needs no knowledge of the release: the mount points are made through the
+# merged root NEWROOT.rw, since NEWROOT itself is the locked (read-only) view.
 gr_modules() {
     [ -d "$1/modules/$3" ] || return 1
-    [ -d "$2/lib/modules/$3" ] || return 1
-    mount --bind "$1/modules/$3" "$2/lib/modules/$3" && mount -o remount,bind,ro "$2/lib/modules/$3"
+    mkdir -p "$2.rw/lib/modules/$3" || return 1
+    mount --bind "$1/modules/$3" "$2/lib/modules/$3" && mount -o remount,bind,ro "$2/lib/modules/$3" || return 1
+    [ -d "$1/modules/$3/firmware" ] || return 0
+    mkdir -p "$2.rw/lib/firmware/updates" &&
+        mount --bind "$1/modules/$3/firmware" "$2/lib/firmware/updates" &&
+        mount -o remount,bind,ro "$2/lib/firmware/updates" ||
+        echo "glassine-root: $3's firmware not bound on /lib/firmware/updates" >&2
+    return 0
 }
 
 # gr_assemble SYSMNT UDDIR ID NEWROOT [KREL]: the deployment's root, locked, at

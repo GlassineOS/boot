@@ -39,7 +39,7 @@ S=$W/sysmnt
 mkdir -p $S/bases $S/modules $S/state
 btrfs -q subvolume create $S/bases/b1
 B=$S/bases/b1
-mkdir -p $B/etc/apk $B/etc/eink $B/usr/bin $B/usr/local $B/opt $B/var/lib $B/lib/modules/7.3.0 $B/usr/share/glassine
+mkdir -p $B/etc/apk $B/etc/eink $B/usr/bin $B/usr/local $B/opt $B/var/lib $B/lib/modules $B/lib/firmware $B/usr/share/glassine
 echo alpine-base > $B/etc/apk/world
 echo glassine > $B/etc/hostname
 echo welcome > $B/etc/motd
@@ -49,7 +49,7 @@ printf '#!/bin/sh\necho hello\n' > $B/usr/bin/hello; chmod 755 $B/usr/bin/hello
 printf '# shipped\n/etc/eink/\n/etc/hostname\n/etc/passwd\n/var/lib/bluetooth/\n../escape\nrelative/path\n' > $B/usr/share/glassine/migrate.list
 btrfs property set -ts $B ro true
 btrfs -q subvolume create $S/modules/7.3.0
-mkdir -p $S/modules/7.3.0/kernel; echo ko > $S/modules/7.3.0/kernel/x.ko
+mkdir -p $S/modules/7.3.0/kernel $S/modules/7.3.0/firmware/qcom; echo ko > $S/modules/7.3.0/kernel/x.ko; echo fw > $S/modules/7.3.0/firmware/qcom/a.fw
 btrfs property set -ts $S/modules/7.3.0 ro true
 echo version=1 > $S/state/format
 printf 'current=d1\nprevious=\ncandidate=\ntries=0\n' > $S/state/deploy
@@ -70,7 +70,8 @@ ok "the writes go through the overlay: copy-up into d1's switch layer" "[ \"\$(c
 rm $R/etc/motd
 ok "a deletion in /etc: a whiteout in the switch layer, the base keeps the file" "[ ! -e $R/etc/motd ] && [ -c $U/deployments/d1/switch/etc/motd ] && [ \"\$(cat $B/etc/motd)\" = welcome ]"
 ok "rename-replace in /etc works (passwd-style)" "printf 'root:x:0:0:root:/root:/bin/ash\nuser:x:1000:1000::/home/user:/bin/ash\n' > $R/etc/passwd.new && mv $R/etc/passwd.new $R/etc/passwd && grep -q ash $R/etc/passwd"
-ok "modules: on /lib/modules/7.3.0, read-only" "[ \"\$(cat $R/lib/modules/7.3.0/kernel/x.ko)\" = ko ] && ro $R/lib/modules/7.3.0/kernel/y.ko"
+ok "modules: on /lib/modules/7.3.0 (the base has no such directory), read-only" "[ ! -e $B/lib/modules/7.3.0 ] && [ \"\$(cat $R/lib/modules/7.3.0/kernel/x.ko)\" = ko ] && ro $R/lib/modules/7.3.0/kernel/y.ko"
+ok "the kernel's firmware: on /lib/firmware/updates, read-only" "[ \"\$(cat $R/lib/firmware/updates/qcom/a.fw)\" = fw ] && ro $R/lib/firmware/updates/b.fw"
 ok "unlock: / writable" "gr_unlock $R && echo new > $R/usr/bin/new && [ -e $U/deployments/d1/switch/usr/bin/new ]"
 ok "lock: / read-only again" "gr_lock $R && ro $R/usr/bin/new2"
 ok "the base is unchanged" "[ \"\$(basesum)\" = \"\$SUM0\" ]"
