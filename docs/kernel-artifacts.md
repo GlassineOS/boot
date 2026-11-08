@@ -6,7 +6,9 @@ records, `glassine-bootimg` `install` (the `bootpart-test` hand-off), `status`, 
 `retry`, `accept`, `rollback`, the default-slot write, the interlocks with
 `glassine-deploy` and `glassine-hibernate`, the trial in the initramfs, and `promote`
 (finishing a cut write, `requested`, the verdict, a deferred install). Not built: the
-`blocklist` hand-off, and everything under "Not covered here". It builds on
+`blocklist` hand-off, the feature table (`conf/kernel-features`; until it exists,
+`provides`, `features` and `needs` are empty, so rule 1 passes), and everything under
+"Not covered here". It builds on
 `glassine-deploy`'s `receive --modules`, `stage` and `bases remove`. Kernel updates stay
 paused on a device until its hand-off (below) exists. Once implemented, `images` builds to
 this page and the tools here consume it. Changes go through this repository
@@ -27,7 +29,7 @@ board.conf's `KERNEL`, `DTB`, `INITRAMFS`, as today.
 |---|---|---|---|
 | kernel | kernel source + config, per SoC (per device only if a device needs its own config) | its **release** (below) | `modules/<release>/`: image, modules, firmware |
 | device tree | the kernel source's board files, per device | `<device>@<sha256-16>` of the `.dtb` | `boot/dtb/<device>@<sha256-16>.dtb` |
-| initramfs | this repository (`build-initramfs.sh`) | `<commit12>` of this repository | `boot/initramfs/<commit12>.cpio.gz` |
+| initramfs | this repository (`build-initramfs.sh`) and the tools it installs | `<commit12>@<sha256-16>`: this repository's commit and the file's content | `boot/initramfs/<commit12>@<sha256-16>.cpio.gz` |
 | base | `images` stages | `<base-id>` | `bases/<base-id>/` ([deployments.md](deployments.md)) |
 
 Each has its own place, so a new initramfs, a device tree for a new device or a fixed
@@ -55,10 +57,20 @@ it right whatever the clone has (tags or not):
   then appends nothing.
 - `<flavor>` names the SoC (`sdm660`), never a device or a person; a device-specific config
   gets its own flavor.
-- `<cfg6>`: the first 6 hex digits of sha256 over the final `.config` and the builder
-  image's digest.
-- `<commit12>`: the kernel source commit. A build from a tree with uncommitted changes is
-  refused (the build checks `git status`).
+- `<cfg6>`: the first 6 hex digits of the sha256 of these bytes, in this order: the final
+  `.config` as the build left it, then three lines, each ended by a newline:
+  - `builder=<image>@sha256:<64 hex>`: the builder image as the build pins it, by the
+    digest of the platform manifest it runs (not of a multi-platform index);
+  - `firmware=<value>`: `kernel.manifest`'s `firmware` value;
+  - `layout=<N>`: the build's tree layout version, a number the build bumps with any
+    change in how it makes `modules/<release>/` from the compile (strip flags, depmod,
+    which files it keeps).
+
+  So everything in `modules/<release>/` follows from the release: a firmware bump or a
+  packaging change makes a new release, never a different tree under an old one.
+- `<commit12>`: the kernel source commit. A build from changed sources is refused: a
+  local tree is checked with `git status`, a fetched source by checking that `HEAD` is the
+  pinned commit and the worktree has no changes.
 - The packer checks the string inside the kernel image (`--expect-release`, already in
   `lib/glassine-bootimg-pack`).
 - Nothing sorts releases: `state/kernel` names them explicitly.
@@ -77,13 +89,13 @@ system partition (btrfs, top level)
 │   └── kernel.manifest
 └── boot/                         plain directory, written under state/.lock
     ├── dtb/<device>@<id>.dtb             + <device>@<id>.manifest
-    └── initramfs/<commit12>.cpio.gz      + <commit12>.manifest
+    └── initramfs/<commit12>@<id>.cpio.gz + <commit12>@<id>.manifest
 ```
 
 `boot/` files are named by their content, so a file once written never changes; a new
 device tree or initramfs is a new file, added by `glassine-deploy receive --boot FILE`
 (new). Their manifests hold only facts about the bytes, so the same bytes give the same
-file and manifest, and receiving an existing name is a no-op. A file may be removed only when no kernel record names it (`state/kernel`'s
+file and manifest, whichever build made them, and receiving an existing name is a no-op. A file may be removed only when no kernel record names it (`state/kernel`'s
 `deferred_dtb` and `deferred_initramfs` included) and it was received
 before the last `glassine-bootimg install` (so a file received for an install that hasn't
 happened yet stays).
@@ -210,7 +222,7 @@ state/bootimg/<id>.manifest  its record (below)
 | `tries` | boots the candidate has left (0–1) |
 | `failed`, `failed_img` | the last candidate that failed, and `reason` in its image record |
 | `deferred` | a release waiting for its install: it arrived during a trial, or while a deployment was a candidate or staged |
-| `deferred_dtb`, `deferred_initramfs` | the device tree (`<device>@<id>`) and initramfs (`<commit12>`) that deferred install was checked with, and installs with |
+| `deferred_dtb`, `deferred_initramfs` | the device tree (`<device>@<id>`) and initramfs (`<commit12>@<id>`) that deferred install was checked with, and installs with |
 | `requested` | the `candidate_img` that `reboot-test` asked the bootloader for; cleared at the next boot. A boot that isn't the candidate's while `tries=1` means the trial never started: the candidate is failed, with the hand-off's reason |
 | `writing`, `writing_op` | the image a command is writing to the default slot, and which command (`accept`, `rollback` or `repair`); set before the write, cleared after the state write that completes it. A boot of that image is a finishing boot (below) |
 
@@ -318,25 +330,37 @@ Every record is `key=value`, one per line, the format of the state files
 |---|---|
 | `release` | the release |
 | `source` | `URL@COMMIT` |
+| `builder` | the builder image, `<image>@sha256:<64 hex>`, as `<cfg6>` uses it |
+| `layout` | the build's tree layout version, as `<cfg6>` uses it |
 | `config_sha256` | of the final `.config` |
 | `image_sha256` | of `Image.gz` |
-| `modules_sha256` | of a sorted `path sha256` list over the modules tree |
-| `firmware` | space-separated `name@sha256-16` of `firmware/` |
+| `modules_sha256` | of the modules list (below) |
+| `firmware` | space-separated `name@sha256-16` of the files under `firmware/`, `name` relative to `firmware/`, sorted by bytes |
 | `provides` | features built in, from this repository's table (below) |
 | `features` | the version of that table used |
-| `dtbs` | the device trees built at the same commit (`<device>@<id>`) |
 
-**dtb manifest** (`boot/dtb/<device>@<id>.manifest`): `device`, `sha256`, `source`
-(`URL@COMMIT` of the first build that produced these bytes). A kernel built at the same
-commit lists the trees it was built with in `kernel.manifest` (`dtbs`), so a fixed tree
-ships for an installed kernel without recompiling it: it becomes a candidate with the
-same release and its own image, and goes through a trial.
+The **modules list** is one line `<path> <sha256>` per regular file under
+`modules/<release>/` except `Image.gz`, `kernel.manifest` and everything under
+`firmware/` (those have their own keys); `<path>` is relative to `modules/<release>/`,
+without a leading `./`; lines sorted by bytes (`LC_ALL=C sort`), each ended by a newline.
+The tree holds no symlinks or other special files (the build removes `modules_install`'s
+`build` and `source` links); finding one fails the build.
 
-**initramfs manifest** (`boot/initramfs/<commit12>.manifest`): `commit`, `sha256`,
-`state_format` (newest it writes), `needs`, `features`.
+A kernel record says nothing about device trees. Which tree a device boots with which
+kernel is named by the device's update (below, "Build outputs"), so a tree for a new
+device, or a fixed tree, ships without a new kernel release: for an installed kernel it
+becomes a candidate with the same release and its own image, and goes through a trial.
+
+**dtb manifest** (`boot/dtb/<device>@<id>.manifest`): `device`, `sha256`.
+
+**initramfs manifest** (`boot/initramfs/<commit12>@<id>.manifest`): `commit` (this
+repository's, full), `sha256`, `state_format` (newest it writes), `needs`, `features`. The
+name carries the content as well as the commit because the bytes also depend on the tools
+the build installs (busybox, e2fsprogs), which `images` locks: a lock refresh gives a new
+name, never different bytes under an old one.
 
 **boot record** (in `state/bootimg/<id>.manifest`): `id` (the `glassine.img=` value),
-`device`, `kernel` (release), `dtb` (identity), `initramfs` (commit12), `cmdline`,
+`device`, `kernel` (release), `dtb` (identity), `initramfs` (identity), `cmdline`,
 `board` (sha256 of the `board.conf` the header fields came from).
 
 **Base manifest:** `/usr/share/glassine/base.manifest` in the base tree, defined here:
@@ -357,18 +381,20 @@ So a kernel and a base built with different table versions still compare.
 A boot image is **valid** when:
 
 1. the kernel's `provides` covers the initramfs's `needs`;
-2. the kernel's `dtbs` lists the device tree (built together); otherwise `install` logs a
-   warning and goes on: the device-tree ABI only promises that newer kernels accept older
-   trees, so the trial (every install is one) is what proves the pair;
-3. it fits the board's limits (slot size, the bootloader's ramdisk limit).
+2. it fits the board's limits: the image `PART_SIZE`, the ramdisk (initramfs and
+   board.conf) `RAMDISK_MAX` when the board sets it.
+
+Nothing checks that a device tree and a kernel belong together: the device-tree ABI only
+promises that newer kernels accept older trees, so the trial (every install is one) is
+what proves the pair. The build pairs them from one kernel commit.
 
 A kernel **covers** a deployment when its `provides` covers the base's `needs` and its
 subvolume is on the system partition.
 
 Checked by:
 
-- the build, when it packs (1–3);
-- `glassine-bootimg install`, before the hand-off: 1–3, and that the kernel covers the
+- the build, when it packs (1–2);
+- `glassine-bootimg install`, before the hand-off: 1–2, and that the kernel covers the
   deployments that will boot next (current, and a staged one). `previous` isn't required:
   an old deployment never blocks a kernel update; going back to it is checked when it is
   selected. If the current kernel doesn't cover it (exit 8), the way back is
@@ -394,10 +420,13 @@ initramfs from `boot/`, not from the base.
 
 1. `glassine-deploy receive --modules` (the kernel's subvolume), and `receive --boot` for
    a device tree or initramfs the device doesn't have yet.
-2. `glassine-bootimg install <release> [--dtb <device>@<id>] [--initramfs <commit12>]`:
-   checks, makes it the candidate, hands it off. The device tree defaults to the entry for
-   board key `DEVICE` in the kernel's `dtbs`, the initramfs to the one in `current_img`'s
-   boot record.
+2. `glassine-bootimg install <release> [--dtb <device>@<id>] [--initramfs <commit12>@<id>]`:
+   checks, makes it the candidate, hands it off. An update passes all three from the
+   device's `select/<device>` (below). Without the flags, the device tree and the
+   initramfs are the ones in `current_img`'s boot record; neither there: refused, naming
+   the flag. Board key `DEVICE` is required, and a device tree for another device is
+   refused. Names must have their form: `<device>@<hex>` and `<hex>@<hex>` (a bare hex
+   initramfs commit is accepted from records written before the id).
 3. The trial, then accept (writes `state/kernel`). Modules of current, previous, the
    candidate and deferred are never removed; older ones may be (`bases remove` extends to
    modules).
@@ -437,7 +466,7 @@ kernel (with a kexec loader) is a loader change, not a format change: an empty v
 | `glassine-bootimg` | kernel records, trial and accept on the system partition in the deployments layout; `install` defers during a deployment trial or with a staged deployment; `cancel` (new); `status` `format=1` |
 | initramfs | the kernel trial (boots current, no deployment try, no accept); the `DEVICE_PART` mount, verified before it is bound |
 | `glassine-hibernate` | exit 3 while another kernel than the running one is selected, during a kernel trial, and while `DEVICE_PART` is read-write |
-| `board.conf` | `DEVICE_PART`, `HANDOFF`; `KERNEL`, `DTB`, `INITRAMFS` only for the plain layout |
+| `board.conf` | `DEVICE_PART`, `HANDOFF`, `RAMDISK_MAX`; `KERNEL`, `DTB`, `INITRAMFS` only for the plain layout |
 
 ## When this is implemented
 
@@ -458,8 +487,31 @@ What changes with it:
 - docs.glassine.org, Boot flow: vendor partitions are mounted read-only without replaying a
   journal, except the seed's read-write copy.
 
+## Build outputs
+
+What a build of these artifacts hands on (to publishing, an installer, a device's update)
+mirrors the system partition:
+
+```
+modules/<release>/                     as on the system partition
+boot/dtb/<device>@<id>.dtb             + .manifest
+boot/initramfs/<commit12>@<id>.cpio.gz + .manifest
+bootimg/<id>.img                       a packed image per device (installers, first flash)
+bootimg/<id>.manifest                  its boot record (the fields of an image record that
+                                       don't depend on the device's state)
+select/<device>                        the device's update (below)
+```
+
+`select/<device>` is a record (`format=1`): `device`, `kernel` (release), `dtb`
+(`<device>@<id>`), `initramfs` (`<commit12>@<id>`). It is the only place a device tree is
+paired with a kernel. A device's update compares it with the boot record of
+`current_img` and, if one is set, of `candidate_img` (`kernel`, `dtb`, `initramfs`).
+When either already matches, there is nothing to do: `install` would refuse an image that
+is the current one already. Otherwise the update receives what the record names that the
+device doesn't have, then runs `glassine-bootimg install <kernel> --dtb <dtb> --initramfs
+<initramfs>`.
+
 ## Not covered here
 
 - The kexec loader (it consumes the same layout and records).
-- How `images` builds these (stages `kernel-<soc>`, `dtb-<device>`, `initramfs-<device>`,
-  `boot-<device>`), signing and publishing.
+- How `images` builds these, signing and publishing.

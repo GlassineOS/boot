@@ -17,6 +17,8 @@ jobs:
         run: sh test/root/test.sh
       - name: package replay with real apk (privileged, needs network)
         run: sh test/replay/test.sh
+      - name: glassine-slot on a GPT disk image
+        run: sh test/slot/test.sh
   build:
     runs-on: ubuntu-24.04-arm
     steps:
@@ -44,7 +46,12 @@ jobs:
       - name: no board-specific names outside the example board.conf
         run: |
           set -e
-          git grep -n -i -w -E 'l[a]b|l[a]bnet|n[a]1|on[y]x|system[_]b|boot[_]b' -- . ':!conf/board.conf.example' ':!conf/deploy.conf.example' && exit 1
+          # boot_a/boot_b (and the test disk's other _b partitions) are the A/B partition names of ABL's slot
+          # scheme, which glassine-slot works on: allowed in its source and test, and elsewhere the
+          # pair's own name only (removed from each line before the line is checked again)
+          names='l[a]b|l[a]bnet|n[a]1|on[y]x|system[_]b|boot[_]b'
+          git grep -n -i -w -E "$names" -- . ':!conf/board.conf.example' ':!conf/deploy.conf.example' \
+            ':!src/glassine-slot.c' ':!test/slot' | sed 's|boot[_]a`\{0,1\}/`\{0,1\}boot[_]b||gI' | grep -i -w -E "$names" && exit 1
           git grep -n -E '/l[a]b/|172\.16' -- . ':!conf/board.conf.example' ':!conf/deploy.conf.example' && exit 1
           echo clean
   shellcheck:

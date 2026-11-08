@@ -33,7 +33,7 @@
 # kernel records on the system partition instead, the same on every board,
 # and only the hand-off differs (HANDOFF): lib/glassine-kernel.sh,
 # docs/kernel-artifacts.md. There:
-#   glassine-bootimg install REL [--dtb DEVICE@ID] [--initramfs COMMIT12]
+#   glassine-bootimg install REL [--dtb DEVICE@ID] [--initramfs COMMIT12@ID]
 #                                   pack from modules/REL and boot/, make it the candidate
 #   glassine-bootimg status         format=1, state=none|candidate|trial|finishing|writing|failed, the keys
 #   glassine-bootimg cancel         drop the kernel candidate (the default boot is untouched)

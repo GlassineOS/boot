@@ -29,6 +29,7 @@ the deployment's layers on userdata) and manages them with `glassine-deploy`:
 | `lib/glassine-bootimg-pack` | packs a header-v0 Android boot image from the board config |
 | `openrc/glassine-bootimg-promote` | gives the verdict on a test boot |
 | `sbin/glassine-reboot-clean`, `src/glassine-reboot.c` | an orderly reboot with a reboot reason (the way into the test slot) |
+| `src/glassine-slot.c` | the bootloader slot (A/B) state: status, set-active, mark-successful ([boot.md](docs/boot.md#slots)) |
 | `conf/board.conf.example` | every board key, documented |
 | `sbin/glassine-deploy`, `lib/glassine-state.sh` | root deployments and their recovery interface (`status`, `list`, `select`, `rollback`, `hibernate-invalidate`, `reset`, `stage`, `receive`, `bases`, `packages`, `switch`, `accept`); the shared state and hibernate-guard helpers |
 | `sbin/glassine` | the root lock (`status`, `unlock`, `lock`) and the apk wrapper (`glassine apk`, installed as `/usr/sbin/apk`): a package change gets `/` writable for its run only |

@@ -32,7 +32,14 @@ for line in open(conf_path):
     if line and not line.startswith('#') and '=' in line:
         k, v = line.split('=', 1)
         conf[k.strip()] = (shlex.split(v) or [''])[0]
-num = lambda k: int(conf[k], 0)
+def fail(msg):                            # a message and exit 1, also under python3 -O
+    print(f'glassine-bootimg-pack: {msg}', file=sys.stderr)
+    sys.exit(1)
+def num(k):
+    try:
+        return int(conf[k], 0)
+    except (KeyError, ValueError):
+        fail(f'{k} in {conf_path} is not a number: {conf.get(k, "(missing)")!r}')
 ps = num('PAGE_SIZE')
 
 kernel_gz = open(image_gz, 'rb').read()
@@ -58,10 +65,12 @@ rd = open(ramdisk_path, 'rb').read()
 rd += b'\0' * (-len(rd) % 4)              # each archive starts 4-byte aligned
 rd += newc([('etc', 0o40755, b''), ('etc/glassine-boot', 0o40755, b''),
             ('etc/glassine-boot/board.conf', 0o100644, open(conf_path, 'rb').read())])
+if conf.get('RAMDISK_MAX'):                # the bootloader's ramdisk limit (empty: only PART_SIZE)
+    if len(rd) > num('RAMDISK_MAX'): fail(f'ramdisk {len(rd)} > RAMDISK_MAX {num("RAMDISK_MAX")}')
 base = conf['CMDLINE']
 ident = hashlib.sha256(kernel + b'\0' + rd + b'\0' + base.encode()).hexdigest()[:16]
 cmd = f'{base} glassine.img={ident}'.encode()
-assert len(cmd) < 512, 'cmdline too long for header v0'
+if len(cmd) >= 512: fail('cmdline too long for header v0')
 
 hdr = bytearray(ps)
 hdr[0:8] = b'ANDROID!'
@@ -77,6 +86,6 @@ hdr[576:608] = sha1.digest().ljust(32, b'\0')           # id (as mkbootimg)
 up = lambda n: (n + ps - 1) // ps * ps
 img = bytes(hdr) + kernel.ljust(up(len(kernel)), b'\0') + rd.ljust(up(len(rd)), b'\0')
 limit = num('PART_SIZE')
-assert len(img) <= limit, f'image {len(img)} > partition {limit}'
+if len(img) > limit: fail(f'image {len(img)} > partition {limit}')
 open(out, 'wb').write(img)
 print(f'ID={ident} SIZE={len(img)} SHA={hashlib.sha256(img).hexdigest()}')
