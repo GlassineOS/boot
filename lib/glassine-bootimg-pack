@@ -58,6 +58,8 @@ rd = open(ramdisk_path, 'rb').read()
 rd += b'\0' * (-len(rd) % 4)              # each archive starts 4-byte aligned
 rd += newc([('etc', 0o40755, b''), ('etc/glassine-boot', 0o40755, b''),
             ('etc/glassine-boot/board.conf', 0o100644, open(conf_path, 'rb').read())])
+if conf.get('RAMDISK_MAX'):                # the bootloader's ramdisk limit (empty: only PART_SIZE)
+    assert len(rd) <= num('RAMDISK_MAX'), f'ramdisk {len(rd)} > RAMDISK_MAX {num("RAMDISK_MAX")}'
 base = conf['CMDLINE']
 ident = hashlib.sha256(kernel + b'\0' + rd + b'\0' + base.encode()).hexdigest()[:16]
 cmd = f'{base} glassine.img={ident}'.encode()

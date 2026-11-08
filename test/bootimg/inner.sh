@@ -121,8 +121,10 @@ ok "board without a role word: glassine.test = the test slot" "[ \"\$($B status)
 sed -i 's/^TEST_DEV=.*//; s/^DEFAULT_DEV=.*//' $W/board.conf
 ok "board without slots: install refused (env overrides off)" "! env -u GLASSINE_BI_TEST_DEV -u GLASSINE_BI_DEFAULT_DEV $B install 7.2.4-1-sdm660 2>&1 | grep -q staged && env -u GLASSINE_BI_TEST_DEV -u GLASSINE_BI_DEFAULT_DEV $B install 7.2.4-1-sdm660 2>&1 | grep -q 'no TEST_DEV/DEFAULT_DEV'"
 cp $W/board.conf.keep $W/board.conf; rm -f $W/st/pending
-# no board.conf: pack writes nothing (an image without board.conf would power off at its default boot)
 . $W/board.conf.keep
+{ cat $W/board.conf; echo RAMDISK_MAX=64; } > $W/rdmax.conf
+ok "RAMDISK_MAX: a larger ramdisk fails, no image" "! python3 /p/lib/glassine-bootimg-pack $W/rdmax.conf $KERNEL $DTB $INITRAMFS $W/rd.img >/dev/null 2>&1 && [ ! -e $W/rd.img ]"
+# no board.conf: pack writes nothing (an image without board.conf would power off at its default boot)
 ok "pack without board.conf: fails, no image" "! python3 /p/lib/glassine-bootimg-pack $W/nonexistent.conf $KERNEL $DTB $INITRAMFS $W/nb.img >/dev/null 2>&1 && [ ! -e $W/nb.img ]"
 ok "install without board.conf: refused, slots untouched" "S=\$(sha256sum $W/testslot); ! GLASSINE_BI_BOARD=$W/nonexistent.conf $B install 7.2.4-1-sdm660 >/dev/null 2>&1 && [ \"\$S\" = \"\$(sha256sum $W/testslot)\" ]"
 ok "status line parseable with nothing pending" "$B status | grep -qE '^(none|failed|promoted) '"

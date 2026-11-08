@@ -32,15 +32,18 @@ TEST_DEV=/dev/disk/by-partlabel/recovery
 TEST_REBOOT_REASON=recovery
 # Size of each slot in bytes; an image must fit.
 PART_SIZE=67108864
+# The largest ramdisk (initramfs + board.conf) the bootloader loads, in bytes;
+# empty: no limit beyond PART_SIZE (this board's limit isn't known).
+RAMDISK_MAX=
 # How a new kernel reaches the bootloader in the deployments layout
 # (docs/kernel-artifacts.md, "Hand-off"): bootpart-test writes it to TEST_DEV
 # for a one-shot trial, and needs a spare slot there, never the recovery
 # partition; blocklist (not built yet); empty: kernel updates are paused.
 # This board's TEST_DEV is its recovery partition, so it stays empty.
 HANDOFF=
-# The device name of this board's device trees (<device>@<id> in a kernel's
-# kernel.manifest dtbs, boot/dtb/ on the system partition), for
-# glassine-bootimg install in the deployments layout.
+# The device name of this board's device trees (<device>@<id> in boot/dtb/ on
+# the system partition): glassine-bootimg install in the deployments layout
+# refuses a tree for another device.
 DEVICE=
 
 # --- Roles -----------------------------------------------------------------
