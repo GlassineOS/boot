@@ -30,6 +30,12 @@
 # GLASSINE_DEVMODE_GADGET (configfs gadget directory), GLASSINE_DEVMODE_UDC
 # (/sys/class/udc), GLASSINE_DEVMODE_SSHD (/usr/sbin/sshd), GLASSINE_BOARD_CONF,
 # GLASSINE_DEPLOY_CONF.
+#
+# The USB device controller can appear well after the service starts (its PHY
+# waits for regulators that a module provides, so it binds after the device
+# manager's coldplug: about 30 s into a Note Air boot). start waits for one,
+# up to GLASSINE_DEVMODE_UDC_WAIT seconds (default 90); the service runs it in
+# the background so nothing else waits with it.
 set -u
 CMDLINE=${GLASSINE_PROC_CMDLINE:-/proc/cmdline}
 BOARD=${GLASSINE_BOARD_CONF:-/etc/glassine-bootimg/board.conf}
@@ -39,6 +45,7 @@ G=${GLASSINE_DEVMODE_GADGET:-/sys/kernel/config/usb_gadget/glassine-devmode}
 UDCDIR=${GLASSINE_DEVMODE_UDC:-/sys/class/udc}
 NETDEV=${DEVMODE_NETDEV:-}
 SSHD=${GLASSINE_DEVMODE_SSHD:-/usr/sbin/sshd}
+UDC_WAIT=${GLASSINE_DEVMODE_UDC_WAIT:-90}
 
 USERDATA_MNT=/run/glassine/userdata USERDATA_PREFIX=media/glassine RUN_DIR=/run/glassine
 # shellcheck source=/dev/null
@@ -80,8 +87,13 @@ usbnet() {
     echo glassine > "$G/strings/0x409/serialnumber"
     echo NCM > "$G/configs/c.1/strings/0x409/configuration"
     [ -e "$G/configs/c.1/ncm.usb0" ] || ln -s "$G/functions/ncm.usb0" "$G/configs/c.1/"
-    _udc=$(ls "$UDCDIR" 2>/dev/null | head -n 1)
-    [ -n "$_udc" ] || { say "no USB device controller"; return 1; }
+    _udc=$(ls "$UDCDIR" 2>/dev/null | head -n 1) _t=0
+    [ -n "$_udc" ] || say "waiting up to $UDC_WAIT s for a USB device controller"
+    while [ -z "$_udc" ] && [ "$_t" -lt "$UDC_WAIT" ]; do
+        sleep 1; _t=$((_t + 1))
+        _udc=$(ls "$UDCDIR" 2>/dev/null | head -n 1)
+    done
+    [ -n "$_udc" ] || { say "no USB device controller after $UDC_WAIT s"; return 1; }
     echo "$_udc" > "$G/UDC" || return 1
     _if=$(cat "$G/functions/ncm.usb0/ifname" 2>/dev/null)
     echo "${_if:-usb0}"
@@ -108,6 +120,11 @@ start() {
     fi
     [ -e "$D/authorized_keys" ] || say "no $D/authorized_keys yet: nobody can log in (an administrator or the recovery puts the keys there)"
     IF=$(usbnet) || { say "the USB network did not come up"; usbnet_down; return 1; }
+    # NetworkManager would otherwise take the new interface over (an automatic
+    # wired connection) and drop the address below
+    if command -v nmcli >/dev/null 2>&1; then
+        nmcli device set "$IF" managed no 2>/dev/null || :
+    fi
     ifconfig "$IF" "$DEVMODE_ADDR" netmask "$DEVMODE_NETMASK" up || { say "cannot set $DEVMODE_ADDR on $IF"; usbnet_down; return 1; }
     if [ -n "$DEVMODE_DHCP_START" ] && [ -n "$DEVMODE_DHCP_END" ]; then
         printf 'start %s\nend %s\ninterface %s\noption subnet %s\nlease_file %s/udhcpd.leases\npidfile %s/udhcpd.pid\n' \

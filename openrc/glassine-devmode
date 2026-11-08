@@ -13,9 +13,12 @@ depend() {
 
 start() {
 	grep -qw 'glassine.devmode=usb' /proc/cmdline || return 0
-	ebegin "glassine-devmode: developer access over USB"
-	DEVMODE_NETDEV=${DEVMODE_NETDEV:-} /usr/sbin/glassine-devmode start
-	eend $?
+	# in the background: the USB device controller may appear only after the
+	# device manager's coldplug, and start waits for it (its messages go to the
+	# kernel log)
+	einfo "glassine-devmode: developer access over USB (starting in the background)"
+	DEVMODE_NETDEV=${DEVMODE_NETDEV:-} setsid /usr/sbin/glassine-devmode start </dev/null >/dev/null 2>&1 &
+	return 0
 }
 
 stop() {
