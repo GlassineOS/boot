@@ -41,6 +41,15 @@ RAMDISK_MAX=
 # partition; blocklist (not built yet); empty: kernel updates are paused.
 # This board's TEST_DEV is its recovery partition, so it stays empty.
 HANDOFF=
+# The blocklist hand-off (docs/blocklist.md, "Board keys"), read only with
+# HANDOFF=blocklist. The default slot's partition name, which holds the record;
+# the reboot reason that asks the bootloader for the one-shot; the bootloader's
+# partition and the sha256 of its builds known to read the record (space-
+# separated; none yet).
+BLOCKLIST_RECORD_PART=boot_b
+BLOCKLIST_REBOOT_REASON=blocklist
+BLOCKLIST_ABL_PART=abl
+BLOCKLIST_ABL_SHA256=
 # The device name of this board's device trees (<device>@<id> in boot/dtb/ on
 # the system partition): glassine-bootimg install in the deployments layout
 # refuses a tree for another device.

@@ -1,7 +1,9 @@
 # Block-list hand-off: a cold boot of a kernel file
 
-Status: **proposed design, under review ([hub#54](https://github.com/GlassineOS/hub/issues/54));
-nothing here is implemented.** It is the `HANDOFF=blocklist` row of
+Status: **design ([hub#54](https://github.com/GlassineOS/hub/issues/54)), being built
+([hub#56](https://github.com/GlassineOS/hub/issues/56),
+[specs/005](../specs/005-blocklist-handoff/spec.md)); nothing has run on a device.** Where
+the spec decides differently, the spec holds until each phase brings this page in line. It is the `HANDOFF=blocklist` row of
 [kernel-artifacts.md](kernel-artifacts.md#kernel-records-trials-and-hand-off), for the
 Note Air ([hub#53](https://github.com/GlassineOS/hub/issues/53)). The records, the trial
 and accept are that page's; this page adds only how the bootloader gets the candidate's
@@ -79,8 +81,8 @@ ciphertext, the checksum fails, and the default slot boots.
 
 **Where:** 4096 bytes at offset `size - 65536` of the default slot, where `size` is the
 partition's real size (`blockdev --getsize64`) and the default slot is board key
-`BLOCKLIST_RECORD_PART` (on the Note Air, the 64 MiB default slot). The last 64 KiB stay
-untouched: Android verified boot keeps its footer at the very end of a partition, and
+`BLOCKLIST_RECORD_PART` (on the Note Air, the 64 MiB default slot). The 60 KiB after the
+record stay untouched: Android verified boot keeps its footer at the very end of a partition, and
 the record must not be confused with it or overwrite it. The bootloader already opens
 this partition on every boot. A header v0 image ends where its sizes say it does, so
 nothing should read past the image; #55 checks that this bootloader doesn't. Every
@@ -238,7 +240,7 @@ treats an unknown reason as no reason, and nothing in this bootloader reads the 
 slot past the image (an AVB footer, for example).
 
 **How Linux knows the bootloader can do it:** `install` refuses `HANDOFF=blocklist`
-unless the sha256 of the `abl` partition (read-only) is one of the board key
+unless the sha256 of `BLOCKLIST_ABL_PART` (read-only) is one of the board key
 `BLOCKLIST_ABL_SHA256` (space-separated, the builds known to read format 1). This
 costs the bootloader nothing. An old bootloader can't be handed anything, and
 `install` says so.
@@ -394,6 +396,7 @@ itself. That is optional and isn't required for a go.
 | `HANDOFF` | `blocklist` | set only once all of these hold: this page, the writer (#56) and the bootloader side (#55) are done; the current kernel's device tree has `mode-blocklist`; and the recovery carries `glassine-bootimg repair` with the packer |
 | `BLOCKLIST_RECORD_PART` | its default slot | the default slot, which holds the record |
 | `BLOCKLIST_REBOOT_REASON` | `blocklist` | the reason that requests the one-shot |
+| `BLOCKLIST_ABL_PART` | `abl` | the partition the next key's hashes are of |
 | `BLOCKLIST_ABL_SHA256` | the sha256 of the bootloader build(s) from #55 | the builds known to read format 1 |
 
 The image partition is `USERDATA_PART`, and the directory is `<USERDATA_PREFIX>/kernel`.
@@ -412,10 +415,11 @@ What changes with it:
   - `sbin/glassine-bootimg`: `install`, `reboot-test`, `retry`, `cancel`, `rollback`,
     `repair` for `blocklist`; no whole-slot copies; `write_dev` with `O_DIRECT` and the
     header last; the reboot-mode check.
-  - `lib/glassine-blocklist` (new): the record's encoding and decoding, the `FIEMAP`
-    mapping and checks, the default-image length from its header, and the raw
-    read-back. The host tests and promote's `handoff` or `no-boot` verdict use the same
-    reader.
+  - `lib/glassine-blocklist` (new, Python): the record's encoding and decoding, the
+    `FIEMAP` mapping and checks, and the raw read-back, which promote's `handoff` or
+    `no-boot` verdict also uses. Reading the record's id and clearing it are ash, in
+    `lib/glassine-kernel.sh`, with the default-image check. The host tests read the
+    record with a simulated bootloader reader of their own (`test/blocklist/reader.py`).
   - `openrc/glassine-bootimg-promote`: accept with `writing`, the finishing boot, fail
     clears the record, the `requested` check.
   - `lib/glassine-bootimg-pack`: the `PART_SIZE - 65536` limit for these boards.

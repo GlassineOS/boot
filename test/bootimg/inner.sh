@@ -133,6 +133,12 @@ ok "RAMDISK_MAX = the ramdisk's size: packs" "rdmax $(hx $RD) && [ -s $W/rd.img 
 ok "RAMDISK_MAX one byte smaller: fails with a message, no image" "! rdmax $(hx $((RD - 1))) && grep -q 'ramdisk $RD > RAMDISK_MAX' $W/rderr && [ ! -e $W/rd.img ]"
 ok "... also under python3 -O" "! rdmax $(hx $((RD - 1))) -O && [ ! -e $W/rd.img ]"
 ok "a size that isn't a number: a message, no traceback" "! rdmax 64K && grep -q 'RAMDISK_MAX in .* is not a number' $W/rderr && ! grep -q Traceback $W/rderr"
+# the block-list hand-off keeps 64 KiB at the slot's end for its record
+SZ=$(stat -c %s $W/rd0.img)
+partsz() { { grep -v '^PART_SIZE=\|^HANDOFF=' $W/board.conf; echo "PART_SIZE=$(hx $1)"; echo "HANDOFF=$2"; } > $W/ps.conf; rm -f $W/ps.img; python3 /p/lib/glassine-bootimg-pack $W/ps.conf $KERNEL $DTB $INITRAMFS $W/ps.img >/dev/null 2>$W/pserr; }
+ok "blocklist: an image that leaves exactly 64 KiB: packs" "partsz $((SZ + 65536 + 4096)) blocklist && [ -s $W/ps.img ]"
+ok "blocklist: an image reaching into the last 64 KiB: fails, no image" "! partsz $((SZ + 65536 - 4096)) blocklist && grep -q 'limit' $W/pserr && [ ! -e $W/ps.img ]"
+ok "another hand-off: the same image fits a slot of its size" "partsz $((SZ + 4096)) bootpart-test && [ -s $W/ps.img ]"
 # no board.conf: pack writes nothing (an image without board.conf would power off at its default boot)
 ok "pack without board.conf: fails, no image" "! python3 /p/lib/glassine-bootimg-pack $W/nonexistent.conf $KERNEL $DTB $INITRAMFS $W/nb.img >/dev/null 2>&1 && [ ! -e $W/nb.img ]"
 ok "install without board.conf: refused, slots untouched" "S=\$(sha256sum $W/testslot); ! GLASSINE_BI_BOARD=$W/nonexistent.conf $B install 7.2.4-1-sdm660 >/dev/null 2>&1 && [ \"\$S\" = \"\$(sha256sum $W/testslot)\" ]"

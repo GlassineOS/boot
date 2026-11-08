@@ -38,6 +38,7 @@ install: glassine-reboot glassine-slot
 	install -Dm755 glassine-reboot $(DESTDIR)$(PREFIX)/sbin/glassine-reboot
 	install -Dm755 glassine-slot $(DESTDIR)$(PREFIX)/sbin/glassine-slot
 	install -Dm755 lib/glassine-bootimg-pack $(DESTDIR)$(PREFIX)/lib/glassine-bootimg/glassine-bootimg-pack
+	install -Dm755 lib/glassine-blocklist $(DESTDIR)$(PREFIX)/lib/glassine-bootimg/glassine-blocklist
 	install -Dm755 openrc/glassine-bootimg-promote $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-bootimg-promote
 	install -Dm644 conf/board.conf.example $(DESTDIR)$(PREFIX)/share/glassine-bootimg/board.conf.example
 	install -d $(DESTDIR)$(SYSCONFDIR)/glassine-bootimg/post-promote.d $(DESTDIR)$(SYSCONFDIR)/glassine-bootimg/post-fail.d $(DESTDIR)$(SYSCONFDIR)/glassine-bootimg/health.d
@@ -50,6 +51,7 @@ check:
 	sh test/root/test.sh
 	sh test/replay/test.sh
 	sh test/slot/test.sh
+	sh test/blocklist/test.sh
 
 clean:
 	rm -f glassine-reboot glassine-slot initramfs.cpio.gz

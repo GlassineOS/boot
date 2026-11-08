@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""The block-list hand-off's record and file checks (docs/blocklist.md,
+specs/005-blocklist-handoff): what needs an ioctl, or the record's full format.
+Reading the record's magic and id and zeroing it are ash, in
+lib/glassine-kernel.sh, because the recovery and every boot need those.
+
+usage:
+  glassine-blocklist check-fs DIR
+      DIR can hold an image the bootloader reads: ext4, 4096-byte blocks, not
+      data=journal, no encryption or data journalling on DIR.
+  glassine-blocklist map FILE
+      FILE's blocks, one "FIRST COUNT" line per extent, in 4096-byte blocks
+      from the start of its partition. Refuses anything the bootloader
+      couldn't read as FILE's bytes.
+  glassine-blocklist encode OUT ID PARTITION SIZE SHA256 < EXTENTS
+      a record (4096 bytes) from map's output.
+  glassine-blocklist decode RECORD
+      "record=none", or the record's fields as key=value lines.
+  glassine-blocklist check RECORD FILE DEV
+      FILE still has the record's blocks, and those blocks of DEV hold the
+      image the record names, read past every cache.
+
+Exit codes: 0 done, 1 refused or failed (a message on stderr), 2 usage.
+"""
+import fcntl, hashlib, mmap, os, re, stat, struct, sys
+
+BLOCK = 4096
+MAGIC = b'GLBLKLST'
+FORMAT = 1
+MAX_EXTENTS = 248
+HEADER = struct.Struct('<8sII16s32sQ32s24s')
+EXTENT = struct.Struct('<QQ')
+
+# linux/fiemap.h
+FIEMAP_MAX_OFFSET = 2 ** 64 - 1
+FIEMAP_FLAG_SYNC = 1
+FIEMAP_EXTENT_LAST = 0x1
+REFUSED_FLAGS = {
+    0x2: 'unknown', 0x4: 'delayed allocation', 0x8: 'encoded',
+    0x80: 'encrypted', 0x100: 'not aligned', 0x200: 'inline',
+    0x400: 'tail-packed', 0x800: 'unwritten', 0x2000: 'shared',
+}
+FS_IOC_FIEMAP = 0xc020660b
+FIEMAP_HEADER = struct.Struct('=QQIIII')
+FIEMAP_EXTENT = struct.Struct('=QQQQQIIII')
+# linux/fs.h: _IOR('f', 1, long)
+FS_IOC_GETFLAGS = (2 << 30) | (struct.calcsize('l') << 16) | (ord('f') << 8) | 1
+FS_IMMUTABLE_FL = 0x10
+FS_ENCRYPT_FL = 0x800
+FS_JOURNAL_DATA_FL = 0x4000
+
+
+class Refused(Exception):
+    pass
+
+
+def getflags(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        buf = bytearray(8)
+        fcntl.ioctl(fd, FS_IOC_GETFLAGS, buf, True)
+        return struct.unpack_from('=I', buf)[0]
+    finally:
+        os.close(fd)
+
+
+def check_dir_flags(flags):
+    if flags & FS_ENCRYPT_FL:
+        raise Refused('the directory is encrypted: the raw blocks would be ciphertext')
+    if flags & FS_JOURNAL_DATA_FL:
+        raise Refused('the directory has data journalling set: data could still be in the journal')
+
+
+def mount_of(path):
+    """(fstype, super options) of the mount holding path, the last one mounted."""
+    path = os.path.realpath(path)
+    best = None
+    with open('/proc/self/mountinfo') as f:
+        for line in f:
+            left, right = line.rstrip('\n').split(' - ', 1)
+            point = left.split(' ')[4].replace('\\040', ' ')
+            inside = path == point or path.startswith(point.rstrip('/') + '/')
+            if inside and (best is None or len(point) >= len(best[0])):
+                fstype, _, opts = right.split(' ', 2)
+                best = (point, fstype, opts)
+    if best is None:
+        raise Refused(f'no mount holds {path}')
+    return best[1], best[2].split(',')
+
+
+def check_fs(path):
+    fstype, opts = mount_of(path)
+    if fstype != 'ext4':
+        raise Refused(f'{path} is on {fstype}: only ext4 keeps a file\'s blocks')
+    if 'data=journal' in opts:
+        raise Refused(f'{path} is mounted data=journal: data could still be in the journal')
+    if os.statvfs(path).f_bsize != BLOCK:
+        raise Refused(f'{path}: the block size is {os.statvfs(path).f_bsize}, not {BLOCK}')
+    check_dir_flags(getflags(path))
+
+
+def fiemap(fd):
+    """Every extent of the open file, as (logical, physical, length, flags)."""
+    out = []
+    start = 0
+    count = 512
+    while True:
+        buf = bytearray(FIEMAP_HEADER.size + count * FIEMAP_EXTENT.size)
+        FIEMAP_HEADER.pack_into(buf, 0, start, FIEMAP_MAX_OFFSET, FIEMAP_FLAG_SYNC, 0, count, 0)
+        fcntl.ioctl(fd, FS_IOC_FIEMAP, buf, True)
+        mapped = FIEMAP_HEADER.unpack_from(buf)[3]
+        if mapped == 0:
+            return out
+        for i in range(mapped):
+            e = FIEMAP_EXTENT.unpack_from(buf, FIEMAP_HEADER.size + i * FIEMAP_EXTENT.size)
+            out.append((e[0], e[1], e[2], e[5]))
+        last = out[-1]
+        if last[3] & FIEMAP_EXTENT_LAST:
+            return out
+        start = last[0] + last[2]
+
+
+def check_extents(extents, size):
+    """The record's (first, count) extents, or Refused. extents: fiemap()'s."""
+    if size <= 0 or size % BLOCK:
+        raise Refused(f'the image is {size} bytes, not a multiple of {BLOCK}')
+    merged = []
+    pos = 0
+    for logical, physical, length, flags in extents:
+        for bit, name in REFUSED_FLAGS.items():
+            if flags & bit:
+                raise Refused(f'an extent at {logical} is {name}: its blocks don\'t hold the file\'s bytes')
+        if (logical | physical | length) % BLOCK or length == 0:
+            raise Refused(f'an extent at {logical} is not aligned to {BLOCK}')
+        if logical != pos:
+            raise Refused(f'the file has a hole at {pos}')
+        if physical == 0:
+            raise Refused(f'an extent at {logical} has no physical address')
+        first, count = physical // BLOCK, length // BLOCK
+        if merged and merged[-1][0] + merged[-1][1] == first:
+            merged[-1][1] += count
+        else:
+            merged.append([first, count])
+        pos += length
+    if pos != size:
+        raise Refused(f'the extents cover {pos} bytes of {size}')
+    if len(merged) > MAX_EXTENTS:
+        raise Refused(f'the file has {len(merged)} extents, the record holds {MAX_EXTENTS}')
+    return [tuple(e) for e in merged]
+
+
+def map_file(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise Refused(f'{path} is not a regular file')
+        if not getflags(path) & FS_IMMUTABLE_FL:
+            raise Refused(f'{path} is not immutable: its blocks could move')
+        return check_extents(fiemap(fd), st.st_size)
+    finally:
+        os.close(fd)
+
+
+def encode(ident, partition, size, sha, extents):
+    if not re.fullmatch('[0-9a-f]{16}', ident):
+        raise Refused(f'not an image id: {ident!r}')
+    if not re.fullmatch('[0-9a-f]{64}', sha):
+        raise Refused(f'not a sha256: {sha!r}')
+    name = partition.encode('ascii', 'replace')
+    if not name or len(name) > 31 or b'\0' in name or b'?' in name:
+        raise Refused(f'not a partition name: {partition!r}')
+    if size <= 0 or size % BLOCK:
+        raise Refused(f'the image is {size} bytes, not a multiple of {BLOCK}')
+    if not 1 <= len(extents) <= MAX_EXTENTS:
+        raise Refused(f'{len(extents)} extents: a record holds 1 to {MAX_EXTENTS}')
+    if sum(c for _, c in extents) != size // BLOCK:
+        raise Refused('the extents don\'t add up to the image')
+    rec = HEADER.pack(MAGIC, FORMAT, len(extents), ident.encode(), name, size,
+                      bytes.fromhex(sha), bytes(24))
+    rec += b''.join(EXTENT.pack(f, c) for f, c in extents)
+    return rec.ljust(BLOCK, b'\0')
+
+
+def decode(rec):
+    """The record's fields, None for "no record", or Refused."""
+    if len(rec) != BLOCK:
+        raise Refused(f'a record is {BLOCK} bytes, not {len(rec)}')
+    if rec == bytes(BLOCK):
+        return None
+    magic, fmt, count, ident, name, size, sha, zero = HEADER.unpack_from(rec)
+    if magic != MAGIC:
+        raise Refused('no record magic')
+    if fmt != FORMAT:
+        raise Refused(f'record format {fmt}, this tool reads {FORMAT}')
+    if zero != bytes(24):
+        raise Refused('the reserved bytes aren\'t zero')
+    if not 1 <= count <= MAX_EXTENTS:
+        raise Refused(f'extent_count {count}')
+    if not re.fullmatch(rb'[0-9a-f]{16}', ident):
+        raise Refused('the image id isn\'t 16 hex digits')
+    part = name.rstrip(b'\0')
+    if not part or b'\0' in part:
+        raise Refused('the partition name is damaged')
+    extents = [EXTENT.unpack_from(rec, HEADER.size + i * EXTENT.size) for i in range(count)]
+    if any(rec[HEADER.size + count * EXTENT.size:]):
+        raise Refused('bytes after the last extent aren\'t zero')
+    if size == 0 or size % BLOCK or sum(c for _, c in extents) != size // BLOCK:
+        raise Refused('the extents don\'t add up to image_size')
+    return {'id': ident.decode(), 'partition': part.decode('ascii', 'replace'), 'size': size,
+            'sha256': sha.hex(), 'extents': extents}
+
+
+def read_blocks(dev, extents):
+    """sha256 of DEV's blocks at extents, with O_DIRECT (never the page cache)."""
+    h = hashlib.sha256()
+    chunk = 1 << 20
+    buf = mmap.mmap(-1, chunk)                  # page-aligned, as O_DIRECT needs
+    fd = os.open(dev, os.O_RDONLY | os.O_DIRECT)
+    try:
+        end = os.lseek(fd, 0, os.SEEK_END)
+        for first, count in extents:
+            off, left = first * BLOCK, count * BLOCK
+            if off + left > end:
+                raise Refused(f'an extent at block {first} is past the end of {dev}')
+            while left:
+                want = min(left, chunk)
+                got = os.preadv(fd, [memoryview(buf)[:want]], off)
+                if got != want:
+                    raise Refused(f'{dev}: a short read at {off}')
+                h.update(memoryview(buf)[:want])
+                off += want
+                left -= want
+        return h.hexdigest()
+    finally:
+        os.close(fd)
+        buf.close()
+
+
+def check(record, path, dev):
+    with open(record, 'rb') as f:
+        r = decode(f.read())
+    if r is None:
+        raise Refused(f'{record}: no record')
+    size = os.stat(path).st_size
+    if size != r['size']:
+        raise Refused(f'{path} is {size} bytes, the record says {r["size"]}')
+    if map_file(path) != r['extents']:
+        raise Refused(f'{path} no longer has the blocks the record names')
+    if read_blocks(dev, r['extents']) != r['sha256']:
+        raise Refused(f'the blocks of {dev} don\'t hold the image the record names')
+
+
+def main(a):
+    if len(a) == 2 and a[0] == 'check-fs':
+        check_fs(a[1])
+    elif len(a) == 2 and a[0] == 'map':
+        for first, count in map_file(a[1]):
+            print(first, count)
+    elif len(a) == 6 and a[0] == 'encode':
+        try:
+            size = int(a[4])
+            extents = [(int(x), int(y)) for x, y in (line.split() for line in sys.stdin)]
+        except ValueError:
+            raise Refused('the size or the extents are not numbers')
+        rec = encode(a[2], a[3], size, a[5], extents)
+        with open(a[1], 'wb') as f:
+            f.write(rec)
+    elif len(a) == 2 and a[0] == 'decode':
+        with open(a[1], 'rb') as f:
+            r = decode(f.read())
+        if r is None:
+            print('record=none')
+        else:
+            print(f'record={FORMAT}\nid={r["id"]}\npartition={r["partition"]}\nsize={r["size"]}\nsha256={r["sha256"]}')
+            for first, count in r['extents']:
+                print(f'extent={first} {count}')
+    elif len(a) == 4 and a[0] == 'check':
+        check(a[1], a[2], a[3])
+    else:
+        print(__doc__.split('Exit codes')[0], file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (Refused, OSError) as e:
+        print(f'glassine-blocklist: {e}', file=sys.stderr)
+        sys.exit(1)
