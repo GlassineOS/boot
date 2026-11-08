@@ -222,6 +222,8 @@ boot $IDB; cpy
 ok "writing set, another glassine.img=, the slot doesn't match: written again, completed" "inc $B promote >/dev/null 2>&1 && holds $W/c/defslot $IDA && [ \"\$(ck current_img)\" = $IDA ] && [ -z \"\$(ck writing)\" ]"
 cpy; dd if=$BI/$IDA.img of=$W/c/defslot conv=notrunc 2>/dev/null; : > $W/log
 ok "writing set, another glassine.img=, the slot matches: completed without a write" "inc $B promote >/dev/null 2>&1 && [ \"\$(ck current_img)\" = $IDA ] && [ -z \"\$(ck writing)\" ] && grep -q 'holds image $IDA: completing accept' $W/log && ! grep -q 'writing it again' $W/log"
+cpy; gs_kernel_cancel $W/c/sys/state/kernel      # glassine-deploy's cancel-first doesn't check writing
+ok "writing_op=accept with the candidate cancelled meanwhile: completed from the image's record" "inc $B promote >/dev/null 2>&1 && holds $W/c/defslot $IDA && [ \"\$(ck current)\" = 7.1.0-a ] && [ \"\$(ck current_img)\" = $IDA ] && [ \"\$(ck previous_img)\" = $IDB ] && [ -z \"\$(ck writing)\" ]"
 cpy; dd if=$BI/$IDA.img of=$W/c/defslot conv=notrunc 2>/dev/null; gs_update $W/c/sys/state/kernel writing_op=frob; cp $W/c/sys/state/kernel $W/c/k0
 ok "an unknown writing_op: exit 1, writing stays, nothing else written" "! inc $B promote >/dev/null 2>&1 && cmp -s $W/c/sys/state/kernel $W/c/k0"
 cpy; corrupt 2; cp $W/c/sys/state/kernel $W/c/k0
