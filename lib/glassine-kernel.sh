@@ -282,27 +282,28 @@ gk_install() {
     gk_record_ok "$_md/kernel.manifest"
 
     # the device tree and the initramfs (FR-005)
+    # no --dtb: the tree of the running image (the device's update names a new one)
+    _cimg=$(k current_img)
     if [ -z "$_dtb" ]; then
-        [ -n "$DEVICE" ] || die "install $_rel: no DEVICE in $BOARD; name the device tree with --dtb DEVICE@ID"
-        _n=0
-        for _e in $(gs_kv "$_md/kernel.manifest" dtbs); do
-            [ "${_e%@*}" = "$DEVICE" ] || continue
-            case "${_e##*@}" in ''|*[!0-9a-f]*) continue ;; esac
-            _dtb=$_e _n=$((_n + 1))
-        done
-        [ "$_n" != 0 ] || die "install $_rel: its kernel.manifest lists no device tree for $DEVICE; name one with --dtb DEVICE@ID"
-        [ "$_n" = 1 ] || die "install $_rel: its kernel.manifest lists several device trees for $DEVICE; name one with --dtb"
+        [ -z "$_cimg" ] || _dtb=$(man "$_cimg" dtb)
+        [ -n "$_dtb" ] || die "install $_rel: the current image names no device tree; name one with --dtb DEVICE@ID"
     fi
     case "$_dtb" in *@*) ;; *) die "install $_rel: --dtb takes DEVICE@ID" ;; esac
+    # DEVICE@ID: a device name (not starting with a dot), then a hex id
+    case "${_dtb%@*}" in ''|.*|*[!A-Za-z0-9._+-]*) die "install $_rel: bad device tree name '$_dtb' (DEVICE@ID)" ;; esac
+    case "${_dtb##*@}" in ''|*[!0-9a-f]*) die "install $_rel: bad device tree name '$_dtb' (DEVICE@ID)" ;; esac
+    [ -n "$DEVICE" ] || die "install $_rel: no DEVICE in $BOARD (it names the device trees this board boots)"
+    [ "${_dtb%@*}" = "$DEVICE" ] || die "install $_rel: device tree $_dtb is for another device than $DEVICE"
     [ -r "$SYS/boot/dtb/$_dtb.dtb" ] || die "install $_rel: no $SYS/boot/dtb/$_dtb.dtb"
     if [ -z "$_ird" ]; then
-        _cimg=$(k current_img)
         [ -z "$_cimg" ] || _ird=$(man "$_cimg" initramfs)
-        [ -n "$_ird" ] || die "install $_rel: the current image names no initramfs; name one with --initramfs COMMIT12"
+        [ -n "$_ird" ] || die "install $_rel: the current image names no initramfs; name one with --initramfs COMMIT12@ID"
     fi
+    # COMMIT12@ID: hex, then a hex id (a bare hex commit: a record from before the id)
+    case "$_ird" in *@*@*|@*|*@|*[!0-9a-f@]*|'') die "install $_rel: bad initramfs name '$_ird' (COMMIT12@ID)" ;; esac
     _irf=$SYS/boot/initramfs/$_ird.cpio.gz _irm=$SYS/boot/initramfs/$_ird.manifest
     [ -r "$_irf" ] || die "install $_rel: no $_irf"
-    # rule 1 (refuse) and rule 2 (warn) of "Which combinations boot" (FR-006)
+    # rule 1 of "Which combinations boot" (FR-006)
     [ -r "$_irm" ] || die "install $_rel: no $_irm (rule 1 can't be checked)"
     gk_record_ok "$_irm"
     _prov=" $(gs_kv "$_md/kernel.manifest" provides) " _miss=''
@@ -310,10 +311,6 @@ gk_install() {
         case "$_prov" in *" $_n "*) ;; *) _miss="$_miss $_n" ;; esac
     done
     [ -z "$_miss" ] || die "install $_rel: the kernel doesn't provide what initramfs $_ird needs:$_miss"
-    case " $(gs_kv "$_md/kernel.manifest" dtbs) " in
-    *" $_dtb "*) ;;
-    *) log "install $_rel: warning: device tree $_dtb was not built with this kernel; its trial decides" ;;
-    esac
 
     # one trial at a time: during a deployment candidate, a staged deployment
     # or a kernel trial, the release waits in deferred, with the device tree
@@ -333,7 +330,7 @@ gk_install() {
     # would give (Story 1.7)
     [ -n "$_ci" ] && [ "$(k tries)" = 0 ] && gk_fail no-verdict
 
-    # pack (rule 3: the packer checks PART_SIZE; the slots are checked here)
+    # pack (rule 2: the packer checks PART_SIZE; the slots are checked here)
     _img=$(mktemp "$TMP/glassine-bootimg.XXXXXX") || die "mktemp in $TMP failed"
     _out=$(python3 "$PACK" "$BOARD" "$_md/Image.gz" "$SYS/boot/dtb/$_dtb.dtb" "$_irf" "$_img" --expect-release "$_rel" 2>&1) ||
         { rm -f "$_img"; die "install $_rel: pack failed: $_out"; }

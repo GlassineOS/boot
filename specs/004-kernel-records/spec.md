@@ -142,13 +142,15 @@ Each story says which phase it belongs to.
 - **FR-004** Packing in this layout takes the kernel from `modules/<release>/Image.gz`,
   and the device tree and initramfs from `boot/`, through `lib/glassine-bootimg-pack`
   with `--expect-release`. The board's `KERNEL`, `DTB` and `INITRAMFS` aren't used.
-- **FR-005** The device tree is `--dtb <device>@<id>`, or else the entry for board key
-  `DEVICE` in the kernel's `dtbs`. The initramfs is `--initramfs <commit12>`, or else
-  the one in `current_img`'s boot record. Neither present: refuse, naming the flag.
+- **FR-005** The device tree is `--dtb <device>@<id>`, or else the one in `current_img`'s
+  boot record. Board key `DEVICE` is required, and a tree for another device is refused. The
+  initramfs is `--initramfs <commit12>@<id>`, or else the one in `current_img`'s boot
+  record. Neither present: refuse, naming the flag. A name not of its form is refused:
+  `<device>@<hex>`, `<hex>@<hex>` (or a bare hex commit, from older records).
 - **FR-006** Before the hand-off, `install` checks rule 1 (`provides` covers the
-  initramfs's `needs`) and rule 3 (the slot size) of "Which combinations boot", and
-  warns for rule 2 (`dtbs` doesn't list the tree). The deployment coverage checks wait
-  for the feature table (not in this feature).
+  initramfs's `needs`) and rule 2 (the slot size; the packer also checks `PART_SIZE` and
+  `RAMDISK_MAX`) of "Which combinations boot". The deployment coverage checks wait for
+  the feature table (not in this feature).
 - **FR-007** `HANDOFF` is read from board.conf: `bootpart-test` (FR-008), empty (refuse),
   `blocklist` (refuse until hub#56), anything else (refuse).
 - **FR-008** `bootpart-test` needs a spare test slot. `install` refuses when `TEST_DEV`
@@ -260,7 +262,7 @@ Each story says which phase it belongs to.
 | What | Proposed | Where it goes when implemented |
 |---|---|---|
 | board key `DEVICE` | the device name used in `<device>@<id>` | boot.md, `conf/board.conf.example` |
-| `install` flags | `--dtb <device>@<id>`, `--initramfs <commit12>`, with the defaults of FR-005 | kernel-artifacts.md, "Order on the device" |
+| `install` flags | `--dtb <device>@<id>`, `--initramfs <commit12>@<id>`, with the defaults of FR-005 | kernel-artifacts.md, "Order on the device" |
 | `status` format 1 | `format=1`, `state=`, the keys, `default_slot=` (FR-017) | kernel-artifacts.md, "What the user sees" |
 | the default-slot write | blocklist.md's procedure for every hand-off (FR-009), checked again by promote (FR-010) | kernel-artifacts.md, beside `writing` (the check is in this pull request) |
 | failure reasons | `no-boot`, `no-verdict`, `default slot write`, and the health check's own | kernel-artifacts.md, "Records" |
