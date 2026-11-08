@@ -370,9 +370,15 @@ name, never different bytes under an old one.
 `device`, `kernel` (release), `dtb` (identity), `initramfs` (identity), `cmdline`,
 `board` (sha256 of the `board.conf` the header fields came from).
 
-**Base manifest:** `/usr/share/glassine/base.manifest` in the base tree, defined here:
-`format`, `base` (id), `locks` (sha256 of the stage locks), `needs`, `features`. `images`
-doesn't write it yet; it adds it as part of hub#8 step 6.
+**Base manifest:** `/usr/share/glassine/base.manifest` in the base tree, defined here,
+`key=value` like the other records: `format` (`1`), `base` (the base id, the same as the
+subvolume's name), `locks`, `needs`, `features`. The image builder writes it into the
+base before the subvolume is made read-only.
+
+- `locks`: the package set the base was built from, as the sha256 (64 hex) of the
+  concatenation, over the stages of the target's chain in build order, of the stage's
+  name, a newline, and its lock file's bytes. A stage's lock is its whole installed set
+  (`name=version`, sorted), so equal `locks` mean the same chain and the same packages.
 
 **Feature names** are this repository's: a versioned table (`conf/kernel-features`, first
 line `features=<N>`) maps each name to the config options that provide it (`btrfs` =
