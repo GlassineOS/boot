@@ -34,6 +34,7 @@ case $stage in
     chk "/ is read-only" "! touch /usr/qtest 2>/dev/null"
     chk "/etc and /var are writable" "mkdir -p /etc/qtest && echo first > /etc/qtest/a && touch /var/qtest"
     chk "modules subvolume on /lib/modules" "mountpoint -q /lib/modules/$(uname -r)"
+    chk "the kernel's firmware on /lib/firmware/updates, read-only" "[ \"\$(cat /lib/firmware/updates/qtest/a.fw)\" = fw ] && grep -q ' /lib/firmware/updates [^ ]* ro[, ]' /proc/mounts"
     chk "state lock free for the system" "flock -n /run/glassine/system/state/.lock true"
     glassine-deploy reset --yes > /dev/console 2>&1
     S=$(st staged)

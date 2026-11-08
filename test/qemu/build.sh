@@ -98,7 +98,7 @@ for s in localmount hostname bootmisc; do ln -s /etc/init.d/$s $B/etc/runlevels/
 ln -s /etc/init.d/qtest $B/etc/runlevels/default/qtest
 ln -s /etc/init.d/glassine-deploy-accept $B/etc/runlevels/default/glassine-deploy-accept
 for s in killprocs mount-ro glassine-switch; do ln -s /etc/init.d/$s $B/etc/runlevels/shutdown/$s; done
-mkdir -p $B/lib/modules/$KREL $B/run
+mkdir -p $B/lib/modules $B/lib/firmware $B/run   # no lib/modules/<release>: gr_modules makes it, as for an images base
 tar -C $B --numeric-owner --xattrs -cf $OUT/base.tar .
 tar -C /lib/modules/$KREL -cf $OUT/modules.tar .
 echo "$KREL" > $OUT/krel
@@ -117,6 +117,7 @@ tar -C $W/sys/bases/b1 --numeric-owner --xattrs -xf $OUT/base.tar
 btrfs property set -ts $W/sys/bases/b1 ro true
 btrfs -q subvolume create $W/sys/modules/$KREL
 tar -C $W/sys/modules/$KREL -xf $OUT/modules.tar
+mkdir -p $W/sys/modules/$KREL/firmware/qtest; echo fw > $W/sys/modules/$KREL/firmware/qtest/a.fw
 btrfs property set -ts $W/sys/modules/$KREL ro true
 echo version=1 > $W/sys/state/format
 printf 'current=d1\nprevious=\ncandidate=\ntries=0\nstaged=\n' > $W/sys/state/deploy
