@@ -73,28 +73,41 @@ def check_dir_flags(flags):
 
 
 def mount_of(path):
-    """(fstype, super options) of the mount holding path, the last one mounted."""
+    """(fstype, major:minor) of the mount holding path, the last one mounted."""
     path = os.path.realpath(path)
     best = None
     with open('/proc/self/mountinfo') as f:
         for line in f:
             left, right = line.rstrip('\n').split(' - ', 1)
-            point = left.split(' ')[4].replace('\\040', ' ')
+            fields = left.split(' ')
+            point = fields[4].replace('\\040', ' ')
             inside = path == point or path.startswith(point.rstrip('/') + '/')
             if inside and (best is None or len(point) >= len(best[0])):
-                fstype, _, opts = right.split(' ', 2)
-                best = (point, fstype, opts)
+                best = (point, right.split(' ', 1)[0], fields[2])
     if best is None:
         raise Refused(f'no mount holds {path}')
-    return best[1], best[2].split(',')
+    return best[1], best[2]
+
+
+def check_data_mode(majmin, proc='/proc', sys_='/sys'):
+    """Refused for data=journal. mountinfo leaves the mode out when it is the
+    file system's own default (tune2fs -o journal_data); this file always has
+    it. A file system with no journal has no data= line, and nothing to wait for."""
+    try:
+        dev = os.path.basename(os.readlink(f'{sys_}/dev/block/{majmin}'))
+        with open(f'{proc}/fs/ext4/{dev}/options') as f:
+            lines = f.read().splitlines()
+    except OSError as e:
+        raise Refused(f'cannot read the data mode of the file system on {majmin}: {e}')
+    if 'data=journal' in lines:
+        raise Refused(f'{dev} uses data=journal: data could still be in the journal')
 
 
 def check_fs(path):
-    fstype, opts = mount_of(path)
+    fstype, majmin = mount_of(path)
     if fstype != 'ext4':
         raise Refused(f'{path} is on {fstype}: only ext4 keeps a file\'s blocks')
-    if 'data=journal' in opts:
-        raise Refused(f'{path} is mounted data=journal: data could still be in the journal')
+    check_data_mode(majmin)
     if os.statvfs(path).f_bsize != BLOCK:
         raise Refused(f'{path}: the block size is {os.statvfs(path).f_bsize}, not {BLOCK}')
     check_dir_flags(getflags(path))

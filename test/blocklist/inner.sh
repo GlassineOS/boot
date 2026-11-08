@@ -21,6 +21,9 @@ mkfs_mount() {
     mkdir -p $W/$_n.mnt
 }
 
+# must_mount ARGS: a mount that fails is a failure, so a check can't vanish
+must_mount() { mount -t ext4 "$@" || { echo "FAIL cannot mount: $*"; fails=$((fails + 1)); return 1; }; }
+
 echo "--- what no real file system can be made to produce"
 python3 /p/test/blocklist/unit.py /p/lib/glassine-blocklist || fails=$((fails + 1))
 
@@ -43,9 +46,13 @@ echo "--- the file system"
 ok "userdata (ext4, 4096): passes" "$BL check-fs $K"
 ok "tmpfs: refused" "! $BL check-fs $W 2>$W/e && grep -q 'on tmpfs' $W/e"
 mkfs_mount k1 -b 1024
-mount -t ext4 "$LOOP" $W/k1.mnt && ok "1024-byte blocks: refused" "! $BL check-fs $W/k1.mnt 2>$W/e && grep -q 'block size is 1024' $W/e"
+must_mount "$LOOP" $W/k1.mnt && ok "1024-byte blocks: refused" "! $BL check-fs $W/k1.mnt 2>$W/e && grep -q 'block size is 1024' $W/e"
 mkfs_mount dj -b 4096
-mount -t ext4 -o data=journal "$LOOP" $W/dj.mnt && ok "data=journal: refused" "! $BL check-fs $W/dj.mnt 2>$W/e && grep -q 'data=journal' $W/e"
+must_mount -o data=journal "$LOOP" $W/dj.mnt && ok "data=journal: refused" "! $BL check-fs $W/dj.mnt 2>$W/e && grep -q 'data=journal' $W/e"
+mkfs_mount dd -b 4096; tune2fs -o journal_data $W/dd.img >/dev/null
+must_mount "$LOOP" $W/dd.mnt && ok "data=journal as the file system's default: refused" "! $BL check-fs $W/dd.mnt 2>$W/e && grep -q 'data=journal' $W/e"
+mkfs_mount nj -b 4096 -O ^has_journal
+must_mount "$LOOP" $W/nj.mnt && ok "no journal at all: passes" "$BL check-fs $W/nj.mnt"
 mkdir $W/ud.mnt/jd; chattr +j $W/ud.mnt/jd
 ok "a directory with data journalling: refused" "! $BL check-fs $W/ud.mnt/jd 2>$W/e && grep -q 'data journalling' $W/e"
 
@@ -146,6 +153,26 @@ ok "the image is put back if the write changed it, and the write fails" "
     ! gk_bl_put $SLOT $W/a.rec && same; "
 GLASSINE_BI_AFTER_RECORD='echo x >> $W/hits'; export GLASSINE_BI_AFTER_RECORD
 gk_bl_clear $SLOT
+before
+ok "the record reads back wrong: the write fails, the image untouched" "
+    GLASSINE_BI_AFTER_RECORD='printf X | dd of=$SLOT bs=4096 seek=$REC conv=notrunc,fsync 2>/dev/null'
+    export GLASSINE_BI_AFTER_RECORD
+    ! gk_bl_put $SLOT $W/a.rec && same"
+GLASSINE_BI_AFTER_RECORD='echo x >> $W/hits'; export GLASSINE_BI_AFTER_RECORD
+{ printf '\n'; head -c 4095 /dev/zero; } > $W/nl; putrec $W/nl
+ok "a record whose first byte is a newline isn't empty" "[ \$(gk_bl_id $SLOT) = bad ]"
+ok "... and it is cleared" "gk_bl_clear $SLOT && [ \$(gk_bl_id $SLOT) = none ]"
+gk_bl_put $SLOT $W/a.rec
+cat > $W/rd.sh <<RD
+log() { :; }; die() { exit 1; }
+. /p/lib/glassine-state.sh; . /p/lib/glassine-kernel.sh
+gk_bl_id \$1
+RD
+: > $W/ids
+n=0; while [ $n -lt 30 ]; do sh $W/rd.sh $SLOT >> $W/ids 2>&1 & n=$((n + 1)); done; wait
+ok "thirty processes read the record at once, without a lock: each gets the id" "[ \$(grep -cx $ID $W/ids) = 30 ] && [ \$(wc -l < $W/ids) = 30 ]"
+ok "... and leave no files behind" "! ls $W/tmp | grep -q glassine-bootimg.rec"
+gk_bl_clear $SLOT
 bootimg $((REC + 1)); before; : > $W/hits
 ok "a default image that reaches the record area: refused, no write attempted" "! gk_bl_put $SLOT $W/a.rec && same && [ \$(gk_bl_id $SLOT) != $ID ] && [ ! -s $W/hits ]"
 bootimg $REC; before
@@ -153,11 +180,17 @@ ok "... one that ends right before it: written" "gk_bl_put $SLOT $W/a.rec && sam
 gk_bl_clear $SLOT
 dd if=/dev/zero of=$SLOT bs=4096 count=1 conv=notrunc,fsync 2>/dev/null; before; : > $W/hits
 ok "a slot with no boot image: refused, no write attempted" "! gk_bl_put $SLOT $W/a.rec && same && [ ! -s $W/hits ]"
+bootimg 200; before; : > $W/log
+ok "the image can't be put back: the write fails and says the slot can't boot" "
+    GLASSINE_BI_AFTER_RECORD='printf X | dd of=$SLOT bs=1 seek=8192 conv=notrunc,fsync 2>/dev/null' GLASSINE_BI_AFTER_BODY=false
+    export GLASSINE_BI_AFTER_RECORD GLASSINE_BI_AFTER_BODY
+    ! gk_bl_put $SLOT $W/a.rec && grep -q 'putting it back failed' $W/log"
+GLASSINE_BI_AFTER_RECORD=; GLASSINE_BI_AFTER_BODY=; export GLASSINE_BI_AFTER_RECORD GLASSINE_BI_AFTER_BODY
 head -c 100 /dev/zero > $W/short
 bootimg 200; before
 ok "a record that isn't 4096 bytes: refused" "! gk_bl_put $SLOT $W/short && same"
 
-umount $W/ud.mnt $W/k1.mnt $W/dj.mnt 2>/dev/null
+umount $W/ud.mnt $W/k1.mnt $W/dj.mnt $W/dd.mnt $W/nj.mnt 2>/dev/null
 for l in $LOOPS; do losetup -d "$l" 2>/dev/null; done
 cd /; umount $W 2>/dev/null
 [ "$fails" = 0 ] && echo "all blocklist checks passed" || echo "$fails blocklist checks FAILED"

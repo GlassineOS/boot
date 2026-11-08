@@ -190,11 +190,14 @@ gk_bl_read() {
 }
 
 # gk_bl_id DEV: prints the image id the record names, `none` for no record, or
-# `bad` for anything else. 1 when the record can't be read.
+# `bad` when there is no magic, format or id to read. A record torn after its
+# id still prints the id: only `glassine-blocklist decode` says a record is
+# whole. 1 when the record can't be read. Promote calls this without the lock,
+# so each process has its own file.
 gk_bl_id() {
-    _rf=$TMP/glassine-bootimg.rec
+    _rf=$TMP/glassine-bootimg.rec.$$
     gk_bl_read "$1" "$_rf" || { rm -f "$_rf"; return 1; }
-    if [ -z "$(tr -d '\000' < "$_rf" | head -c 1)" ]; then echo none
+    if [ "$(tr -d '\000' < "$_rf" | wc -c)" -eq 0 ]; then echo none
     elif [ "$(head -c 8 "$_rf")" != GLBLKLST ] || [ "$(gk_u32 "$_rf" 8)" != 1 ]; then echo bad
     else
         _ri=$(dd if="$_rf" bs=1 skip=16 count=16 2>/dev/null | tr -d '\000')
@@ -220,7 +223,7 @@ gk_bl_put() {
         log "record: the image in $1 reaches the record: the record is not written"
         return 1
     fi
-    _rsha=$(gk_sha "$GK_RAM") _rr=0 _rb=$TMP/glassine-bootimg.recback
+    _rsha=$(gk_sha "$GK_RAM") _rr=0 _rb=$TMP/glassine-bootimg.recback.$$
     dd if="$2" of="$1" bs=4096 seek="$_bb" count=1 conv=notrunc,fsync oflag=direct 2>/dev/null || _rr=1
     [ "${GLASSINE_BI_TEST:-}" != 1 ] || [ -z "${GLASSINE_BI_AFTER_RECORD:-}" ] || eval "$GLASSINE_BI_AFTER_RECORD"
     gk_bl_read "$1" "$_rb" && cmp -s "$_rb" "$2" || _rr=1
@@ -240,7 +243,7 @@ gk_bl_put() {
 gk_bl_clear() {
     _rc=$(gk_bl_id "$1") || { log "record: cannot read the record in $1"; return 1; }
     [ "$_rc" != none ] || return 0
-    _rz=$TMP/glassine-bootimg.reczero
+    _rz=$TMP/glassine-bootimg.reczero.$$
     head -c 4096 /dev/zero > "$_rz" || return 1
     gk_bl_put "$1" "$_rz"; _rzr=$?
     rm -f "$_rz"

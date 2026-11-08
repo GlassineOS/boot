@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """lib/glassine-blocklist's checks for what a real file system can't be made to
 produce on demand (the rest is in inner.sh, on real ext4)."""
-import importlib.machinery, importlib.util, sys
+import importlib.machinery, importlib.util, os, sys, tempfile
 
 sys.dont_write_bytecode = True
 loader = importlib.machinery.SourceFileLoader('gb', sys.argv[1])
@@ -51,6 +51,24 @@ ok('249 extents: refused', refused(gb.check_extents, apart, 249 * B))
 ok('an encrypted directory is refused', refused(gb.check_dir_flags, gb.FS_ENCRYPT_FL))
 ok('a data-journalled directory is refused', refused(gb.check_dir_flags, gb.FS_JOURNAL_DATA_FL))
 ok('a plain directory passes', not refused(gb.check_dir_flags, 0))
+
+
+def data_mode(text):
+    """check_data_mode against a fake /proc and /sys; text None: no options file."""
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(f'{t}/sys/dev/block')
+        os.symlink('../../devices/x/sda9', f'{t}/sys/dev/block/8:9')
+        if text is not None:
+            os.makedirs(f'{t}/proc/fs/ext4/sda9')
+            with open(f'{t}/proc/fs/ext4/sda9/options', 'w') as f:
+                f.write(text)
+        gb.check_data_mode('8:9', f'{t}/proc', f'{t}/sys')
+
+
+ok('data=ordered: passes', not refused(data_mode, 'rw\ndata=ordered\nbarrier\n'))
+ok('data=journal: refused', refused(data_mode, 'rw\ndata=journal\nbarrier\n'))
+ok('no journal at all (no data= line): passes', not refused(data_mode, 'rw\nbarrier\n'))
+ok('the options can\'t be read: refused', refused(data_mode, None))
 
 ext = [(100, 2), (300, 3)]
 rec = gb.encode(ID, 'userdata', 5 * B, SHA, ext)

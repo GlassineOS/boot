@@ -19,7 +19,7 @@ directory bind-mounted onto itself, so `unshare --mount-proc` can make it privat
 new PID namespace, because the hibernate checks stop and restart the watchdog daemon
 they find by name, and outside one they would find the device's real one.
 
-CI (`.github/workflows/test.yml`) runs all seven (`test/root` and `test/replay` need a privileged Docker, `test/replay` also the network) and also builds the initramfs twice and
+CI (`.github/workflows/test.yml`) runs all seven (`test/root`, `test/replay` and `test/blocklist` need a privileged Docker, `test/replay` also the network) and also builds the initramfs twice and
 compares the two (reproducible).
 
 `test/qemu/test.sh` (not in `make check`: about 10 minutes, emulated) boots the real
