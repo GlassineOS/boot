@@ -12,6 +12,8 @@
 #   3  the initramfs resumes it (memory state kept); hibernate again
 #   4  glassine.noresume: the image is cancelled, a fresh boot of the
 #      accepted deployment
+# After boots 1 and 4 (each powers off) both file systems are checked as the
+# next boot finds them: userdata's journal must need no replay.
 # The virt kernel has no watchdog driver, so the watchdog stop around the
 # resume write is covered by test/root only.
 #
@@ -33,7 +35,7 @@
 # non-arm64 host. The outside-base mode also needs the network in the guest
 # (QEMU user networking) for the live package and its replay.
 #   test.sh [--base FILE [--base2 FILE] [--base2-file PATH] [--boots N] [--keep-going]] [OUTDIR]
-#   exit 0 = every QTEST check passed; logs in OUTDIR (boot<N>.log, and fsck<N>.log with --base)
+#   exit 0 = every QTEST check passed; logs in OUTDIR (boot<N>.log, fsck<N>.log)
 #   QTEST_BOOT_TIMEOUT: seconds per boot (default 1500, or 900 with --base)
 set -eu
 D=$(cd "$(dirname "$0")" && pwd)
@@ -72,16 +74,26 @@ boot() {    # boot N EXTRA-CMDLINE: one boot, until the guest powers off
         " > "$OUT/boot$1.log" 2>&1 || echo "(qemu exit $?)"
     grep -a 'QTEST\|glassine-switch:\|glassine-deploy-accept:\|glassine-hibernate:\|glassine-boot:' "$OUT/boot$1.log" | sed 's/\r$//'
 }
-boot 1
+# check_fs N: both file systems as the next boot finds them, after a boot that
+# powered off (a hibernate leaves userdata mounted on purpose: not after 2, 3)
+check_fs() {
+    docker run --rm --privileged --platform linux/$NATIVE -v "$P":/p:ro -v "$OUT":/out alpine:3.22 \
+        sh /p/test/qemu/build.sh fsck "$1" > "$OUT/fsck$1.log" 2>&1 || :
+    grep -a 'QTEST' "$OUT/fsck$1.log"
+    [ "$(grep -ac 'QTEST .* after boot' "$OUT/fsck$1.log")" = 2 ] ||
+        echo "QTEST FAIL after boot $1: the file system check ran (see fsck$1.log)" | tee -a "$OUT/fsck$1.log"
+}
+rm -f "$OUT"/fsck*.log
+boot 1; check_fs 1
 boot 2
 boot 3
-boot 4 glassine.noresume
-pass=$(cat "$OUT"/boot*.log | grep -ac 'QTEST ok' || true)
-fail=$(cat "$OUT"/boot*.log | grep -ac 'QTEST FAIL' || true)
+boot 4 glassine.noresume; check_fs 4
+pass=$(cat "$OUT"/boot*.log "$OUT"/fsck*.log | grep -ac 'QTEST ok' || true)
+fail=$(cat "$OUT"/boot*.log "$OUT"/fsck*.log | grep -ac 'QTEST FAIL' || true)
 done=$(grep -ac 'QTEST DONE' "$OUT/boot4.log" || true)
 sw=$(grep -ac 'glassine-switch: .* boots next' "$OUT/boot1.log" || true)
 echo "qemu: $pass ok, $fail FAIL, switch at shutdown: $sw, done: $done"
-[ "$fail" = 0 ] && [ "$done" = 1 ] && [ "$sw" = 1 ] && [ "$pass" -ge 25 ]
+[ "$fail" = 0 ] && [ "$done" = 1 ] && [ "$sw" = 1 ] && [ "$pass" -ge 29 ]
 exit
 fi
 

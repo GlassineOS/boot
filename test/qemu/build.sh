@@ -133,7 +133,7 @@ for s in devfs dmesg sysfs; do ln -s /etc/init.d/$s $B/etc/runlevels/sysinit/$s;
 for s in localmount hostname bootmisc; do ln -s /etc/init.d/$s $B/etc/runlevels/boot/$s; done
 ln -s /etc/init.d/qtest $B/etc/runlevels/default/qtest
 ln -s /etc/init.d/glassine-deploy-accept $B/etc/runlevels/default/glassine-deploy-accept
-for s in killprocs mount-ro glassine-switch; do ln -s /etc/init.d/$s $B/etc/runlevels/shutdown/$s; done
+for s in killprocs mount-ro glassine-switch glassine-mount-ro; do ln -s /etc/init.d/$s $B/etc/runlevels/shutdown/$s; done
 mkdir -p $B/lib/modules $B/lib/firmware $B/run   # no lib/modules/<release>: gr_modules makes it, as for an images base
 tar -C $B --numeric-owner --xattrs -cf $OUT/base.tar .
 tar -C /lib/modules/$KREL -cf $OUT/modules.tar .
