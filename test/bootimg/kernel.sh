@@ -78,6 +78,10 @@ ok "rule 1: an initramfs without a manifest: refused" "! $B install 7.1.0-a --dt
 mv $W/c2.manifest $SYS/boot/initramfs/c2.manifest
 ok "no --dtb and no current image to take it from: refused, names the flag" "! $B install 7.1.0-a --initramfs c1 2>$W/err && grep -q -- '--dtb DEVICE@ID' $W/err && cmp -s $K $W/k0"
 ok "a device tree for another device than DEVICE: refused" "echo x > $SYS/boot/dtb/dev2@cccc.dtb; ! $B install 7.1.0-a --initramfs c1 --dtb dev2@cccc 2>$W/err && grep -q 'for another device than dev1' $W/err && cmp -s $K $W/k0"
+bset DEVICE ''
+ok "no DEVICE: refused, nothing written" "! $B install 7.1.0-a --initramfs c1 --dtb dev1@aaaa 2>$W/err && grep -q 'no DEVICE in' $W/err && cmp -s $K $W/k0"
+bset DEVICE dev1
+ok "malformed names: an empty or non-hex id, an empty device, a stray @: refused" "for a in '--dtb dev1@' '--dtb dev1@zz' '--dtb @aaaa' '--dtb .x@aaaa'; do ! $B install 7.1.0-a --initramfs c1 \$a 2>$W/err && grep -q 'bad device tree name' $W/err || exit 1; done; for i in @ c1@ @c1 c1@@1 c1@1@2; do ! $B install 7.1.0-a --dtb dev1@aaaa --initramfs \$i 2>$W/err && grep -q 'bad initramfs name' $W/err || exit 1; done; cmp -s $K $W/k0"
 ok "names with path characters: refused" "! $B install 7.1.0-a --initramfs ../c1 --dtb dev1@aaaa 2>$W/err && grep -q 'bad initramfs name' $W/err && ! $B install 7.1.0-a --initramfs c1 --dtb 'dev1@../aaaa' 2>$W/err && grep -q 'bad device tree name' $W/err && cmp -s $K $W/k0"
 head -c 8192 /dev/zero > $W/small
 ok "rule 2: an image that doesn't fit the test slot: refused, slot untouched" "! GLASSINE_BI_TEST_DEV=$W/small $B install 7.1.0-a --dtb dev1@aaaa --initramfs c1 2>$W/err && grep -q \"doesn't fit $W/small\" $W/err && cmp -s $K $W/k0 && [ \$(tr -d '\\000' < $W/small | wc -c) = 0 ]"

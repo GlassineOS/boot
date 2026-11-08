@@ -421,7 +421,9 @@ initramfs from `boot/`, not from the base.
    checks, makes it the candidate, hands it off. An update passes all three from the
    device's `select/<device>` (below). Without the flags, the device tree and the
    initramfs are the ones in `current_img`'s boot record; neither there: refused, naming
-   the flag. A device tree for another device than board key `DEVICE` is refused.
+   the flag. Board key `DEVICE` is required, and a device tree for another device is
+   refused. Names must have their form: `<device>@<hex>` and `<hex>@<hex>` (a bare hex
+   initramfs commit is accepted from records written before the id).
 3. The trial, then accept (writes `state/kernel`). Modules of current, previous, the
    candidate and deferred are never removed; older ones may be (`bases remove` extends to
    modules).
@@ -499,8 +501,12 @@ select/<device>                        the device's update (below)
 
 `select/<device>` is a record (`format=1`): `device`, `kernel` (release), `dtb`
 (`<device>@<id>`), `initramfs` (`<commit12>@<id>`). It is the only place a device tree is
-paired with a kernel. A device's update receives what it names that the device doesn't
-have, then runs `glassine-bootimg install <kernel> --dtb <dtb> --initramfs <initramfs>`.
+paired with a kernel. A device's update compares it with the boot record of
+`current_img` and, if one is set, of `candidate_img` (`kernel`, `dtb`, `initramfs`).
+When either already matches, there is nothing to do: `install` would refuse an image that
+is the current one already. Otherwise the update receives what the record names that the
+device doesn't have, then runs `glassine-bootimg install <kernel> --dtb <dtb> --initramfs
+<initramfs>`.
 
 ## Not covered here
 

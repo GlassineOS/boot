@@ -143,10 +143,10 @@ Each story says which phase it belongs to.
   and the device tree and initramfs from `boot/`, through `lib/glassine-bootimg-pack`
   with `--expect-release`. The board's `KERNEL`, `DTB` and `INITRAMFS` aren't used.
 - **FR-005** The device tree is `--dtb <device>@<id>`, or else the one in `current_img`'s
-  boot record; a tree for another device than board key `DEVICE` is refused. The
+  boot record. Board key `DEVICE` is required, and a tree for another device is refused. The
   initramfs is `--initramfs <commit12>@<id>`, or else the one in `current_img`'s boot
-  record. Neither present: refuse, naming the flag. A name with characters other than
-  those of its form (a path) is refused.
+  record. Neither present: refuse, naming the flag. A name not of its form is refused:
+  `<device>@<hex>`, `<hex>@<hex>` (or a bare hex commit, from older records).
 - **FR-006** Before the hand-off, `install` checks rule 1 (`provides` covers the
   initramfs's `needs`) and rule 2 (the slot size; the packer also checks `PART_SIZE` and
   `RAMDISK_MAX`) of "Which combinations boot". The deployment coverage checks wait for

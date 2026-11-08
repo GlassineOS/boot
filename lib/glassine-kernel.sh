@@ -289,14 +289,18 @@ gk_install() {
         [ -n "$_dtb" ] || die "install $_rel: the current image names no device tree; name one with --dtb DEVICE@ID"
     fi
     case "$_dtb" in *@*) ;; *) die "install $_rel: --dtb takes DEVICE@ID" ;; esac
-    case "$_dtb" in .*|*[!A-Za-z0-9._@+-]*) die "install $_rel: bad device tree name '$_dtb'" ;; esac
-    [ -z "$DEVICE" ] || [ "${_dtb%@*}" = "$DEVICE" ] || die "install $_rel: device tree $_dtb is for another device than $DEVICE"
+    # DEVICE@ID: a device name (not starting with a dot), then a hex id
+    case "${_dtb%@*}" in ''|.*|*[!A-Za-z0-9._+-]*) die "install $_rel: bad device tree name '$_dtb' (DEVICE@ID)" ;; esac
+    case "${_dtb##*@}" in ''|*[!0-9a-f]*) die "install $_rel: bad device tree name '$_dtb' (DEVICE@ID)" ;; esac
+    [ -n "$DEVICE" ] || die "install $_rel: no DEVICE in $BOARD (it names the device trees this board boots)"
+    [ "${_dtb%@*}" = "$DEVICE" ] || die "install $_rel: device tree $_dtb is for another device than $DEVICE"
     [ -r "$SYS/boot/dtb/$_dtb.dtb" ] || die "install $_rel: no $SYS/boot/dtb/$_dtb.dtb"
     if [ -z "$_ird" ]; then
         [ -z "$_cimg" ] || _ird=$(man "$_cimg" initramfs)
         [ -n "$_ird" ] || die "install $_rel: the current image names no initramfs; name one with --initramfs COMMIT12@ID"
     fi
-    case "$_ird" in .*|*[!0-9a-f@]*) die "install $_rel: bad initramfs name '$_ird' (COMMIT12@ID)" ;; esac
+    # COMMIT12@ID: hex, then a hex id (a bare hex commit: a record from before the id)
+    case "$_ird" in *@*@*|@*|*@|*[!0-9a-f@]*|'') die "install $_rel: bad initramfs name '$_ird' (COMMIT12@ID)" ;; esac
     _irf=$SYS/boot/initramfs/$_ird.cpio.gz _irm=$SYS/boot/initramfs/$_ird.manifest
     [ -r "$_irf" ] || die "install $_rel: no $_irf"
     # rule 1 of "Which combinations boot" (FR-006)
