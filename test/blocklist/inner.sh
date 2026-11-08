@@ -35,6 +35,7 @@ ID=0123456789abcdef
 # store NAME BLOCKS: as install does: allocated, written in full, synced, immutable
 store() {
     head -c $(($2 * 4096)) /dev/urandom > $W/$1.src
+    printf '\000' | dd of=$W/$1.src bs=1 count=1 conv=notrunc 2>/dev/null     # a test writes X there: it must change the byte
     fallocate -l $(($2 * 4096)) $K/$1.img &&
         dd if=$W/$1.src of=$K/$1.img bs=4096 conv=notrunc,fsync 2>/dev/null && sync && chattr +i $K/$1.img
 }
@@ -122,7 +123,9 @@ struct.pack_into('<I', h, 36, 4096)
 fd = os.open(slot, os.O_WRONLY)
 n = os.lseek(fd, 0, 2)
 os.pwrite(fd, bytes(n), 0)
-os.pwrite(fd, bytes(h) + os.urandom(kb), 0)
+body = bytearray(os.urandom(kb))
+body[8192 - 4096] = 0     # the fault injection writes X at 8192: it must change the byte
+os.pwrite(fd, bytes(h) + bytes(body), 0)
 os.pwrite(fd, b'\xaa' * 61440, n - 61440)
 os.fsync(fd)
 PY
