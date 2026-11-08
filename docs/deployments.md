@@ -12,7 +12,7 @@ run on hardware**.
 | Term | Meaning |
 |---|---|
 | system partition | The partition named by `SYSTEM_DEV` btrfs. Holds the read-only bases, the kernel modules and `state/`. |
-| userdata | The partition named by `USERDATA_DEV`, ext4. Holds the deployments under `USERDATA_PREFIX`, and the hibernate swap file. Home lives here as well, outside the deployments. |
+| userdata | The partition named by `USERDATA_DEV`, ext4. Holds the deployments under `USERDATA_PREFIX`, the hibernate swap file, and the person's storage (home and Flatpak's system data), outside the deployments. |
 | base | A read-only btrfs subvolume with a complete system (`bases/<id>/`). |
 | deployment | One bootable root: a base plus its own layers on userdata (`deployments/<id>/`). |
 | current | The deployment that boots normally. |
@@ -33,6 +33,8 @@ system partition (btrfs, top level)
     └── .lock                   flock target; never contains data
 
 userdata (ext4) under USERDATA_PREFIX (default media/glassine)
+├── home/                       /home of every deployment (below), root:root 0755
+├── flatpak/                    /var/lib/flatpak of every deployment, root:root 0755
 ├── deployments/<id>/
 │   ├── meta                    key=value (below)
 │   ├── build/                  the layer built for this deployment; read-only once it exists
@@ -52,6 +54,35 @@ Locked (the default): `/` is a read-only bind of that overlay, and `/etc`, `/var
 through the overlay (copy-up, whiteouts), and the base never changes. The base's
 `/etc/fstab` must list `/` with `bind,ro` ([boot.md](boot.md#deployments-layout)), or the
 init system remounts it read-write.
+
+### The person's storage
+
+Home (`/home`) and Flatpak's system data (`/var/lib/flatpak`) are the directories
+`home/` and `flatpak/` under `USERDATA_PREFIX`, outside the deployments, so every
+deployment sees the same files and no reset touches them (`reset` and `reset --full`
+keep them; no base or migrate list carries them).
+
+- **Who binds them:** the initramfs, while it assembles the booted deployment's root
+  (`gr_storage` in `lib/glassine-root.sh`, from `gr_boot`), before `switch_root`, so they
+  are there before any service starts. `glassine-deploy`'s views of a deployment (the
+  switch's carry, the package replay) never get them. Each directory is created on first
+  use, `root:root`, `0755`.
+- **What they hide:** files a deployment already holds in its own `/home` or
+  `/var/lib/flatpak` are hidden by the bind, never moved or deleted. `status` reports a
+  non-empty hidden directory (`home_hidden=yes`), read from the merged root without the
+  binds (`/run/glassine/root`).
+- **Failure:** a directory that can't be created, or a bind that fails, is logged; the
+  boot goes on with the deployment's own directory in its place, nothing is written
+  into the userdata directory, `status` reports it (`home=failed`, `home_error=…`), and
+  the next boot tries again.
+- **A bare boot** binds nothing from userdata: it keeps nothing, as before. An initramfs
+  from before this (after a boot-image rollback) boots deployments with their own
+  directories, and loses nothing on userdata.
+- **`/var/tmp`** is a bind of itself made shared (on every boot of this layout, bare
+  ones too), so the mount namespaces Flatpak makes from it see mounts made under it
+  later. Its files stay in the deployment's `/var`.
+
+The plain layout is unchanged.
 
 ## State files
 
@@ -150,12 +181,12 @@ glassine-deploy accept ID
 
 | Command | Does |
 |---|---|
-| `status` | format (state and supported), the system file system, current/previous/candidate/staged/tries, the kernels, `hibernated=yes\|no\|unknown`, `twrp_keep` |
+| `status` | format (state and supported), the system file system, current/previous/candidate/staged/tries, the kernels, `hibernated=yes\|no\|unknown`, `twrp_keep`, the person's storage as this boot left it (`home`, `flatpak`: `bound`, `failed` with `<name>_error`, or empty on a bare boot or outside a deployments boot; `<name>_hidden`; `vartmp`: `shared` or `failed`) |
 | `list` | one record per deployment: id, state (`current`, `candidate`, `staged`, `previous`, `failed`, `kept`), base, kernel, created, size |
 | `select ID` | ID becomes the candidate with 2 tries; selecting current cancels a candidate. Never makes an untried deployment current. |
 | `rollback` | `select` previous |
 | `hibernate-invalidate` | turns a hibernate image back into a plain swap file (that session is lost) |
-| `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Home is never touched. |
+| `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Neither touches home or Flatpak's data (`home/`, `flatpak/` above). |
 | `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. |
 | `stage BASE` flags | `--no-replay` the bare base, `--without NAME` (repeatable) leaves an added package out, `--accept-downgrades` takes lower versions. Exit 7: the replay needs one of these; nothing staged. |
 | `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. The only verb that needs btrfs-progs (and zstd for `.zst`). |
@@ -230,7 +261,7 @@ Keys may be added within a version, so readers ignore keys they don't know.
 
 ```
 glassine-deploy 1
-type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previous=…	candidate=…	staged=…	failed=…	tries=…	kernel_current=…	kernel_previous=…	hibernated=no	userdata_prefix=media/glassine	twrp_keep=yes	swapfile=…	guard=…
+type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previous=…	candidate=…	staged=…	failed=…	tries=…	kernel_current=…	kernel_previous=…	hibernated=no	userdata_prefix=media/glassine	twrp_keep=yes	home=bound	home_hidden=no	flatpak=bound	flatpak_hidden=no	vartmp=shared	swapfile=…	guard=…
 ```
 
 ```
@@ -325,6 +356,7 @@ See [`conf/deploy.conf.example`](../conf/deploy.conf.example): `SYSTEM_DEV`,
 | Path | Written by | Meaning |
 |---|---|---|
 | `booted` | initramfs | the deployment that booted, or `bare:<base>` |
+| `storage` | initramfs | key=value: `home`, `flatpak` (`bound` or `failed`, with `<name>_error`), `vartmp` (`shared` or `failed`); a bare boot has only `vartmp` |
 | `system/`, `userdata/`, `root/` | initramfs | the system partition, userdata and the merged overlay, moved there before `switch_root` |
 | `switching` | `glassine-deploy switch` | a switch is running; the hibernate step refuses while it exists |
 | `user-shutdown` | the power menu, via `glassine-switch-hook --user-shutdown` | this shutdown may switch |
