@@ -131,70 +131,139 @@ Some files can only come from the device: the panel's waveform, signed firmware 
 its own partitions (GPU zap shader, radio and DSP images). They are **never** in an
 artifact; a build check enforces that by content, not only by name.
 
-**The seed.** They are copied once from the device's own storage into a seed, checked, and
-from then on read only from the seed (refreshed only on request). Nothing depends on the
-original partitions afterwards. The seed lives on a partition of its own, the board's
-`DEVICE_PART` (a new `board.conf` key), so it survives a reformat of the system partition,
-a format of userdata and every deployment reset, and the initramfs and the recovery can
-read it without either:
+**The list.** A device package names its files in `/usr/share/glassine/device-data.list`
+(in the root, so the initramfs reads it from the assembled root before it touches
+`DEVICE_PART`). No list, or a list with no entries, means the device has no device data:
+no step at boot, nothing in the log, `DEVICE_PART` untouched. The format (`format=1`):
 
 ```
-DEVICE_PART (the Note Air: vendor_b, ext4; GlassineOS otherwise only reads it)
+format=1
+# NAME                          SOURCE (PART:/PATH, read read-only)   [CHECK]
+waveform.wbf                    sysa:/waveform/panel.wbf              wbf
+firmware/vendor/gpu_zap.*       sysa:/image/gpu_zap.*
+firmware/vendor/board.bin       vend:/BOARD.BIN
+```
+
+- `NAME`: the path in the seed. Relative, may hold directories and differ from the
+  source's file name; no `.` or `..` parts, no hidden (dot) parts, not `manifest`.
+- `NAME.*` with `PATH.*`: a split image, a `.mdt` and the parts `NAME.bNN` it needs,
+  resolved the way the kernel's mdt loader (`drivers/soc/qcom/mdt_loader.c`) resolves it:
+  from the `.mdt`'s ELF program headers (32- or 64-bit). The segment at index `NN` (two
+  digits, as the loader requests it) needs `.bNN` when it is loadable as the loader counts
+  it (`PT_LOAD`, not the hash segment, `p_memsz` > 0), has `p_filesz` > 0, and isn't wholly
+  inside the `.mdt` file itself (`p_offset + p_filesz` > the `.mdt`'s size). A `.mdt` that
+  isn't ELF, or a needed part that is missing, fails the entry as a whole, and nothing of
+  it is added. Parts the headers don't need are not copied. Each resolved file is a line of
+  the manifest on its own.
+- A path on a vfat source is written in lower case: the source is mounted with
+  `shortname=lower`, so an 8.3-only name such as `MODEM.MDT` reads as `modem.mdt`, and
+  with the kernel's `utf8` I/O character set (Alpine's default) vfat is case-sensitive, so
+  `/MODEM.MDT` would not be found.
+- `CHECK`: `wbf` (a waveform: at least 256 bytes, the 32-bit length at offset 4 is the
+  file's size); `none` when left out.
+- A source on `DEVICE_PART` itself makes the list invalid; so does any malformed line, or
+  a name twice. Nothing is seeded from an invalid list until it is fixed. A list of a
+  newer format is refused (exit 3).
+- The list never names `DEVICE_PART`; that is the board key's. A list on a board without
+  `DEVICE_PART` is said once per boot (by the seed service) and otherwise ignored.
+
+**The seed.** The files are copied once from the device's own storage into a seed,
+checked, and from then on read only from the seed (refreshed only on request). Nothing
+depends on the original partitions afterwards. The seed lives on a partition of its own,
+the board's `DEVICE_PART` (ext4), so it survives a reformat of the system partition, a
+format of userdata and every deployment reset, and the initramfs and the recovery can read
+it without either:
+
+```
+DEVICE_PART (ext4; GlassineOS otherwise only reads it)
 └── glassine/
-    ├── manifest             format=1, then one line per file: name, source (PART:PATH), sha256
+    ├── manifest             format=1, then one line per file: NAME SOURCE SHA256
     ├── waveform.wbf
     └── firmware/            device firmware, by the names drivers request
 ```
 
-On a device with an A/B layout whose B slot belongs to GlassineOS, `DEVICE_PART` is the
-B slot's vendor partition: a clone of the stock vendor partition, already a source of
+A manifest line whose file is missing is not held, but its sha256 stays recorded: a source
+that now gives other bytes is taken only on a refresh. The seed **verifies** when every
+file it holds matches its line and it holds no file the manifest doesn't name (a cut-off
+write's temp file, anything unverified); it is **complete** for a list when, in addition,
+every entry is held (a split image: its `.mdt` and every part the seed's own `.mdt`
+needs; no source is read). Files the seed holds that the list no longer names
+stay.
+
+On a device with an A/B layout whose B slot belongs to GlassineOS, `DEVICE_PART` can be
+the B slot's vendor partition: a clone of the stock vendor partition, already a source of
 device files. Its stock files stay untouched; only `glassine/` is added. Writing it breaks
 that partition's Android verity, which matters only if Android ever booted from it.
 
-**At boot (initramfs).** After `gr_resume` (boot.md rule 1: nothing is mounted before the
-hibernation step) and after `gr_carry` has put the tmpfs on the new root's `/run`:
+**At boot (initramfs, `gd_boot` in `lib/glassine-device.sh`).** In the deployments layout,
+after `gr_carry` has put the tmpfs on the new root's `/run`, and only when the root's list
+names files and the board has `DEVICE_PART`:
 
-1. `dumpe2fs -h` on `DEVICE_PART`: if its journal needs recovery, nothing is mounted (the
-   seed hook replays it).
-2. `debugfs -R 'stat /glassine/manifest'`, without mounting.
-3. If the manifest exists: mount `DEVICE_PART` `ro,noload` (no journal replay, nothing
-   written) directly under the new root, `$NEWROOT/run/glassine/device-part` (after
-   `gr_carry`'s tmpfs, so it needs no move), and check every file against the manifest's
-   sha256 with `sha256sum` (about 33 MB on the Note Air, most of it radio and DSP images;
-   estimated well under a second per boot, accepted for never exposing an unverified
-   file). Only when all match is `glassine/` bound on
-   `$NEWROOT/run/glassine/device`, read-only. Nothing unverified is ever visible there.
-4. Otherwise nothing is bound (a mount without a valid seed is unmounted); the seed hook
-   runs later.
+1. `dumpe2fs -h` on `DEVICE_PART`: not ext4, or its journal needs recovery: nothing is
+   mounted (the seed service replays it).
+2. `debugfs -R 'stat /glassine/manifest'`, without mounting: no manifest, no seed yet.
+3. `DEVICE_PART` mounted `ro,noload` (no journal replay, nothing written) on
+   `$NEWROOT/run/glassine/device-part`, and the seed verified with `sha256sum` (about
+   33 MB on the first device; under a second per boot is the target, accepted for never
+   exposing an unverified file). If it verifies, complete or not, `glassine/` is bound
+   read-only on `$NEWROOT/run/glassine/device` and the firmware path set (below).
+4. Otherwise nothing is bound and nothing stays mounted.
 
-Device firmware is reached through `firmware_class.path=/run/glassine/device/firmware`
-(the board's constant command line), searched before the `/lib/firmware` paths, so
-`firmware/` must never hold a name the kernel's `firmware/` provides (the device's own
-older GPU microcode would win over the pinned one). Drivers that request firmware before
-`switch_root` find neither path: they stay modules, or defer.
+Each step is logged as `device data: ...`.
 
-**The seed hook (OpenRC, the device package's, in sysinit before the device manager's
-coldplug)** runs only when nothing is bound on `/run/glassine/device`, or when a refresh
-is asked for (a refresh unmounts the boot mounts first, so the read-write mount below is
-the only one):
+**The firmware path.** Firmware in the seed is under `firmware/`. When it is bound, the
+kernel searches it before its own paths, on every boot: from `firmware_class.path` on the
+board's command line, or, when the command line lacks it, from
+`/sys/module/firmware_class/parameters/path`, which the initramfs writes when it binds the
+seed and the seed service writes when it binds it, without a trailing newline (the kernel
+keeps the value verbatim). So `firmware/` must never hold a name the kernel's `firmware/`
+provides (the device's own older GPU microcode would win over the pinned one): the seed
+fill refuses an entry whose name the running kernel release's `kernel.manifest` firmware
+list provides, and `glassine-bootimg install` refuses a kernel release whose firmware list
+names a file the bound seed holds; both name the clash. Drivers that request firmware
+before `switch_root` find neither path: they stay modules, or defer.
 
-- If the journal needs recovery: one read-write mount and unmount replays it, then the
-  files are checked against the manifest as the initramfs does.
-- A missing manifest, or a file that doesn't match, is copied again from its source:
+**The seed service.** `boot` ships the tool (`glassine-device-seed`) and its OpenRC
+service (`glassine-device-seed`, for sysinit, before the device manager's coldplug); the
+image builder adds the service to sysinit, the device package ships only its list. Without
+list entries the service does nothing and says nothing. When the initramfs bound a
+complete seed and no entry clashes with the kernel's firmware, it only sets the firmware
+path. Otherwise:
 
-1. Each source is read read-only: an ext4 source with `debugfs -R dump` (no mount), a
-   source without a journal (vfat) mounted `ro`, a btrfs source `ro,rescue=nologreplay`.
-   Each file is checked (for the waveform: size and header).
-2. `DEVICE_PART` is mounted read-write; files are written as temp files and renamed;
-   the manifest is written last; it is unmounted.
-3. It is mounted `ro,noload` and `glassine/` bound on `/run/glassine/device`.
+1. If `DEVICE_PART`'s journal needs recovery: one read-write mount and unmount replays it.
+2. `DEVICE_PART` mounted `ro,noload`; each entry the seed holds is kept, each it lacks (or
+   whose copy doesn't verify) is read from its source, read-only: an ext4 source with
+   `debugfs -R dump` (no mount, no journal replay), vfat mounted `ro,shortname=lower`,
+   btrfs
+   `ro,rescue=nologreplay`. Each file is checked (`CHECK`). A source that can't be read,
+   or that gives other bytes than the manifest records, leaves the entry out (the seed is
+   incomplete, retried at every boot), and a copy that doesn't verify goes.
+3. Only if something changed: `DEVICE_PART` mounted read-write, files written as temp
+   files and renamed, the manifest written last, unmounted.
+4. Mounted `ro,noload` again and, if the seed verifies, bound read-only on
+   `/run/glassine/device`, the firmware path set.
+
+`glassine-device-seed status` lists each entry as `ok` or `missing` (exit 0 = complete).
+`glassine-device-seed refresh` asks for a refresh at the next boot (every file read again,
+changed sources taken): `DEVICE_PART` can't be mounted read-write while any mount
+namespace holds a read-only mount of it, and at boot the service runs before any of them.
+`refresh --now` does it right away (a boot or the recovery); its request stands until it
+finishes; a source that can't be read keeps the seed's copy and the request. Exit: 0
+complete (or no device data), 1 incomplete or a refresh not finished (what verifies is bound), 2
+usage or an invalid list, 3 a list format newer than the tool.
 
 `glassine-hibernate` refuses (exit 3) while `DEVICE_PART` is mounted read-write.
 
-**Failure and escape:** a copy cut off before the manifest's rename has no manifest, so
-it is no seed. Cut off after it, the journal may need recovery, or a file may not match:
-the next boot's hook replays the journal and verifies, and copies again what fails. Either
-way the daemons and the recovery read the original sources meanwhile. The recovery can remove `glassine/`; the stock files on `DEVICE_PART` stay. A
+The seed never holds a device's live state (a radio's file systems, calibration data that
+changes at run time); the services that own them read those at run time.
+
+**Failure and escape:** a write cut off before the manifest's rename leaves the old
+manifest and a temp manifest (and maybe new files in place): the seed doesn't verify, so
+nothing is bound, and the next boot's service removes the temp files and copies again what
+doesn't match (a cut refresh is done again in full, its request still standing). Cut off
+after the rename, the journal may need recovery: the service replays it and verifies.
+Nothing unverified is ever bound. The daemons and the recovery read the original sources
+meanwhile. The recovery can remove `glassine/`; the stock files on `DEVICE_PART` stay. A
 seed write never touches the original sources.
 
 - **Daemons** read their file paths from configuration (for the panel: `waveform=` in

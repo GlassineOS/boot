@@ -12,7 +12,7 @@ B=/p/sbin/glassine-bootimg
 export GLASSINE_BI_SYSTEM=$SYS GLASSINE_BI_LIB=/p/lib GLASSINE_DEPLOY_CONF=$W/none GLASSINE_BI_BOARD=$W/board.conf \
     GLASSINE_BI_TEST_DEV=$W/testslot GLASSINE_BI_DEFAULT_DEV=$W/defslot GLASSINE_BI_CMDLINE=$W/cmdline \
     GLASSINE_BI_PACK=/p/lib/glassine-bootimg-pack GLASSINE_BI_LOG=$W/log GLASSINE_BI_TMP=$W/run GLASSINE_BI_NOREBOOT=1 \
-    GLASSINE_BI_SYSBLOCK=$W/sysblock GLASSINE_BI_TEST=1
+    GLASSINE_BI_SYSBLOCK=$W/sysblock GLASSINE_BI_TEST=1 GLASSINE_BI_DEVICE_SEED=$W/seed
 fails=0
 ok() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
 kv() { gs_kv $K "$1"; }
@@ -79,6 +79,11 @@ ok "a release without modules/: refused, nothing written" "! $B install 9.9.9 --
 ok "Image.gz of another release: refused, no image, no temp file" "! $B install 7.1.0-bad --dtb dev1@aaaa --initramfs c1 2>$W/err && grep -q 'is not kernel release 7.1.0-bad' $W/err && cmp -s $K $W/k0 && [ -z \"\$(ls $BI)\" ] && [ -z \"\$(ls $W/run)\" ]"
 ok "no --initramfs and no current image to take it from: refused, names the flag" "! $B install 7.1.0-a --dtb dev1@aaaa 2>$W/err && grep -q -- '--initramfs COMMIT12@ID' $W/err && cmp -s $K $W/k0"
 ok "rule 1: the initramfs needs what the kernel doesn't provide: refused" "! $B install 7.1.0-a --dtb dev1@aaaa --initramfs c2 2>$W/err && grep -q 'needs: zram-writeback' $W/err && cmp -s $K $W/k0"
+# the device seed holds a name the kernel's firmware provides (FR-013 of specs/006)
+mkdir -p $W/seed/firmware/vendor; echo dev > $W/seed/firmware/vendor/gpu_zap.mdt
+printf 'firmware=vendor/gpu_pfp.fw@0123456789abcdef vendor/gpu_zap.mdt@0123456789abcdef\n' >> $SYS/modules/7.1.0-a/kernel.manifest
+ok "the device seed holds a name the kernel's firmware provides: refused, the clash named" "! $B install 7.1.0-a --dtb dev1@aaaa --initramfs c1 2>$W/err && grep -q 'firmware provides files the device seed holds: vendor/gpu_zap.mdt (' $W/err && cmp -s $K $W/k0"
+rm -r $W/seed; sed -i '/^firmware=/d' $SYS/modules/7.1.0-a/kernel.manifest
 mv $SYS/boot/initramfs/c2.manifest $W/c2.manifest
 ok "rule 1: an initramfs without a manifest: refused" "! $B install 7.1.0-a --dtb dev1@aaaa --initramfs c2 2>$W/err && grep -q 'c2.manifest' $W/err && cmp -s $K $W/k0"
 mv $W/c2.manifest $SYS/boot/initramfs/c2.manifest

@@ -71,7 +71,7 @@ GLASSINE_EXTRA=/lib/glassine-boot/extra
 NEWROOT=/newroot
 log "init start $(cat /proc/uptime)"
 
-ROOT_PART='' ROOT_FSTYPE=ext4 ROOT_LAYOUT=plain USERDATA_PART='' USERDATA_PREFIX=media/glassine DEFAULT_ROLE_MATCH='' DEVMODE_ADDR='' DEVMODE_NETMASK=255.255.255.0
+ROOT_PART='' ROOT_FSTYPE=ext4 ROOT_LAYOUT=plain USERDATA_PART='' USERDATA_PREFIX=media/glassine DEVICE_PART='' DEFAULT_ROLE_MATCH='' DEVMODE_ADDR='' DEVMODE_NETMASK=255.255.255.0
 DEVMODE_DHCP_START='' DEVMODE_DHCP_END='' USB_VENDOR=0x1d6b USB_PRODUCT=0x0104 USB_MANUFACTURER=GlassineOS
 if [ -r "$BOARD" ]; then
     # shellcheck source=/dev/null
@@ -115,6 +115,8 @@ if [ "$ROOT_LAYOUT" = deployments ]; then
     gr_log() { log "$*"; }
     gr_wd_stop() { killall watchdog 2>/dev/null; sleep 1; }
     gr_wd_start() { wd_arm; }
+    # shellcheck source=../lib/glassine-device.sh
+    if [ -r "$LIBDIR/glassine-device.sh" ]; then . "$LIBDIR/glassine-device.sh"; else log "$LIBDIR has no glassine-device.sh: no device data step"; fi
 fi
 
 # Hooks: `glassine_hook STAGE FUNCTION` adds FUNCTION to STAGE; run_stage
@@ -219,6 +221,19 @@ root_release() {
     if [ "$ROOT_LAYOUT" = deployments ]; then gr_boot_umount $NEWROOT; else umount $NEWROOT; fi
 }
 
+# Device data (docs/kernel-artifacts.md): after gr_carry, when the deployment's
+# list names files and the board has a DEVICE_PART, the seed is bound read-only
+# on /run/glassine/device if the files it holds verify, and the firmware path
+# set (gd_boot). The seed service in the booted system fills what is missing
+# and says what is wrong with the list or the board. No list: no step, no log.
+device_data() {
+    command -v gd_boot >/dev/null || return 0
+    gd_has_entries "$NEWROOT/usr/share/glassine/device-data.list" && [ -n "$DEVICE_PART" ] || return 0
+    _dp=$(find_part "$DEVICE_PART") || { log "device data: no partition $DEVICE_PART"; return 0; }
+    gd_boot $NEWROOT "/dev/$_dp" "$CMDF" /sys/module/firmware_class/parameters/path 2>/tmp/gd.log
+    while read -r _l; do log "device data: ${_l#glassine-device: }"; done < /tmp/gd.log
+}
+
 # The daily boot: the root fs read-write, its own runlevels (the packages
 # enable their services; nothing is linked here). The busybox watchdog keeps
 # running.
@@ -259,6 +274,7 @@ boot_default() {
     umount /sys/kernel/config 2>/dev/null
     if [ "$ROOT_LAYOUT" = deployments ]; then
         gr_carry $NEWROOT || { log "default: cannot move the mounts into the new root"; return 1; }
+        device_data
     fi
     log "default: switch_root $(cut -d' ' -f1 /proc/uptime)"
     umount /sys/fs/pstore 2>/dev/null
