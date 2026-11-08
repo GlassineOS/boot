@@ -221,7 +221,7 @@ firmware/vendor/y.bin srcext:/fw/y.bin"
     chk "device data: the sources read as the test left them (SC-003)" "src_same"
     # developer access from the next boot on (with glassine.devmode=usb): the
     # developer folder and a key, as an administrator puts them there
-    mkdir -p -m 0700 $DMD
+    mkdir -p $DMD && chmod 0700 $DMD
     ssh-keygen -q -t ed25519 -N '' -f $Q/devkey; ssh-keygen -q -t ed25519 -N '' -f $Q/otherkey
     cp $Q/devkey.pub $DMD/authorized_keys; sync
     next 10
