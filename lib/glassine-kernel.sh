@@ -30,12 +30,14 @@
 # Exit codes: 0 done, 1 error, 2 usage, 3 the state format (or a record) is
 # newer than this tool, 6 busy (state/.lock held).
 #
-# busybox ash only, except the packer (python3). Test hooks: GLASSINE_BI_SYSTEM
+# busybox ash only, except the packer and lib/glassine-blocklist (python3,
+# neither in the initramfs or the recovery). Test hooks: GLASSINE_BI_SYSTEM
 # (the system partition's top level), GLASSINE_BI_SYSBLOCK (/sys/class/block),
 # GLASSINE_BI_RUN_DIR (RUN_DIR, deploy.conf), GLASSINE_BI_MOUNTS (/proc/mounts),
 # GLASSINE_BI_AFTER_BODY (eval'd in gk_put after an image's body is written and
-# before its header: the tests cut or corrupt writes with it; only with
-# GLASSINE_BI_TEST=1, never on an ordinary write).
+# before its header: the tests cut or corrupt writes with it),
+# GLASSINE_BI_AFTER_RECORD (eval'd in gk_bl_put after the record is written);
+# both only with GLASSINE_BI_TEST=1, never on an ordinary write.
 
 GK_CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 SYSTEM_MNT=/run/glassine/system RUN_DIR=/run/glassine
@@ -166,6 +168,86 @@ gk_ram() {
     fi
     rm -f "$GK_RAM"; GK_RAM=''
     return 1
+}
+
+# --- the block-list record ----------------------------------------------------
+# docs/blocklist.md, "The record"; specs/005, FR-001 to FR-003. Ash, for the
+# recovery and for promote on every boot. The full format is lib/glassine-blocklist.
+GK_BL_TAIL=65536
+
+# gk_bl_block DEV: where the record is in DEV, in 4096-byte blocks
+gk_bl_block() {
+    _bz=$(gk_devsize "$1")
+    case "$_bz" in ''|*[!0-9]*) return 1 ;; esac
+    [ $((_bz % 4096)) = 0 ] && [ "$_bz" -ge $((GK_BL_TAIL + 4096)) ] || return 1
+    echo $(((_bz - GK_BL_TAIL) / 4096))
+}
+
+# gk_bl_read DEV OUT: the record's 4096 bytes, the device's own
+gk_bl_read() {
+    _bb=$(gk_bl_block "$1") || return 1
+    dd if="$1" of="$2" bs=4096 skip="$_bb" count=1 iflag=direct 2>/dev/null && [ "$(stat -c %s "$2")" = 4096 ]
+}
+
+# gk_bl_id DEV: prints the image id the record names, `none` for no record, or
+# `bad` when there is no magic, format or id to read. A record torn after its
+# id still prints the id: only `glassine-blocklist decode` says a record is
+# whole. 1 when the record can't be read. Promote calls this without the lock,
+# so each process has its own file.
+gk_bl_id() {
+    _rf=$TMP/glassine-bootimg.rec.$$
+    gk_bl_read "$1" "$_rf" || { rm -f "$_rf"; return 1; }
+    if [ "$(tr -d '\000' < "$_rf" | wc -c)" -eq 0 ]; then echo none
+    elif [ "$(head -c 8 "$_rf")" != GLBLKLST ] || [ "$(gk_u32 "$_rf" 8)" != 1 ]; then echo bad
+    else
+        _ri=$(dd if="$_rf" bs=1 skip=16 count=16 2>/dev/null | tr -d '\000')
+        case "$_ri" in
+        ''|*[!0-9a-f]*) echo bad ;;
+        *) if [ ${#_ri} = 16 ]; then echo "$_ri"; else echo bad; fi ;;
+        esac
+    fi
+    rm -f "$_rf"
+}
+
+# gk_bl_put DEV FILE: FILE (4096 bytes) into DEV's record, and nothing else
+# (FR-003). Refused when DEV holds no header v0 image, or one that reaches the
+# record. The image's bytes are kept in RAM and compared after the write; on a
+# mismatch they go back and the write counts as failed. 0 = the record is FILE.
+gk_bl_put() {
+    _bb=$(gk_bl_block "$1") || { log "record: cannot place the record in $1"; return 1; }
+    [ "$(stat -c %s "$2" 2>/dev/null)" = 4096 ] || { log "record: $2 is not 4096 bytes"; return 1; }
+    gk_ram "$1" || { log "record: $1 holds no boot image to keep: the record is not written"; return 1; }
+    _rlen=$(stat -c %s "$GK_RAM")
+    if [ "$_rlen" -gt $((_bb * 4096)) ]; then
+        rm -f "$GK_RAM"; GK_RAM=''
+        log "record: the image in $1 reaches the record: the record is not written"
+        return 1
+    fi
+    _rsha=$(gk_sha "$GK_RAM") _rr=0 _rb=$TMP/glassine-bootimg.recback.$$
+    dd if="$2" of="$1" bs=4096 seek="$_bb" count=1 conv=notrunc,fsync oflag=direct 2>/dev/null || _rr=1
+    [ "${GLASSINE_BI_TEST:-}" != 1 ] || [ -z "${GLASSINE_BI_AFTER_RECORD:-}" ] || eval "$GLASSINE_BI_AFTER_RECORD"
+    gk_bl_read "$1" "$_rb" && cmp -s "$_rb" "$2" || _rr=1
+    rm -f "$_rb"
+    if [ "$(gk_sha_dev "$1" "$_rlen")" != "$_rsha" ]; then
+        _rr=1
+        if gk_put "$GK_RAM" "$1"; then log "record: the write changed the image in $1: its bytes are back"
+        else log "record: the write changed the image in $1, and putting it back failed: the default slot cannot boot"
+        fi
+    fi
+    rm -f "$GK_RAM"; GK_RAM=''
+    [ "$_rr" = 0 ] || log "record: writing the record in $1 failed"
+    return "$_rr"
+}
+
+# gk_bl_clear DEV: no record in DEV. Writes nothing when there is none.
+gk_bl_clear() {
+    _rc=$(gk_bl_id "$1") || { log "record: cannot read the record in $1"; return 1; }
+    [ "$_rc" != none ] || return 0
+    _rz=$TMP/glassine-bootimg.reczero.$$
+    head -c 4096 /dev/zero > "$_rz" || return 1
+    gk_bl_put "$1" "$_rz"; _rzr=$?
+    rm -f "$_rz"
+    return "$_rzr"
 }
 
 # gk_img_ok ID: state/bootimg/ID.img is there and matches its record

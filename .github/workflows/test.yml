@@ -19,6 +19,8 @@ jobs:
         run: sh test/replay/test.sh
       - name: glassine-slot on a GPT disk image
         run: sh test/slot/test.sh
+      - name: the block-list record on real ext4 (privileged)
+        run: sh test/blocklist/test.sh
   build:
     runs-on: ubuntu-24.04-arm
     steps:

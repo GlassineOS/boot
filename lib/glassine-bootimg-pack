@@ -86,6 +86,8 @@ hdr[576:608] = sha1.digest().ljust(32, b'\0')           # id (as mkbootimg)
 up = lambda n: (n + ps - 1) // ps * ps
 img = bytes(hdr) + kernel.ljust(up(len(kernel)), b'\0') + rd.ljust(up(len(rd)), b'\0')
 limit = num('PART_SIZE')
-if len(img) > limit: fail(f'image {len(img)} > partition {limit}')
+if conf.get('HANDOFF') == 'blocklist':     # the block-list record is 64 KiB before the slot's end (docs/blocklist.md)
+    limit -= 65536
+if len(img) > limit: fail(f'image {len(img)} > limit {limit}')
 open(out, 'wb').write(img)
 print(f'ID={ident} SIZE={len(img)} SHA={hashlib.sha256(img).hexdigest()}')
