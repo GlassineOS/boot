@@ -146,10 +146,19 @@ firmware/vendor/board.bin       vend:/BOARD.BIN
 
 - `NAME`: the path in the seed. Relative, may hold directories and differ from the
   source's file name; no `.` or `..` parts, no hidden (dot) parts, not `manifest`.
-- `NAME.*` with `PATH.*`: a split image, a `.mdt` and its numbered parts `.b00`, `.b01`,
-  ... It is resolved against the source when the seed is filled; it fails as a whole, and
-  adds nothing, when there is no `.mdt` or the parts have a gap. Each resolved file is a
-  line of the manifest on its own.
+- `NAME.*` with `PATH.*`: a split image, a `.mdt` and the parts `NAME.bNN` it needs,
+  resolved the way the kernel's mdt loader (`drivers/soc/qcom/mdt_loader.c`) resolves it:
+  from the `.mdt`'s ELF program headers (32- or 64-bit). The segment at index `NN` (two
+  digits, as the loader requests it) needs `.bNN` when it is loadable as the loader counts
+  it (`PT_LOAD`, not the hash segment, `p_memsz` > 0), has `p_filesz` > 0, and isn't wholly
+  inside the `.mdt` file itself (`p_offset + p_filesz` > the `.mdt`'s size). A `.mdt` that
+  isn't ELF, or a needed part that is missing, fails the entry as a whole, and nothing of
+  it is added. Parts the headers don't need are not copied. Each resolved file is a line of
+  the manifest on its own.
+- A path on a vfat source is written in lower case: the source is mounted with
+  `shortname=lower`, so an 8.3-only name such as `MODEM.MDT` reads as `modem.mdt`, and
+  with the kernel's `utf8` I/O character set (Alpine's default) vfat is case-sensitive, so
+  `/MODEM.MDT` would not be found.
 - `CHECK`: `wbf` (a waveform: at least 256 bytes, the 32-bit length at offset 4 is the
   file's size); `none` when left out.
 - A source on `DEVICE_PART` itself makes the list invalid; so does any malformed line, or
@@ -177,8 +186,8 @@ A manifest line whose file is missing is not held, but its sha256 stays recorded
 that now gives other bytes is taken only on a refresh. The seed **verifies** when every
 file it holds matches its line and it holds no file the manifest doesn't name (a cut-off
 write's temp file, anything unverified); it is **complete** for a list when, in addition,
-every entry is held (a split image: its `.mdt` and parts `.b00` up to the last one with no
-gap, decided from the manifest alone). Files the seed holds that the list no longer names
+every entry is held (a split image: its `.mdt` and every part the seed's own `.mdt`
+needs; no source is read). Files the seed holds that the list no longer names
 stay.
 
 On a device with an A/B layout whose B slot belongs to GlassineOS, `DEVICE_PART` can be
@@ -224,7 +233,8 @@ path. Otherwise:
 1. If `DEVICE_PART`'s journal needs recovery: one read-write mount and unmount replays it.
 2. `DEVICE_PART` mounted `ro,noload`; each entry the seed holds is kept, each it lacks (or
    whose copy doesn't verify) is read from its source, read-only: an ext4 source with
-   `debugfs -R dump` (no mount, no journal replay), vfat mounted `ro`, btrfs
+   `debugfs -R dump` (no mount, no journal replay), vfat mounted `ro,shortname=lower`,
+   btrfs
    `ro,rescue=nologreplay`. Each file is checked (`CHECK`). A source that can't be read,
    or that gives other bytes than the manifest records, leaves the entry out (the seed is
    incomplete, retried at every boot), and a copy that doesn't verify goes.

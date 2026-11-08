@@ -21,7 +21,7 @@ jobs:
         run: sh test/slot/test.sh
       - name: the block-list record on real ext4 (privileged)
         run: sh test/blocklist/test.sh
-      - name: glassine-device-seed on plain directories
+      - name: glassine-device-seed on plain directories and a vfat image (privileged)
         run: sh test/seed/test.sh
       - name: glassine-devmode with stubs
         run: sh test/devmode/test.sh

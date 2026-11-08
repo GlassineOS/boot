@@ -16,7 +16,7 @@ R=/p                                  # this repository, read-only
 OUT=${OUT:-/out}
 W=/w; mkdir -p $W $OUT && mount -t tmpfs -o size=2200m tmpfs $W
 if [ "${1:-}" = disk ]; then
-    apk add -q btrfs-progs e2fsprogs sgdisk coreutils tar dosfstools mtools >/dev/null
+    apk add -q btrfs-progs e2fsprogs sgdisk coreutils tar dosfstools mtools python3 >/dev/null
 else
 apk add -q linux-virt kmod e2fsprogs e2fsprogs-extra coreutils tar \
     busybox-static busybox-extras cpio gzip build-base linux-headers >/dev/null
@@ -161,7 +161,12 @@ mkdir -p $W/dd $W/sx/waveform $W/sx/fw $W/sx/image
 echo keep > $W/dd/other
 wbf 4096 $W/sx/waveform/panel.wbf
 head -c 3000 /dev/urandom > $W/sx/fw/x.bin; head -c 100 /dev/urandom > $W/sx/fw/y.bin
-for p in mdt b00 b01; do head -c 500 /dev/urandom > $W/sx/image/dsp.$p; done
+# split images (test/seed/mkmdt.py): dsp needs b00 and b02 (index 1 has no file
+# bytes, its b01 is not needed); gap needs b00 and b01, and only b00 is there
+python3 $R/test/seed/mkmdt.py $W/sx/image/dsp.mdt 32 1,0,4096,500,500 1,0,0,0,500 1,0,8192,500,500
+for p in b00 b01 b02; do head -c 500 /dev/urandom > $W/sx/image/dsp.$p; done
+python3 $R/test/seed/mkmdt.py $W/sx/image/gap.mdt 32 1,0,4096,50,50 1,0,8192,50,50
+head -c 50 /dev/urandom > $W/sx/image/gap.b00
 mke2fs -q -F -t ext4 -L devdata -d $W/dd $W/dd.img 64M
 mke2fs -q -F -t ext4 -L srcext -d $W/sx $W/sx.img 32M
 truncate -s 32M $W/sv.img; mkfs.vfat -n SRCVFAT $W/sv.img >/dev/null
