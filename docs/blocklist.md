@@ -27,9 +27,15 @@ slot (as `bootpart-test` writes it today).
 ## Where the image file lives
 
 **userdata** (decided 2026-11-07, hub#54): `<USERDATA_PREFIX>/kernel/<id>.img`, where
-`<id>` is the image id (`glassine.img=`). It replaces `state/bootimg/<id>.img` for this
-hand-off: the bootloader can't read btrfs, and the system partition's blocks aren't
-stable. `state/bootimg/<id>.manifest` stays where kernel-artifacts.md puts it.
+`<id>` is the image id (`glassine.img=`). This holds what the bootloader reads, the
+candidate and a failed candidate kept for `retry`: the bootloader can't read btrfs, and
+the system partition's blocks aren't stable.
+
+An image that can go back into the default slot (`current_img`, `previous_img`,
+`writing`, the seeded first image) stays in `state/bootimg/<id>.img` on the system
+partition, as on other boards. The bootloader never reads those, a format of userdata
+can't touch them, and `rollback` and `repair` need neither userdata nor a pack.
+`state/bootimg/<id>.manifest` stays where kernel-artifacts.md puts it.
 
 Why userdata (ext4) and not the system partition (btrfs):
 
@@ -261,10 +267,12 @@ kernel-artifacts.md says. What is specific:
    - userdata passes the file-system checks above;
    - the default slot is at least `PART_SIZE`;
    - the default image ends before the record area.
-2. Clear the record: write 4096 zero bytes and read them back, with the
-   default-image check. A failed clear stops the install.
-3. Pack the image (`lib/glassine-bootimg-pack`) into `<prefix>/kernel/.<id>.img.new` on
-   userdata (allocated, then written in full). Then `fsync`, rename it to `<id>.img`,
+2. Pack the image (`lib/glassine-bootimg-pack`) to a temporary file on userdata, so a
+   pack that fails leaves an existing candidate alone. Then clear the record: write
+   4096 zero bytes and read them back, with the default-image check. A failed clear
+   stops the install.
+3. Copy the image to `<prefix>/kernel/.<id>.img.new` (allocated, then written in full).
+   Then `fsync`, rename it to `<id>.img`,
    `fsync` the directory, `chattr +i`, `sync`. An existing `<id>.img` with the right
    sha256 is kept as it is. One with another sha256 is unlocked (`chattr -i`) and
    removed first, because a rename can't replace an immutable file. That is safe after
@@ -315,7 +323,10 @@ candidate. That's harmless, and the next `install` or `cancel` clears it.
 
 **accept** (`glassine-bootimg-promote`, in the trial, after the health check):
 
-1. Write the default slot (above) from `<id>.img`, with `writing_op=accept`.
+1. Copy `<id>.img` to `state/bootimg/` and check it against its manifest. A copy that
+   fails marks the candidate failed and leaves the default slot alone. `install` has
+   already refused if the system partition had no room. Then write the default slot
+   (above) from that copy, with `writing_op=accept`.
 2. `state/kernel`: `current` ← the candidate, the old one to `previous`; the candidate
    keys, `requested`, `writing` and `writing_op` cleared.
 3. Clear the record.
@@ -341,15 +352,17 @@ failure. The file is kept for `retry`.
 
 **`cancel`:** clear the record (with the default-image check), then the candidate keys
 and `requested`. The default image isn't touched, and the file is kept for a later
-`install`. From the recovery (`reset --now`, `rollback`), a failed record clear is
-logged and doesn't stop the escape route: without the reason, the record is never read.
+`install`. A failed record clear is logged and doesn't stop the cancel: without the
+reason, the record is never read. `glassine-deploy`'s cancel-first (`reset --now`,
+`rollback` from the recovery) leaves the record, and promote clears it on the next boot,
+as it does any record that doesn't name the candidate. That read is ash, and writes
+nothing unless there is a record to clear.
 
 **`rollback`:** as kernel-artifacts.md says (it cancels a kernel candidate first). It
 refuses below the battery rule. The previous image is written to the default slot
 (above, `writing_op=rollback`), then `current` and `previous` swap, and `writing` and
-`writing_op` are cleared. If `<previous_img>.img` is gone (userdata formatted), it's
-packed again from `modules/<previous>/` and `boot/` on the system partition. The image
-file only caches those.
+`writing_op` are cleared. The previous image comes from `state/bootimg/`, so a format of
+userdata doesn't affect it.
 
 **`repair`** (new, mostly for the recovery): writes a known-good image to the default
 slot. Each source is checked against its manifest's sha256 first.
@@ -359,9 +372,9 @@ slot. Each source is checked against its manifest's sha256 first.
 - Otherwise it writes `current_img`'s image (`writing_op=repair`): from its file, or
   else a fresh pack of `current` from the system partition.
 
-**Files kept:** the images of `current_img`, `previous_img`, `candidate_img` and
-`writing`. Others are removed (`chattr -i`, then `rm`), never while a record names
-them.
+**Files kept:** on userdata, those of `candidate_img` and `failed_img`; in `state/bootimg/`,
+those of `current_img`, `previous_img` and `writing`. Others are removed (on userdata
+`chattr -i`, then `rm`), never while a record names them.
 
 ## Each step that touches the bootloader or a partition
 
@@ -409,8 +422,8 @@ What changes with it:
 - In this repository:
   - [kernel-artifacts.md](kernel-artifacts.md): the hand-off table links here; the
     generic `requested`, `writing` and `writing_op` keys, and the finishing boot in "A
-    kernel trial" (both in this pull request); `state/bootimg/<id>.img` isn't used with
-    `blocklist`.
+    kernel trial" (both in this pull request); with `blocklist`, `state/bootimg/<id>.img`
+    holds only what can go back into the default slot.
   - [boot.md](boot.md) and `conf/board.conf.example`: the board keys above.
   - `sbin/glassine-bootimg`: `install`, `reboot-test`, `retry`, `cancel`, `rollback`,
     `repair` for `blocklist`; no whole-slot copies; `write_dev` with `O_DIRECT` and the

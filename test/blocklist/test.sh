@@ -7,4 +7,4 @@
 set -eu
 D=$(cd "$(dirname "$0")" && pwd)
 P=$(cd "$D/../.." && pwd)
-docker run --rm --privileged -v "$P":/p:ro alpine:3.22 sh -c 'apk add -q python3 e2fsprogs e2fsprogs-extra >/dev/null 2>&1; sh /p/test/blocklist/inner.sh'
+docker run --rm --privileged -v "$P":/p:ro alpine:3.22 sh -c 'apk add -q python3 e2fsprogs e2fsprogs-extra >/dev/null 2>&1; sh /p/test/blocklist/inner.sh; a=$?; echo "--- the commands (commands.sh)"; sh /p/test/blocklist/commands.sh; b=$?; [ "$a" = 0 ] && [ "$b" = 0 ]'
