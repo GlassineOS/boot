@@ -107,8 +107,13 @@ function, no address server and no SSH server.
 - **FR-003**: Names may contain directories, may differ from the source's file name, and
   are relative without `.` or `..` parts or a leading `/`.
 - **FR-004**: An entry may name a split image by a pattern (`NAME.*` for a `.mdt` and its
-  numbered parts); it is resolved against the source when the seed is filled. It fails as
-  a whole, and adds nothing, when it matches no `.mdt` or its numbered parts have a gap.
+  parts), resolved the way the kernel's mdt loader resolves it: from the `.mdt`'s ELF
+  program headers (32- or 64-bit). The segment at index `NN` needs the part `NAME.bNN`
+  (`NN` two digits, as the loader requests it) when it is loadable as the loader counts it
+  (`PT_LOAD`, not the hash segment, `p_memsz` > 0), has `p_filesz` > 0, and isn't wholly
+  contained in the `.mdt` file itself (`p_offset + p_filesz` > the `.mdt`'s size). The
+  entry fails as a whole, and adds nothing, when there is no `.mdt`, the `.mdt` doesn't
+  parse as ELF, or a needed part is missing. Parts the headers don't need are not copied.
   Each resolved file is a line of the manifest on its own.
 - **FR-005**: A source on `DEVICE_PART` itself is refused (the list is invalid, and
   nothing is seeded until it's fixed).
@@ -124,7 +129,8 @@ function, no address server and no SSH server.
   `/run/glassine/device` when the files it holds verify, complete or not; the seed
   service fills what is missing or doesn't verify (Scenarios 3 and 4) and binds again.
 - **FR-008**: Sources are read read-only and never written: ext4 without mounting or
-  journal replay, vfat mounted read-only, btrfs read-only without log replay. The only
+  journal replay, vfat mounted read-only with lower-case short names (a list names files
+  in lower case; an 8.3-only `MODEM.MDT` reads as `modem.mdt`), btrfs read-only without log replay. The only
   writes are to `DEVICE_PART`: the files and manifest in `glassine/` (temp files,
   renamed, the manifest last), and one read-write mount to replay its journal when it
   needs recovery.
@@ -234,8 +240,8 @@ choice, and the paths it reads are FR-021's.
 - QEMU tests cover:
   - Scenario 1, a root without a list: no device-data step in the log, `DEVICE_PART`
     untouched;
-  - Scenarios 2–4 on a test disk with fake source partitions: a pattern, a gap in a
-    split image, a rename, a directory, a corrupted seed file, a source gone, a source
+  - Scenarios 2–4 on a test disk with fake source partitions: a pattern, a split image
+    missing a part its program headers need, a rename, a directory, a corrupted seed file, a source gone, a source
     changed, a list grown by a base update, a source on `DEVICE_PART` refused, a name the
     kernel provides refused;
   - a seed write cut off before and after the manifest's rename (FR-009);
