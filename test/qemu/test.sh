@@ -23,7 +23,12 @@
 #   9  complete after the cut; a shorter list, a name the kernel provides, a
 #      gap in a split image, a source on DEVICE_PART; a refresh cut off before
 #      the manifest's rename
-#  10  the cut refresh done again at boot
+#  10  the cut refresh done again at boot; a developer key put in devmode/
+#  11  glassine.devmode=usb (dm0, a dummy interface, for the USB gadget): the
+#      developer folder, its host key, SSH only on DEVMODE_ADDR, with the key,
+#      not with another key or a password; a reset, a user shutdown
+#  12  glassine.devmode=usb: the reset's deployment, the same host key, SSH
+# Boots 1-10 have no glassine.devmode: no SSH, no address server, no folder made.
 # The sources must read the same after every boot (only the test changes them).
 # Every boot checks the person's storage (home/, flatpak/ bound from
 # userdata, /var/tmp shared, d1's own /home hidden and reported).
@@ -61,9 +66,11 @@ boot 7
 boot 8
 boot 9
 boot 10
+boot 11 glassine.devmode=usb
+boot 12 glassine.devmode=usb
 pass=$(cat "$OUT"/boot*.log | grep -ac 'QTEST ok' || true)
 fail=$(cat "$OUT"/boot*.log | grep -ac 'QTEST FAIL' || true)
-done=$(grep -ac 'QTEST DONE' "$OUT/boot10.log" || true)
+done=$(grep -ac 'QTEST DONE' "$OUT/boot12.log" || true)
 sw=$(cat "$OUT/boot1.log" "$OUT/boot4.log" | grep -ac 'glassine-switch: .* boots next' || true)
 echo "qemu: $pass ok, $fail FAIL, switch at shutdown: $sw, done: $done"
-[ "$fail" = 0 ] && [ "$done" = 1 ] && [ "$sw" = 2 ] && [ "$pass" -ge 62 ]
+[ "$fail" = 0 ] && [ "$done" = 1 ] && [ "$sw" = 2 ] && [ "$pass" -ge 71 ]

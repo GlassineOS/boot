@@ -23,10 +23,12 @@ image):
 | `HANDOFF` | empty | how a new kernel reaches the bootloader in the deployments layout: `bootpart-test`, `blocklist` (no board sets it yet: [blocklist.md](blocklist.md#board-keys)), empty = kernel updates paused ([kernel-artifacts.md](kernel-artifacts.md)) |
 | `BLOCKLIST_RECORD_PART`, `BLOCKLIST_REBOOT_REASON`, `BLOCKLIST_ABL_PART`, `BLOCKLIST_ABL_SHA256` | — | the `blocklist` hand-off ([blocklist.md](blocklist.md#board-keys)) |
 | `DEVICE` | — | the device name of the board's device trees (`<device>@<id>`), for `glassine-bootimg install` |
+| `DEVMODE_ADDR`, `DEVMODE_NETMASK`, `DEVMODE_DHCP_START`, `DEVMODE_DHCP_END`, `USB_VENDOR`, `USB_PRODUCT`, `USB_MANUFACTURER` | — | developer mode (`glassine.devmode=usb` only): the USB network's address and developer range, in the initramfs (telnet, HTTP) and in the booted system (`glassine-devmode`: SSH with the developer folder's keys; README, "Developer mode") |
 | `DEVICE_PART` | empty | GPT name of the ext4 partition that holds the device seed (`glassine/`); empty = no device data ([kernel-artifacts.md](kernel-artifacts.md#device-data-files-from-the-device-itself)) |
 
 The booted system reads the same keys from `/etc/glassine-bootimg/board.conf`, which the
-image builder installs (the seed tool takes `DEVICE_PART` from there).
+image builder installs (the seed tool takes `DEVICE_PART` from there, `glassine-devmode`
+the developer mode keys).
 
 ## Plain layout
 

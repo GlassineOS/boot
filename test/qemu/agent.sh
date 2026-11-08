@@ -54,6 +54,9 @@ wbf() {
 }
 # a power cut at a point of the seed write (the tool's test hook): sysrq power off, no sync
 # cut_at BEFORE_MANIFEST|AFTER_MANIFEST LIST [ARGS]
+# developer access: the board's DEVMODE_ADDR (build.sh), ssh without prompts
+A=10.0.9.1 DMD=$UD/$P/devmode
+sshq() { ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/run/qtest/kh -o ConnectTimeout=10 "$@"; }
 cut_at() { echo 1 > /proc/sys/kernel/sysrq; _w=$1 _f=$2; shift 2
     env GLASSINE_SEED_TEST=1 "GLASSINE_SEED_$_w=echo o > /proc/sysrq-trigger; sleep 60" GLASSINE_SEED_LIST="$_f" glassine-device-seed "$@" > /dev/console 2>&1; }
 L1='waveform.wbf srcext:/waveform/panel.wbf wbf
@@ -83,6 +86,7 @@ case $stage in
     chk "modules subvolume on /lib/modules" "mountpoint -q /lib/modules/$(uname -r)"
     chk "the kernel's firmware on /lib/firmware/updates, read-only" "[ \"\$(cat /lib/firmware/updates/qtest/a.fw)\" = fw ] && grep -q ' /lib/firmware/updates [^ ]* ro[, ]' /proc/mounts"
     chk "state lock free for the system" "flock -n /run/glassine/system/state/.lock true"
+    chk "no developer access without glassine.devmode: no SSH or address server, no developer folder" "! pidof sshd >/dev/null && ! pidof udhcpd >/dev/null && ! netstat -ltn | grep -q ':22 ' && [ ! -e $UD/$P/devmode ]"
     chk "no device data (a root without a list): no device-data step in the log, DEVICE_PART untouched" "! dmesg | grep -q 'device data\|glassine-device' && [ ! -e $DM ] && [ \"\$(sha256sum < $DP | cut -d' ' -f1)\" = \"\$(cat $Q/devdata.sum)\" ]"
     chk "storage: home/ and flatpak/ bound on /home and /var/lib/flatpak, /var/tmp shared" "bound home /home && bound flatpak /var/lib/flatpak && shared /var/tmp"
     chk "storage: d1's own /home hidden, status says so" "[ ! -e /home/own-file ] && [ \"\$(st home)\" = bound ] && [ \"\$(st home_hidden)\" = yes ] && [ \"\$(st flatpak)\" = bound ]"
@@ -215,7 +219,30 @@ firmware/vendor/y.bin srcext:/fw/y.bin"
     chk "device data: after a cut before the manifest's rename: the initramfs bound nothing" "dmesg | grep -q \"device data: the seed on $DP doesn't verify: nothing bound\|device data: the journal of $DP needs recovery\""
     chk "device data: the cut refresh done again at boot: complete, the new bytes, no temp file" "dmesg | grep -q 'refresh asked for' && complete && same_sx waveform.wbf /waveform/panel.wbf && ! find $DS -name '.*' | grep -q . && bound_ro"
     chk "device data: the sources read as the test left them (SC-003)" "src_same"
+    # developer access from the next boot on (with glassine.devmode=usb): the
+    # developer folder and a key, as an administrator puts them there
+    mkdir -p -m 0700 $DMD
+    ssh-keygen -q -t ed25519 -N '' -f $Q/devkey; ssh-keygen -q -t ed25519 -N '' -f $Q/otherkey
+    cp $Q/devkey.pub $DMD/authorized_keys; sync
     next 10
+    poweroff ;;
+10) # glassine.devmode=usb: SSH on DEVMODE_ADDR with the developer folder's keys
+    chk "devmode: the developer folder root:root 0700, the host key made there" "[ \"\$(stat -c '%u:%g %a' $DMD)\" = '0:0 700' ] && [ -s $DMD/ssh_host_ed25519_key ]"
+    chk "devmode: running, the address on the interface, the address server up" "glassine-devmode status >/dev/null && ip addr show dm0 | grep -q 'inet $A/' && kill -0 \$(cat /run/glassine-devmode/udhcpd.pid)"
+    chk "devmode: SSH listens on DEVMODE_ADDR:22 and nowhere else" "netstat -ltn | grep -q ' $A:22 ' && [ \$(netstat -ltn | grep -c ':22 ') = 1 ]"
+    chk "devmode: SSH with the developer folder's key" "[ \"\$(sshq -i $Q/devkey root@$A echo in)\" = in ]"
+    chk "devmode: refused with another key" "! sshq -i $Q/otherkey root@$A true 2>/dev/null"
+    chk "devmode: refused with a password (only keys are offered)" "! sshq -o PubkeyAuthentication=no root@$A true > /run/qtest/pw 2>&1 && grep -q 'Permission denied (publickey)' /run/qtest/pw"
+    ssh-keygen -l -f $DMD/ssh_host_ed25519_key.pub > $Q/hostkey.fp
+    glassine-deploy reset --yes > /dev/console 2>&1
+    st staged > $Q/staged2
+    glassine-switch-hook --user-shutdown
+    next 11
+    poweroff ;;
+11) # after a reset: the developer folder and its host key kept
+    chk "devmode after a reset: the new deployment, the same host key" "[ \"$booted\" = \"\$(cat $Q/staged2)\" ] && [ \"\$(ssh-keygen -l -f $DMD/ssh_host_ed25519_key.pub)\" = \"\$(cat $Q/hostkey.fp)\" ]"
+    chk "devmode after a reset: SSH with the key" "sshq -i $Q/devkey root@$A true"
+    next 12
     say DONE
     poweroff ;;
 *)  say "FAIL unknown stage $stage"; poweroff ;;
