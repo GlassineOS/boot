@@ -201,7 +201,8 @@ the initramfs. That's what kernel-artifacts.md's new generic `requested` key is 
 `reboot-test` sets it. At the next boot, `glassine-bootimg-promote` finds it set, with
 `tries=1` and a boot that isn't the candidate's. It runs the record and read-back
 checks again, and marks the candidate failed with reason `handoff` if they fail, or
-`no-boot` if they pass. `no-boot` means the kernel died before the initramfs, or the
+`no-boot` if they pass or can't run (no `python3`, userdata not mounted, the partition
+can't be read). `no-boot` means the kernel died before the initramfs, or the
 shutdown never reached the reboot: `status` says both and offers `retry`, which is
 the right step for the second. Then it clears `requested`. If the bootloader passes
 `glassine.handoff_err=` (optional, below), that decides it instead.
@@ -323,8 +324,10 @@ candidate. That's harmless, and the next `install` or `cancel` clears it.
 
 **accept** (`glassine-bootimg-promote`, in the trial, after the health check):
 
-1. Copy `<id>.img` to `state/bootimg/` and check it against its manifest. A copy that
-   fails marks the candidate failed and leaves the default slot alone. `install` has
+1. Copy `<id>.img` to `state/bootimg/` and check it against its manifest, before it
+   replaces anything. A good image of that id already there (a rollback target or a
+   seed, installed again) is used as it is. A copy that fails removes only its
+   temporary file, marks the candidate failed and leaves the default slot alone. `install` has
    already refused if the system partition had no room. Then write the default slot
    (above) from that copy, with `writing_op=accept`.
 2. `state/kernel`: `current` ← the candidate, the old one to `previous`; the candidate
@@ -349,6 +352,8 @@ failure. The file is kept for `retry`.
 
 **`retry`:** for a failed candidate whose file is still there, steps 4 to 7 of
 `install`: the extents and read-back again, the record again, then the candidate keys.
+A file whose blocks don't hold its image is removed, and needs `install` again. One
+that couldn't be read back is kept, and `retry` can run again.
 
 **`cancel`:** clear the record (with the default-image check), then the candidate keys
 and `requested`. The default image isn't touched, and the file is kept for a later

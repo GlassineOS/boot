@@ -164,6 +164,16 @@ ok "the blocks no longer pass: handoff" "$B promote 2>/dev/null && [ \"\$(gs_kv 
 scen; boot $OLDID glassine.handoff_err=sha256
 ok "the bootloader said it rejected the record: handoff" "$B promote 2>/dev/null && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = handoff ]"
 mkdir -p $W/nopy; for d in /bin /sbin /usr/bin /usr/sbin; do for f in $d/*; do case ${f##*/} in python*) ;; *) ln -sf "$f" $W/nopy/ ;; esac; done; done
+scen; boot $OLDID; chattr -i $UDK/$ID.img; rm -f "${UDK:?}/$ID.img"
+ok "the file is gone, userdata mounted: handoff" "$B promote 2>/dev/null && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = handoff ]"
+scen; boot $OLDID
+ok "no userdata at its mount point: it can't be checked, no-boot, the record cleared" "GLASSINE_BI_USERDATA_MNT=$W/plain $B promote 2>/dev/null && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = no-boot ] && [ \"\$(recid)\" = none ] && grep -q 'not mounted' $W/log"
+scen; boot $OLDID
+ok "the partition can't be read: it can't be checked, no-boot" "GLASSINE_BI_USERDATA_DEV=/nonexistent $B promote 2>/dev/null && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = no-boot ] && [ \"\$(recid)\" = none ]"
+scen; boot $OLDID; head -c 4096 /dev/zero | tr '\000' g | dd of=$SLOT bs=4096 seek=$REC count=1 conv=notrunc,fsync 2>/dev/null
+ok "a garbage record: handoff, cleared, the default image untouched" "[ \"\$(readrec | head -c 8)\" = gggggggg ] && $B promote 2>/dev/null && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = handoff ] && [ \"\$(recid)\" = none ] && oldslot"
+fresh; install
+ok "reboot-test with userdata not mounted: refused, it says so" "! GLASSINE_BI_USERDATA_MNT=$W/plain $B reboot-test 2>$W/err && grep -q 'not mounted' $W/err"
 scen; boot $OLDID
 ok "no python3: the verdict still happens, no-boot, the record cleared" "PATH=$W/nopy $B promote 2>/dev/null && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = no-boot ] && [ \"\$(recid)\" = none ]"
 
@@ -197,8 +207,36 @@ unset GLASSINE_BI_AFTER_BODY
 scen; try; boot $ID; dd if=/dev/zero of=$SYS/fill bs=1M 2>/dev/null; truncate -s $(($(stat -c %s $SYS/fill) - 12288)) $SYS/fill
 ok "the system partition has no room for the copy: failed, the default slot untouched" "! $B promote 2>/dev/null; oldslot && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = 'copy to the system partition' ] && [ -z \"\$(kv writing)\" ] && [ ! -e $BI/$ID.img ] && [ \"\$(recid)\" = none ]"
 scen; try; boot $ID; dd if=/dev/zero of=$SYS/fill bs=1M 2>/dev/null
-ok "the system partition is completely full: exit 1, nothing written to the default slot" "! $B promote 2>/dev/null; oldslot && [ -z \"\$(kv writing)\" ]"
+ok "the system partition is completely full: exit 1, the failure can't be written, the default slot untouched, the record gone" "$B promote >/dev/null 2>&1; [ \$? = 1 ] && oldslot && [ -z \"\$(kv writing)\" ] && [ \"\$(cid)\" = $ID ] && [ -z \"\$(kv failed_img)\" ] && [ \"\$(recid)\" = none ]"
 rm -f "${SYS:?}"/fill
+boot $OLDID
+ok "... with room again, the next boot's promote ends it: no-verdict" "$B promote 2>/dev/null && [ \"\$(kv failed_img)\" = $ID ] && [ -z \"\$(cid)\" ] && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = no-verdict ]"
+
+echo "--- a candidate already on the system partition"
+cp $W/mounts $W/mounts.good; echo '/x /lib/modules/6.0.0-old none rw 0 0' >> $W/mounts
+# the kernel in previous_img, on trial again: A current, the old kernel previous
+again() { scen; A=$ID; try; boot $A; $B promote 2>/dev/null; $B install 6.0.0-old --dtb dev1@aaaa --initramfs c1 >/dev/null 2>$W/err; $B reboot-test >/dev/null 2>&1; try; boot $OLDID; }
+full() { dd if=/dev/zero of=$SYS/fill bs=1M 2>/dev/null; truncate -s $(($(stat -c %s $SYS/fill) - 12288)) $SYS/fill; }
+damage() { truncate -s $(($(stat -c %s $BI/$OLDID.img) - 4096)) $BI/$OLDID.img; ! [ "$(sha256sum < $BI/$OLDID.img | cut -d' ' -f1)" = "$(gs_kv $BI/$OLDID.manifest sha256)" ]; }
+sameold() { [ "$(sha256sum < $BI/$OLDID.img | cut -d' ' -f1)" = "$1" ]; }
+promold() { GLASSINE_BI_UNAME=6.0.0-old $B promote 2>/dev/null; }
+again; full
+ok "accepted with no room: the good copy there is used, nothing copied" "[ \"\$(cid)\" = $OLDID ] && promold && holds $OLDID && [ \"\$(kv current_img)\" = $OLDID ] && [ \"\$(kv previous_img)\" = $A ] && [ -f $BI/$A.img ]"
+rm -f "${SYS:?}"/fill
+again
+ok "it fails its health check: failed, previous_img's image still there" "GLASSINE_BI_UNAME=6.0.0-old GLASSINE_BI_HEALTH='echo sick; false' $B promote 2>/dev/null && [ \"\$(kv failed_img)\" = $OLDID ] && [ \"\$(kv previous_img)\" = $OLDID ] && [ -f $BI/$OLDID.img ]"
+boot $A
+ok "... and rollback still goes to it" "$B rollback >/dev/null 2>&1 && holds $OLDID && [ \"\$(kv current_img)\" = $OLDID ] && [ -z \"\$(kv writing)\" ]"
+again; damage; D=$(sha256sum < $BI/$OLDID.img | cut -d' ' -f1); full
+ok "the copy there is damaged and there's no room: failed, only the temporary file removed" "! promold; [ \"\$(gs_kv $BI/$OLDID.manifest reason)\" = 'copy to the system partition' ] && sameold $D && [ ! -e $BI/$OLDID.img.tmp ]"
+rm -f "${SYS:?}"/fill
+again; damage
+ok "the copy there is damaged, with room: replaced, accepted" "promold && [ \"\$(kv current_img)\" = $OLDID ] && holds $OLDID && sameold \"\$(gs_kv $BI/$OLDID.manifest sha256)\""
+mkdir -p $W/badcp; printf '#!/bin/sh\ncase "$2" in *.img.tmp) head -c 4096 /dev/zero > "$2"; exit 0 ;; esac\nexec /bin/cp "$@"\n' > $W/badcp/cp; chmod +x $W/badcp/cp
+again; damage; D=$(sha256sum < $BI/$OLDID.img | cut -d' ' -f1)
+ok "the new copy comes out wrong: it replaces nothing" "! PATH=$W/badcp:\$PATH promold; [ \"\$(gs_kv $BI/$OLDID.manifest reason)\" = 'copy to the system partition' ] && sameold $D && [ ! -e $BI/$OLDID.img.tmp ]"
+cp $W/mounts.good $W/mounts
+fresh
 fresh
 cat > $W/nochk <<NC
 #!/usr/bin/env python3
@@ -242,7 +280,24 @@ ok "retry of a failed candidate: the record back, it can be booted again" "$B re
 scen; boot $OLDID; $B promote 2>/dev/null; FIRST=$(python3 /p/lib/glassine-blocklist map $UDK/$ID.img | head -n 1 | cut -d' ' -f1)
 printf X | dd of=$UD bs=4096 seek=$FIRST conv=notrunc,fsync 2>/dev/null
 ok "retry when the raw blocks read wrong: stays failed, no record, the file removed" "! $B retry >/dev/null 2>&1 && [ \"\$(kv failed_img)\" = $ID ] && [ \"\$(recid)\" = none ] && [ ! -e $UDK/$ID.img ]"
+scen; boot $OLDID; $B promote 2>/dev/null
+ok "retry when the partition can't be read: stays failed, no record, the file kept" "! GLASSINE_BI_USERDATA_DEV=/nonexistent $B retry >/dev/null 2>&1 && [ \"\$(kv failed_img)\" = $ID ] && [ \"\$(recid)\" = none ] && [ -f $UDK/$ID.img ]"
+ok "... and retry works once it can" "$B retry >/dev/null 2>&1 && [ \"\$(cid)\" = $ID ] && reader_ok $ID"
+scen; boot $OLDID; $B promote 2>/dev/null; chattr -i $UDK/$ID.img; rm -f "${UDK:?}/$ID.img"
 ok "retry with the file gone: refused, it names install" "! $B retry 2>$W/err && grep -q 'install the kernel again' $W/err"
+
+echo "--- install over a file already there"
+fresh; install; ID=$(cid); $B cancel >/dev/null 2>&1; T=$(stat -c %y $UDK/$ID.img)
+ok "the same content: kept, not written again" "install && [ \"\$(cid)\" = $ID ] && [ \"\$(stat -c %y $UDK/$ID.img)\" = \"$T\" ] && noperm $UDK/$ID.img && reader_ok $ID"
+fresh; install; ID=$(cid); $B cancel >/dev/null 2>&1; chattr -i $UDK/$ID.img; head -c 4096 /dev/zero > $UDK/$ID.img; chattr +i $UDK/$ID.img
+ok "other content under that id: replaced, immutable, and the reader gets the image" "install && [ \"\$(cid)\" = $ID ] && noperm $UDK/$ID.img && reader_ok $ID"
+
+echo "--- the battery rule with several batteries"
+fresh; install; mkdir -p $W/ps/zbat; echo Battery > $W/ps/zbat/type; echo 10 > $W/ps/zbat/capacity
+ok "the last one read decides, as in glassine-switch-hook: low, refused" "! $B reboot-test 2>$W/err && grep -q 'below 30' $W/err"
+echo 80 > $W/ps/zbat/capacity; echo 10 > $W/ps/bat/capacity
+ok "... and high, allowed, with an earlier one low" "$B reboot-test >/dev/null 2>&1"
+rm -f "${W:?}"/ps/zbat/type "${W:?}"/ps/zbat/capacity; rmdir $W/ps/zbat; echo 80 > $W/ps/bat/capacity
 
 echo "--- what stays on userdata"
 fresh; install; ID=$(cid); dd if=/dev/zero of=$SLOT bs=4096 count=1 conv=notrunc,fsync 2>/dev/null; $B cancel >/dev/null 2>&1

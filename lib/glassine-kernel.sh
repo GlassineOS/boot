@@ -362,15 +362,22 @@ gk_bl_store() {
 }
 
 # gk_bl_record ID SIZE SHA: the file's blocks checked, read back through the
-# raw partition, then the record (install's steps 4 to 6). A read-back that
-# fails removes the file. 0 = the record names ID.
+# raw partition, then the record (install's steps 4 to 6). A file whose blocks
+# don't hold its image is removed; one that couldn't be read back is kept (the
+# read-back says nothing about it). 0 = the record names ID.
 gk_bl_record() {
     _bf=$GK_BLK/$1.img _br=$TMP/glassine-bootimg.newrec.$$
     _bm=$(python3 "$GK_BLTOOL" map "$_bf" 2>&1) || { log "$_bm"; return 1; }
     if ! _be=$(printf '%s\n' "$_bm" | python3 "$GK_BLTOOL" encode "$_br" "$1" "$USERDATA_PART" "$2" "$3" 2>&1); then
         log "$_be"; rm -f "${_br:?}"; return 1
     fi
-    if ! _be=$(python3 "$GK_BLTOOL" check "$_br" "$_bf" "$GK_UDDEV" 2>&1); then
+    _be=$(python3 "$GK_BLTOOL" check "$_br" "$_bf" "$GK_UDDEV" 2>&1); _brc=$?
+    if [ "$_brc" = 3 ]; then
+        log "$_be: the file is kept"
+        rm -f "${_br:?}"
+        return 1
+    fi
+    if [ "$_brc" != 0 ]; then
         log "$_be: the file is removed"
         chattr -i "$_bf" 2>/dev/null; rm -f "${_bf:?}" "${_br:?}"
         return 1
@@ -382,14 +389,19 @@ gk_bl_record() {
 
 # gk_bl_verify ID: the slot's record names ID, ID's file still has the record's
 # blocks, and they hold its image (FR-007). 0 = yes; 1 = no, why on stdout;
-# 2 = this can't be checked here (no python3).
+# 2 = this can't be checked here (no python3, userdata not mounted, the
+# partition can't be read), why on stdout.
 gk_bl_verify() {
-    command -v python3 >/dev/null 2>&1 && [ -r "$GK_BLTOOL" ] || return 2
+    command -v python3 >/dev/null 2>&1 && [ -r "$GK_BLTOOL" ] || { echo "no python3"; return 2; }
+    mountpoint -q "$GK_UDMNT" || { echo "userdata is not mounted at $GK_UDMNT"; return 2; }
     _rv=$TMP/glassine-bootimg.verify.$$
     _vid=$(gk_bl_id "$DEFDEV") && gk_bl_read "$DEFDEV" "$_rv" || { rm -f "${_rv:?}"; echo "the record can't be read"; return 1; }
     [ "$_vid" = "$1" ] || { rm -f "${_rv:?}"; echo "the record names ${_vid}, not $1"; return 1; }
-    if ! _ve=$(python3 "$GK_BLTOOL" check "$_rv" "$GK_BLK/$1.img" "$GK_UDDEV" 2>&1); then
-        rm -f "${_rv:?}"; echo "$_ve"; return 1
+    _ve=$(python3 "$GK_BLTOOL" check "$_rv" "$GK_BLK/$1.img" "$GK_UDDEV" 2>&1); _vk=$?
+    if [ "$_vk" != 0 ]; then
+        rm -f "${_rv:?}"; echo "$_ve"
+        if [ "$_vk" = 3 ]; then return 2; fi
+        return 1
     fi
     _vr=0
     python3 "$GK_BLTOOL" decode "$_rv" | grep -qx "sha256=$(man "$1" sha256)" || { echo "the record's sha256 is not the manifest's"; _vr=1; }
@@ -398,13 +410,17 @@ gk_bl_verify() {
 }
 
 # gk_bl_copy ID: the candidate's image onto the system partition, before an
-# accept touches the default slot (FR-009)
+# accept touches the default slot (FR-009). A good ID already there (a rollback
+# target or a seed, installed again) is left as it is. The copy is checked
+# before it replaces anything, and a failure removes only the temporary file.
 gk_bl_copy() {
+    if gk_img_ok "$1"; then return 0; fi
     gk_bl_file_ok "$1" || { log "accept: $GK_BLK/$1.img is gone or damaged"; return 1; }
-    if cp "$GK_BLK/$1.img" "$BI/$1.img.tmp" && sync && mv -f "$BI/$1.img.tmp" "$BI/$1.img" && gk_img_ok "$1"; then
+    if cp "$GK_BLK/$1.img" "$BI/$1.img.tmp" && sync && [ "$(gk_sha "$BI/$1.img.tmp")" = "$(man "$1" sha256)" ] &&
+        mv -f "$BI/$1.img.tmp" "$BI/$1.img" && gk_img_ok "$1"; then
         return 0
     fi
-    rm -f "${BI:?}/${1:?}.img.tmp" "${BI:?}/${1:?}.img"
+    rm -f "${BI:?}/${1:?}.img.tmp"
     log "accept: cannot copy image $1 to the system partition"
     return 1
 }
@@ -732,7 +748,7 @@ gk_reboot_test() {
         gk_bl_mode || die "reboot-test: the running kernel has no reboot mode '$_reason'"
         gk_power_ok || die "reboot-test: $GK_POWER, below $SWITCH_MIN_CAPACITY % without a charger"
         _v=$(gk_bl_verify "$_ci"); _vc=$?
-        [ "$_vc" != 2 ] || die "reboot-test: the record can't be checked without python3"
+        [ "$_vc" != 2 ] || die "reboot-test: the record can't be checked: $_v"
         [ "$_vc" = 0 ] || die "reboot-test: $_v; run glassine-bootimg install again"
     else
         gk_slot_holds "$TESTDEV" "$_ci" || die "reboot-test: the test slot doesn't hold the candidate's image any more; run glassine-bootimg retry"
@@ -922,6 +938,7 @@ gk_no_boot_reason() {
     if grep -qE 'glassine[._]handoff_err=' "$CMDLINE"; then echo handoff; return 0; fi
     _nv=$(gk_bl_verify "$1"); _nc=$?
     [ "$_nc" != 1 ] || { log "promote: the hand-off of image $1 can't have worked: $_nv"; echo handoff; return 0; }
+    [ "$_nc" != 2 ] || log "promote: the hand-off of image $1 can't be checked: $_nv"
     echo no-boot
 }
 

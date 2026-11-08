@@ -21,7 +21,8 @@ usage:
       FILE still has the record's blocks, and those blocks of DEV hold the
       image the record names, read past every cache.
 
-Exit codes: 0 done, 1 refused or failed (a message on stderr), 2 usage.
+Exit codes: 0 done, 1 refused or failed (a message on stderr), 2 usage,
+3 check couldn't read FILE or DEV, which says nothing about FILE.
 """
 import fcntl, hashlib, mmap, os, re, stat, struct, sys
 
@@ -49,6 +50,10 @@ FS_IOC_GETFLAGS = (2 << 30) | (struct.calcsize('l') << 16) | (ord('f') << 8) | 1
 FS_IMMUTABLE_FL = 0x10
 FS_ENCRYPT_FL = 0x800
 FS_JOURNAL_DATA_FL = 0x4000
+
+
+class Unreadable(Exception):
+    """A read failed: nothing is known about what was being checked."""
 
 
 class Refused(Exception):
@@ -241,7 +246,7 @@ def read_blocks(dev, extents):
                 want = min(left, chunk)
                 got = os.preadv(fd, [memoryview(buf)[:want]], off)
                 if got != want:
-                    raise Refused(f'{dev}: a short read at {off}')
+                    raise Unreadable(f'{dev}: a short read at {off}')
                 h.update(memoryview(buf)[:want])
                 off += want
                 left -= want
@@ -256,13 +261,18 @@ def check(record, path, dev):
         r = decode(f.read())
     if r is None:
         raise Refused(f'{record}: no record')
-    size = os.stat(path).st_size
-    if size != r['size']:
-        raise Refused(f'{path} is {size} bytes, the record says {r["size"]}')
-    if map_file(path) != r['extents']:
-        raise Refused(f'{path} no longer has the blocks the record names')
-    if read_blocks(dev, r['extents']) != r['sha256']:
-        raise Refused(f'the blocks of {dev} don\'t hold the image the record names')
+    if not os.path.exists(path):
+        raise Refused(f'{path} is gone')
+    try:
+        size = os.stat(path).st_size
+        if size != r['size']:
+            raise Refused(f'{path} is {size} bytes, the record says {r["size"]}')
+        if map_file(path) != r['extents']:
+            raise Refused(f'{path} no longer has the blocks the record names')
+        if read_blocks(dev, r['extents']) != r['sha256']:
+            raise Refused(f'the blocks of {dev} don\'t hold the image the record names')
+    except OSError as e:
+        raise Unreadable(f'the read-back failed: {e}')
 
 
 def main(a):
@@ -303,3 +313,6 @@ if __name__ == '__main__':
     except (Refused, OSError) as e:
         print(f'glassine-blocklist: {e}', file=sys.stderr)
         sys.exit(1)
+    except Unreadable as e:
+        print(f'glassine-blocklist: {e}', file=sys.stderr)
+        sys.exit(3)
