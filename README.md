@@ -37,6 +37,7 @@ the deployment's layers on userdata) and manages them with `glassine-deploy`:
 | `lib/glassine-root.sh` | assembling a deployment's root: btrfs base + build layer + live upper (overlayfs), `/` read-only with writable `/etc`, `/var`, `/usr/local`, `/opt`; the interim try counter; the initramfs boot steps for `ROOT_LAYOUT=deployments` (hibernation resume or invalidate, pick + assemble with fallbacks, mounts carried to `/run/glassine/`) |
 | `sbin/glassine-switch-hook`, `openrc/glassine-switch` | the shutdown switch: a staged deployment is carried and selected at a shutdown the user started (`--user-shutdown` from the power menu) with the charger or enough battery; a service of the OpenRC shutdown runlevel |
 | `conf/deploy.conf.example` | where the system partition and userdata are |
+| `sbin/glassine-devmode`, `openrc/glassine-devmode` | developer access to the booted system with `glassine.devmode=usb` only: USB network, address server and an SSH server on `DEVMODE_ADDR` with the developer folder's keys (below) |
 | `sbin/glassine-device-seed`, `openrc/glassine-device-seed`, `lib/glassine-device.sh` | device data: the files a device takes from its own partitions (its package's `/usr/share/glassine/device-data.list`), copied once into a verified seed on the board's `DEVICE_PART` and bound read-only on `/run/glassine/device`; the initramfs step and the seed service ([kernel-artifacts.md](docs/kernel-artifacts.md#device-data-files-from-the-device-itself)) |
 | `test/` | host tests in an Alpine container |
 
@@ -107,6 +108,23 @@ board's `DEVMODE_ADDR`, with a root shell (telnet, no password) and HTTP endpoin
 that let a host drive test boots. **Anyone with a USB cable gets root**, so it is
 off by default and only for development. A board config for end users must never
 put it in `CMDLINE`. Without it, nothing listens on USB.
+
+The same word gives developer access to the booted system, with keys only
+(`glassine-devmode`, an OpenRC service of the default runlevel): on a deployment's
+boot it brings up the USB network at `DEVMODE_ADDR` (an NCM gadget), serves addresses
+from `DEVMODE_DHCP_START`–`DEVMODE_DHCP_END`, and runs an OpenSSH server listening
+only on `DEVMODE_ADDR`. It accepts the keys in the developer folder, `devmode/` under
+the userdata prefix (`root:root`, `0700`, kept by every reset), and nothing else: no
+passwords, root only. The host keys are made there on the first start. The first key
+gets there from the running system (an administrator writes
+`devmode/authorized_keys`) or from the recovery, which can write userdata. A bare boot
+has no developer folder, so no SSH; the initramfs's shell above stays the way in. The
+booted system reads the board keys from `/etc/glassine-bootimg/board.conf`, which the
+image builder installs, and needs `openssh-server` (OpenSSH, because its server takes
+the authorized keys file, the host keys and the listen address from its configuration;
+dropbear reads `authorized_keys` only from the user's home) and `busybox-extras` (the
+address server). `glassine-devmode status` says what runs. Without
+`glassine.devmode=usb` it starts no USB function, address server or SSH server.
 
 In developer mode, image builders can extend the initramfs with hooks
 (`build-initramfs.sh --hook FILE --extra DIR`). The hooks register for three stages:

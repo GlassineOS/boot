@@ -37,7 +37,7 @@ EOF
 sh build-initramfs.sh --board $W/board.conf $W/base.cpio.gz >/dev/null
 S=$W/shim; mkdir -p $S/mods
 : > $S/load.list
-for m in virtio_blk ext4 btrfs overlay vfat nls_cp437 nls_iso8859_1 nls_utf8; do
+for m in virtio_blk ext4 btrfs overlay vfat nls_cp437 nls_iso8859_1 nls_utf8 dummy; do
     modprobe -S "$KREL" --show-depends $m | sed -n 's/^insmod \([^ ]*\).*/\1/p'
 done | awk '!seen[$0]++' | while read -r k; do
     b=${k##*/}; b=${b%.gz}; b=${b%.zst}
@@ -64,7 +64,7 @@ cat $W/base.cpio.gz $W/shim.cpio.gz > $OUT/initramfs.cpio.gz
 # --- the base tree --------------------------------------------------------------
 B=$W/base; mkdir -p $B
 mkdir -p $B/etc/apk && cp -a /etc/apk/keys $B/etc/apk/ && cp /etc/apk/repositories $B/etc/apk/
-apk add -q --root $B --initdb alpine-base e2fsprogs e2fsprogs-extra >/dev/null
+apk add -q --root $B --initdb alpine-base e2fsprogs e2fsprogs-extra openssh busybox-extras >/dev/null
 make -s glassine-reboot >/dev/null && make -s DESTDIR=$B install >/dev/null
 cat > $B/etc/inittab <<'EOF'
 ::sysinit:/sbin/openrc sysinit
@@ -80,6 +80,17 @@ echo qtest > $B/etc/hostname
 mkdir -p $B/etc/glassine $B/usr/share/glassine $B/etc/glassine-bootimg
 # the board keys as the image builder installs them (the seed tool reads DEVICE_PART)
 cp $W/board.conf $B/etc/glassine-bootimg/board.conf
+# developer mode in the booted system (the initramfs's copy has no DEVMODE_ADDR, so
+# its own developer mode stays off): dm0, a dummy interface, stands in for the USB
+# gadget (made by qtest-netdev in the boot runlevel)
+printf 'DEVMODE_ADDR=10.0.9.1\nDEVMODE_NETMASK=255.255.255.0\nDEVMODE_DHCP_START=10.0.9.2\nDEVMODE_DHCP_END=10.0.9.10\n' >> $B/etc/glassine-bootimg/board.conf
+mkdir -p $B/etc/conf.d
+printf 'DEVMODE_NETDEV=dm0\nrc_after="qtest-netdev"\n' > $B/etc/conf.d/glassine-devmode
+cat > $B/etc/init.d/qtest-netdev <<'EOF2'
+#!/sbin/openrc-run
+start() { ip link set lo up; ip link add dm0 type dummy && ip link set dm0 up; }
+EOF2
+chmod 755 $B/etc/init.d/qtest-netdev
 cat > $B/etc/glassine/deploy.conf <<'EOF'
 SYSTEM_DEV=/dev/vda1
 USERDATA_DEV=/dev/vda2
@@ -99,7 +110,8 @@ start() { setsid /usr/sbin/qtest-agent </dev/null >/dev/console 2>&1 & }
 EOF
 chmod 755 $B/etc/init.d/qtest
 for s in devfs dmesg sysfs glassine-device-seed; do ln -s /etc/init.d/$s $B/etc/runlevels/sysinit/$s; done
-for s in localmount hostname bootmisc; do ln -s /etc/init.d/$s $B/etc/runlevels/boot/$s; done
+for s in localmount hostname bootmisc qtest-netdev; do ln -s /etc/init.d/$s $B/etc/runlevels/boot/$s; done
+ln -s /etc/init.d/glassine-devmode $B/etc/runlevels/default/glassine-devmode
 ln -s /etc/init.d/qtest $B/etc/runlevels/default/qtest
 ln -s /etc/init.d/glassine-deploy-accept $B/etc/runlevels/default/glassine-deploy-accept
 for s in killprocs mount-ro glassine-switch; do ln -s /etc/init.d/$s $B/etc/runlevels/shutdown/$s; done

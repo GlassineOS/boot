@@ -1,6 +1,6 @@
 # Testing
 
-`make check` runs eight host suites in Docker (Alpine 3.22, busybox userland as on the
+`make check` runs nine host suites in Docker (Alpine 3.22, busybox userland as on the
 device). Each prints `ok`/`FAIL` lines; exit 0 = all pass.
 
 | Suite | Container | What it proves |
@@ -12,6 +12,7 @@ device). Each prints `ok`/`FAIL` lines; exit 0 = all pass.
 | `test/replay` | **privileged** (loop devices, mounts) **and network** (Alpine's package repositories), real `apk` | `glassine-deploy stage` replaying the user's packages on a new base, with a real Alpine base, a btrfs system partition and an ext4 userdata: added and removed packages land in the new deployment's build layer and world, the running root is untouched, and the switch selects a candidate that has them; `--no-replay`; the offline replay from the cache; a package that no longer resolves (exit 7: nothing staged, the chroot mounts and the new deployment removed); `--without`; a repository the user added; a version that would go down (exit 7, named) and `--accept-downgrades`; a replay staged from a deployment that is not the booted one (its read-only view: the cache must still be writable) |
 | `test/blocklist` | **privileged** (loop devices, mounts) | the block-list hand-off's library on real ext4: `FIEMAP` and the extent checks, the record, the raw read-back, the ash record helpers on a slot, a simulated bootloader reader written from `docs/blocklist.md`, and `glassine-bootimg` with `HANDOFF=blocklist` through install, reboot-test, trial, accept, cancel, retry and rollback, cut and failed writes included |
 | `test/seed` | **privileged**, a directory per partition (`GLASSINE_SEED_FAKE`), one real vfat image on a loop device | `glassine-device-seed` and the list and manifest formats: no list, an empty list, no `DEVICE_PART`, invalid lists (a source on `DEVICE_PART`, bad names, a name twice), a newer format; the first seed, its manifest, the firmware path without a newline (not with `firmware_class.path` on the command line); later boots read nothing; a damaged copy, a source gone, a changed source and `refresh` (now and at the next boot), a grown and a shorter list, split images by their program headers (synthetic ELF32 and ELF64 `.mdt` files: the hash segment, a segment with no file bytes and one inside the `.mdt` need no part, parts the headers don't need not copied, a needed part missing, a `.mdt` that isn't ELF, no `.mdt`, fewer parts on a refresh, a damaged seed `.mdt`), an upper-case 8.3 split image on a real vfat source, a name the kernel's firmware provides; writes cut off before and after the manifest's rename (the cut refresh done again), a failed write, a refused read-write mount, no manifest, a stray file, a journal replay, a bad waveform, `blkid` output of busybox and util-linux, an unknown file system |
+| `test/devmode` | plain, stubs for the network, the address server, the SSH server and `ssh-keygen`, a configfs stand-in | `glassine-devmode`: nothing without `glassine.devmode=usb` (no call, no folder, nothing said), a bare boot and a plain boot (no folder, said), no `DEVMODE_ADDR`; the developer folder `root:root 0700` (a looser mode fixed), the host key made once, the NCM gadget on the first UDC, the address and the developer range on that interface, the SSH server's configuration (one listen address, the folder's keys, no passwords), status, a second start, stop, no developer range, `DEVMODE_NETDEV`, no UDC |
 | `test/slot` | plain (a disk image, sgdisk as an independent writer and checker) | `glassine-slot`: status and the next-boot rule (with ABL's first-boot default when no slot is active), set-active / mark-successful / reset-tries bits (checked with sgdisk), only the two attribute words change, no write when nothing changes, the refusals (no booted slot, no boot_a/boot_b, copies differing beyond the attributes (entries or headers), both copies broken, set-active where ABL's set_active would also swap type GUIDs or refuse the slot), cut writes after each step and the re-run, a broken or zeroed primary/backup rebuilt from the other (refused with no room for the rebuilt primary's entries), a 64-entry table whose rebuilt backup array goes where ABL keeps it (16 KiB before the last LBA) and stays valid after ABL's attribute write (modelled in `test/slot/gpt.py`), read-back mismatch, busy; the plain build (what `make` installs) without the test hooks |
 
 `test/root` also runs on a device (for its kernel's btrfs, ext4 and overlayfs): the
@@ -20,13 +21,13 @@ directory bind-mounted onto itself, so `unshare --mount-proc` can make it privat
 new PID namespace, because the hibernate checks stop and restart the watchdog daemon
 they find by name, and outside one they would find the device's real one.
 
-CI (`.github/workflows/test.yml`) runs all eight (`test/root`, `test/replay`, `test/blocklist` and `test/seed` need a privileged Docker, `test/replay` also the network) and also builds the initramfs twice and
+CI (`.github/workflows/test.yml`) runs all nine (`test/root`, `test/replay`, `test/blocklist` and `test/seed` need a privileged Docker, `test/replay` also the network) and also builds the initramfs twice and
 compares the two (reproducible).
 
-`test/qemu/test.sh` (not in `make check`: about 20 minutes, emulated) boots the real
+`test/qemu/test.sh` (not in `make check`: about 45 minutes, emulated) boots the real
 initramfs and a real OpenRC system in QEMU (arm64, Alpine's virt kernel) from a GPT disk
 with a btrfs system partition, an ext4 userdata, an empty ext4 `devdata` (the board's
-`DEVICE_PART`) and two source partitions (ext4 `srcext`, vfat `srcvfat`), through ten
+`DEVICE_PART`) and two source partitions (ext4 `srcext`, vfat `srcvfat`), through twelve
 boots:
 
 1. d1 boots. Checks: `/run/glassine/booted` and the moved mounts survive OpenRC, `/` is
@@ -59,7 +60,15 @@ boots:
    firmware provides, a split image missing a part its program headers need, a source on `DEVICE_PART`: none changes
    the manifest. A refresh is cut off before the manifest's rename.
 10. The initramfs binds nothing; the cut refresh is done again at boot: complete, the
-    new bytes, no temp file.
+    new bytes, no temp file. A developer key goes into `devmode/`.
+11. With `glassine.devmode=usb` (a dummy interface stands in for the USB gadget): the
+    developer folder `root:root 0700` with its host key, the address server, SSH
+    listening only on `DEVMODE_ADDR`, a login with the key, refused with another key and
+    with a password. A reset and a user shutdown.
+12. With `glassine.devmode=usb`: the reset's deployment, the same host key, the login.
+
+Boots 1–10 have no `glassine.devmode`: no SSH server, no address server, no developer
+folder.
 
 After every device-data boot the source partitions read as the test left them.
 
@@ -80,6 +89,7 @@ virt kernel has no watchdog driver, so the watchdog stop around the resume is co
 | deployments: state, pick, fallbacks, locked root, reset/switch/accept | ✅ real file systems; ✅ QEMU | not yet |
 | the person's storage (home and Flatpak on userdata, `/var/tmp` shared, failures) across a reset and a full reset | ✅ real file systems; ✅ QEMU | not yet |
 | device data: the list, the seed, the initramfs step, the seed service, cut writes, the clashes with the kernel's firmware | ✅ plain directories (test/seed); ✅ real ext4 (test/root, test/bootimg); ✅ QEMU | not yet |
+| developer access in the booted system (SSH with the folder's keys only, on `DEVMODE_ADDR` only) | ✅ stubs (test/devmode); ✅ QEMU, a dummy interface for the USB gadget | not yet (the USB gadget itself) |
 | the kernel loading firmware from the seed in the same boot | no: the virt kernel has no firmware test driver; QEMU checks only the parameter's value | not yet |
 | the boot-success service accepting a healthy candidate | ✅ stubs (test/deploy); ✅ QEMU | not yet |
 | initramfs end to end in the deployments layout (mounts moved, `switch_root`, OpenRC start) | ✅ QEMU (2026-10-29) | not yet |
