@@ -67,10 +67,12 @@ gr_bind_locked() {
 }
 
 # gr_modules SYSMNT NEWROOT KREL: modules/<krel> (a subvolume) on
-# /lib/modules/<krel>; 1 (and nothing mounted) if the kernel has none
+# /lib/modules/<krel>, its mount point made through the merged root at
+# NEWROOT.rw (a base carries no release's directory); 1 (and nothing mounted)
+# if the kernel has none
 gr_modules() {
     [ -d "$1/modules/$3" ] || return 1
-    [ -d "$2/lib/modules/$3" ] || return 1
+    [ -d "$2/lib/modules/$3" ] || mkdir -p "$2.rw/lib/modules/$3" || return 1
     mount --bind "$1/modules/$3" "$2/lib/modules/$3" && mount -o remount,bind,ro "$2/lib/modules/$3"
 }
 

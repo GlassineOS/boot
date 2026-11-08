@@ -97,9 +97,10 @@ userdata, or the tmpfs on a bare boot) makes the mount points, then binds:
 The kernel's built-in search order puts `/lib/firmware/updates` ahead of `/lib/firmware`,
 so nothing goes on the command line for it, and the base needs no knowledge of the release.
 The base ships only the empty directories `/lib/modules/` and `/lib/firmware/updates/`
-(no files under the latter: the bind hides them). Today `gr_modules` needs the base to
-carry `/lib/modules/<release>`; it changes to `mkdir -p` through the merged root. A
-missing subvolume is logged loudly; the boot continues without modules. Packages can't
+(no files under the latter: the bind hides them). `gr_modules` makes
+`/lib/modules/<release>` with `mkdir -p` through the merged root. A missing subvolume is
+logged loudly; the boot continues without modules, and a kernel trial fails its verdict.
+Packages can't
 install modules into the read-only bind: out-of-tree modules are built with the kernel.
 
 **Firmware tied to the kernel** (for example GPU microcode the driver depends on) comes from
@@ -270,7 +271,8 @@ tree or initramfs for the running kernel).
 4. `glassine-deploy-accept` doesn't run on either. `glassine-bootimg-promote` (OpenRC,
    last):
    - On a trial, it checks the boot and accepts the kernel (`current` ← candidate, the
-     old one to `previous`). A trial that fails, hangs or ends before the check leaves
+     old one to `previous`). The check includes the system the trial ran: the current
+     deployment, not a bare boot or a fallback, with the kernel's modules bound. A trial that fails, hangs or ends before the check leaves
      the candidate at `tries=0`: the next boot is the old kernel, and it marks the
      candidate failed.
    - **Whenever `writing` is set,** on a finishing boot or on any other boot, it first
@@ -448,7 +450,7 @@ What changes with it:
   two binds, `DEVICE_PART` after `gr_carry`, the kernel trial); its line that the Note Air
   uses `plain`, which is out of date.
 - `initramfs/init` (`TRIES=1` and `ID=` from `/var/lib/glassine-bootimg`, and the "no staged
-  test boot in this layout" path), `lib/glassine-root.sh` (`gr_modules` `mkdir -p`; a
+  test boot in this layout" path), `lib/glassine-root.sh` (a
   `gr_boot` mode that boots current without a try; the `DEVICE_PART` mount),
   `openrc/glassine-deploy-accept` (skips a kernel trial), `sbin/glassine-bootimg` (`ST`, `MODS`, the inputs it packs from),
   `test/root/inner.sh` (the base's `/lib/modules/<release>`), README.md (Kernel updates),

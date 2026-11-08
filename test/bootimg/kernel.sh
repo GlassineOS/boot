@@ -248,11 +248,20 @@ ok "the lock held: exit 6, nothing written" "$B cancel 2>/dev/null; [ \$? = 6 ] 
 wait; rm -f $W/held
 # --- the trial (Story 2), on the main state ----------------------------------------
 # the state as left above (writing cleared by hand): the default slot gets
-# the current image back, the candidate is 7.1.0-a on the test slot
+# the current image back, the candidate is 7.1.0-a on the test slot. What the
+# initramfs and the kernel's boot leave: the booted deployment, the mounts.
+echo '130.00 1.00' > $W/uptime; mkdir -p $W/rundir; echo d1 > $W/rundir/booted
+MOD='overlay /lib/modules/7.1.0-a btrfs ro,relatime 0 0'
+printf 'overlay / overlay ro,relatime 0 0\noverlay /var overlay ro,relatime 0 0\n%s\n' "$MOD" > $W/mounts.bad
+printf 'overlay / overlay ro,relatime 0 0\noverlay /etc overlay rw,relatime 0 0\noverlay /var overlay rw,relatime 0 0\n%s\n' "$MOD" > $W/mounts
+grep -v /lib/modules $W/mounts > $W/mounts.nomod
+export GLASSINE_BI_RUN_DIR=$W/rundir GLASSINE_BI_UNAME=7.1.0-a GLASSINE_BI_MOUNTS=$W/mounts
 dd if=$BI/$IDB.img of=$W/defslot conv=notrunc 2>/dev/null
 boot $IDB
 ok "the trial's start: current 7.1.0-b on the default slot, candidate 7.1.0-a on the test slot" "holds $W/defslot $IDB && holds $W/testslot $IDA && [ \"\$(kv current_img)\" = $IDB ] && [ \"\$(kv candidate_img)\" = $IDA ] && [ \"\$(kv tries)\" = 1 ]"
-$B reboot-test 2>/dev/null
+$B reboot-test 2>/dev/null; cp $K $W/k0
+ok "promote on the boot that ran reboot-test: nothing failed, nothing written" "$B promote 2>/dev/null && cmp -s $K $W/k0 && grep -q 'reboot into the trial of $IDA is under way' $W/log"
+rm -f $W/run/glassine-bootimg.requested         # a later boot: the reboot never reached the candidate
 ok "requested = the candidate, tries=1, a boot of another image: failed, no-boot, requested cleared" "$B promote 2>/dev/null && [ \"\$(kv failed_img)\" = $IDA ] && [ \"\$(gs_kv $BI/$IDA.manifest reason)\" = no-boot ] && [ -z \"\$(kv candidate)\$(kv requested)\" ] && holds $W/defslot $IDB"
 ok "... status: state=failed, reason=no-boot" "[ \"\$(st state)\" = failed ] && [ \"\$(st reason)\" = no-boot ]"
 $B retry >/dev/null 2>&1; gs_update $K requested=0123abcd
@@ -262,16 +271,43 @@ gs_update $K tries=0
 ok "a candidate at tries=0 on another boot: failed, no-verdict" "$B promote 2>/dev/null && [ \"\$(kv failed_img)\" = $IDA ] && [ \"\$(gs_kv $BI/$IDA.manifest reason)\" = no-verdict ] && [ -z \"\$(kv candidate)\" ]"
 $B retry >/dev/null 2>&1; boot $IDA; gs_update $K tries=0 requested=     # the initramfs took the try
 ok "the trial fails its health check: failed with the reason, the default slot untouched" "GLASSINE_BI_HEALTH='echo sick; false' $B promote 2>/dev/null && [ \"\$(kv failed_img)\" = $IDA ] && [ \"\$(gs_kv $BI/$IDA.manifest reason)\" = 'health: sick' ] && holds $W/defslot $IDB && [ \"\$(kv current_img)\" = $IDB ] && [ -z \"\$(kv writing)\" ]"
+$B retry >/dev/null 2>&1; gs_update $K requested=$IDA; : > $W/log       # the initramfs took no try (the lock was held)
+cpy
+ok "a trial whose try wasn't taken: requested cleared and logged, the verdict still given" "inc env GLASSINE_BI_HEALTH=true $B promote >/dev/null 2>&1 && holds $W/c/defslot $IDA && [ \"\$(ck current_img)\" = $IDA ] && [ -z \"\$(ck requested)\$(ck failed)\" ] && grep -q 'took no try' $W/log"
+gs_update $K requested=
+# a trial that didn't run the system it must prove: failed, the default slot untouched
+tr_fail() { [ "$(gs_kv $W/c/sys/state/bootimg/$IDA.manifest reason)" = "health: $1" ] && holds $W/c/defslot $IDB && [ "$(ck current_img)" = $IDB ] && [ "$(ck failed_img)" = $IDA ]; }
+cpy; echo bare:b1 > $W/rundir/booted
+ok "a trial that boots bare fails its verdict, whatever health says" "inc env GLASSINE_BI_HEALTH=true $B promote 2>/dev/null && tr_fail 'bare boot (bare:b1): userdata or the deployment did not come up'"
+cpy; echo d9 > $W/rundir/booted
+ok "a trial that fell back to another deployment fails its verdict" "inc env GLASSINE_BI_HEALTH=true $B promote 2>/dev/null && tr_fail 'booted d9, not the current deployment d1'"
+cpy; rm $W/rundir/booted
+ok "a trial with no booted deployment recorded fails its verdict" "inc env GLASSINE_BI_HEALTH=true $B promote 2>/dev/null && tr_fail 'the booted deployment is not recorded'"
+echo d1 > $W/rundir/booted; cpy
+ok "a trial without its modules bound fails its verdict" "inc env GLASSINE_BI_HEALTH=true GLASSINE_BI_MOUNTS=$W/mounts.nomod $B promote 2>/dev/null && tr_fail 'no modules bound for 7.1.0-a'"
+rm -rf $W/c
 $B retry >/dev/null 2>&1; gs_update $K tries=0
 ok "during the trial: an install is deferred" "$B install 6.0.0-old --initramfs c1 >/dev/null 2>&1 && [ \"\$(kv deferred)\" = 6.0.0-old ]"
 # today's health() itself: / is a read-only bind in this layout, the binds are read-write
-echo '130.00 1.00' > $W/uptime
-printf 'overlay / overlay ro,relatime 0 0\noverlay /var overlay ro,relatime 0 0\n' > $W/mounts.bad
-printf 'overlay / overlay ro,relatime 0 0\noverlay /etc overlay rw,relatime 0 0\noverlay /var overlay rw,relatime 0 0\n' > $W/mounts
 cpy
 ok "health() in this layout: /var read-only fails the trial (var-not-rw)" "inc env GLASSINE_BI_UPTIME=$W/uptime GLASSINE_BI_MOUNTS=$W/mounts.bad GLASSINE_BI_HOOKS=$W/nohooks $B promote 2>/dev/null && [ \"\$(gs_kv $W/c/sys/state/bootimg/$IDA.manifest reason)\" = 'health: var-not-rw' ]"
 rm -rf $W/c
-ok "a healthy trial (health(): / read-only, the binds read-write): accepted, the default slot = the candidate" "GLASSINE_BI_UPTIME=$W/uptime GLASSINE_BI_MOUNTS=$W/mounts GLASSINE_BI_HOOKS=$W/nohooks $B promote >/dev/null 2>&1 && holds $W/defslot $IDA && [ \"\$(kv current)\" = 7.1.0-a ] && [ \"\$(kv current_img)\" = $IDA ] && [ \"\$(kv previous)\" = 7.1.0-b ] && [ \"\$(kv previous_img)\" = $IDB ] && [ -z \"\$(kv writing)\$(kv writing_op)\" ]"
+# the packer as promote's deferred install runs it: is the state lock free there?
+cat > $W/packlock <<PY
+import fcntl, os, sys
+f = open('$SYS/state/.lock', 'a')
+try:
+    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    open('$W/lockfree', 'w').close()
+except OSError:
+    pass
+f.close()
+os.execv(sys.executable, [sys.executable, '/p/lib/glassine-bootimg-pack'] + sys.argv[1:])
+PY
+# ... and is it taken once? (released and taken again, another writer gets in between)
+mkdir -p $W/bin; printf '#!/bin/sh\necho x >> %s/flocks\nexec busybox flock "$@"\n' $W > $W/bin/flock; chmod +x $W/bin/flock; : > $W/flocks
+ok "a healthy trial (health(): / read-only, the binds read-write): accepted, the default slot = the candidate" "PATH=$W/bin:\$PATH GLASSINE_BI_PACK=$W/packlock GLASSINE_BI_UPTIME=$W/uptime GLASSINE_BI_MOUNTS=$W/mounts GLASSINE_BI_HOOKS=$W/nohooks $B promote >/dev/null 2>&1 && holds $W/defslot $IDA && [ \"\$(kv current)\" = 7.1.0-a ] && [ \"\$(kv current_img)\" = $IDA ] && [ \"\$(kv previous)\" = 7.1.0-b ] && [ \"\$(kv previous_img)\" = $IDB ] && [ -z \"\$(kv writing)\$(kv writing_op)\" ]"
+ok "... the deferred install runs with the state lock held all the way" "[ -e $BI/\$(kv candidate_img).manifest ] && [ ! -e $W/lockfree ] && [ \"\$(wc -l < $W/flocks)\" = 1 ]"
 IDD=$(kv candidate_img)
 ok "... then the deferred release installed: the candidate, deferred cleared" "[ \"\$(kv candidate)\" = 6.0.0-old ] && [ -n \"$IDD\" ] && holds $W/testslot $IDD && [ \"\$(kv tries)\" = 1 ] && [ -z \"\$(kv deferred)\$(kv deferred_dtb)\$(kv deferred_initramfs)\" ]"
 boot $IDD; gs_update $K tries=0
@@ -282,6 +318,9 @@ ok "... the next boot (the default kernel): promote installs it, with its device
 bset HANDOFF ''; gs_update $K deferred=7.1.0-a deferred_dtb=dev1@aaaa deferred_initramfs=c1; cp $K $W/k0
 ok "a deferred release while kernel updates are paused: it stays deferred" "! $B promote 2>/dev/null && cmp -s $K $W/k0"
 bset HANDOFF bootpart-test
+gs_update $K deferred=6.0.0-old; corrupt 2; rm -f $W/run/glassine-bootimg.notice
+ok "a deferred install that fails: exit 1, its keys cleared, the notice says so" "! $B promote 2>/dev/null && [ -z \"\$(kv deferred)\$(kv deferred_dtb)\$(kv deferred_initramfs)\" ] && grep -q 'Kernel 6.0.0-old could not be installed' $W/run/glassine-bootimg.notice"
+corrupt 0
 ok "usage: exit 2" "$B frob 2>/dev/null; a=\$?; $B status x 2>/dev/null; [ \$a\$? = 22 ]"
 ok "no temp files left in /run" "[ -z \"\$(ls $W/run | grep -v -e notice -e started)\" ]"
 

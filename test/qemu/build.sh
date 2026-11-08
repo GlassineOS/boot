@@ -98,7 +98,7 @@ for s in localmount hostname bootmisc; do ln -s /etc/init.d/$s $B/etc/runlevels/
 ln -s /etc/init.d/qtest $B/etc/runlevels/default/qtest
 ln -s /etc/init.d/glassine-deploy-accept $B/etc/runlevels/default/glassine-deploy-accept
 for s in killprocs mount-ro glassine-switch; do ln -s /etc/init.d/$s $B/etc/runlevels/shutdown/$s; done
-mkdir -p $B/lib/modules/$KREL $B/run
+mkdir -p $B/lib/modules $B/run       # no release's directory: gr_modules makes it
 tar -C $B --numeric-owner --xattrs -cf $OUT/base.tar .
 tar -C /lib/modules/$KREL -cf $OUT/modules.tar .
 echo "$KREL" > $OUT/krel
