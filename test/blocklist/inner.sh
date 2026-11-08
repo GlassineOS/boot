@@ -95,7 +95,7 @@ putrec $W/d.rec
 ok "... and the simulated reader rejects it" "$READER $SLOT $UD $W/o | grep -q 'reject: sha256'"
 
 echo "--- the record helpers in ash (lib/glassine-kernel.sh)"
-mkdir -p $W/tmp; TMP=$W/tmp
+mkdir -p $W/tmp; export TMP=$W/tmp
 export GLASSINE_DEPLOY_CONF=/nonexistent
 log() { echo "$*" >> $W/log; }
 die() { log "$*"; exit 1; }
