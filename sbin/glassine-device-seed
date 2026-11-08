@@ -1,0 +1,410 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-device-seed: files a device takes, read-only, from its own partitions
+# (a display waveform, firmware the kernel requests), copied once into a
+# verified seed and read from there afterwards (docs/kernel-artifacts.md,
+# "Device data"; the formats: lib/glassine-device.sh).
+#
+#   glassine-device-seed            verify the seed against the list, copy what
+#                                   is missing or doesn't verify, bind it
+#                                   read-only on /run/glassine/device
+#   glassine-device-seed refresh    ask for a refresh: every file is read again
+#                                   at the next boot, and changed sources taken
+#   glassine-device-seed refresh --now   the refresh right away (boot, recovery);
+#                                   until it finishes, the request stands
+#   glassine-device-seed status     what the seed holds; exit 0 = complete
+#
+# The list is the running root's /usr/share/glassine/device-data.list (the
+# device package's); without one, or with no entries, the device has no device
+# data and the tool does nothing, silently. The seed is glassine/ on the
+# board's DEVICE_PART (board.conf), ext4. Sources are read read-only and never
+# written: ext4 with debugfs (no mount, no journal replay), vfat mounted ro,
+# btrfs ro,rescue=nologreplay. The only writes are to DEVICE_PART's glassine/
+# (temp files renamed, the manifest last) and one read-write mount to replay
+# its journal when it needs recovery.
+#
+# A seed that verifies (every file it holds matches, gd_verify) is bound,
+# complete or not. An entry the seed holds is not read again; one it lacks
+# (or whose copy doesn't verify) is read from its source. A source that can't
+# be read, or that now gives other bytes than the manifest records, leaves the
+# entry out (the seed is incomplete, retried at every boot); other bytes are
+# taken only on a refresh. Files the seed holds that the list doesn't name
+# stay. A name the running kernel's own firmware provides (its kernel.manifest
+# firmware list) is refused.
+#
+# A refresh without --now waits for the next boot: DEVICE_PART can't be
+# mounted read-write while any mount namespace (an app's sandbox) holds a
+# read-only mount of it, and at boot the service runs before any of them.
+#
+# Exit: 0 complete (or no device data), 1 incomplete or a refresh whose source
+# couldn't be read again (what verifies is bound),
+# 2 usage or an invalid list, 3 a list format newer than this tool.
+set -u
+
+LIST=${GLASSINE_SEED_LIST:-/usr/share/glassine/device-data.list}
+BOARD=${GLASSINE_SEED_BOARD:-/etc/glassine-bootimg/board.conf}
+LIB=${GLASSINE_DEVICE_LIB:-/usr/lib/glassine-boot/glassine-device.sh}
+RUN=${GLASSINE_SEED_RUN:-/run/glassine}
+REQUEST=${GLASSINE_SEED_REQUEST:-/var/lib/glassine/device-seed.refresh}
+KMAN=${GLASSINE_SEED_KERNEL_MANIFEST:-/lib/modules/$(uname -r)/kernel.manifest}
+FWPARAM=${GLASSINE_SEED_FW_PARAM:-/sys/module/firmware_class/parameters/path}
+CMDLINE=${GLASSINE_SEED_CMDLINE:-/proc/cmdline}
+# tests: a directory stands in for the partitions. $FAKE/part is DEVICE_PART's
+# file system, $FAKE/src/PART/PATH the sources (a $FAKE/src/PART that is not a
+# directory is a real block device or image, read as on a device); binding
+# becomes a symlink.
+# GLASSINE_SEED_BEFORE_MANIFEST / _AFTER_MANIFEST: shell code run right before
+# and after the manifest's rename (a cut-off write), only with
+# GLASSINE_SEED_TEST=1.
+FAKE=${GLASSINE_SEED_FAKE:-}
+SEED=$RUN/device
+MNT=$RUN/device-part
+# shellcheck source=../lib/glassine-device.sh
+. "$LIB" || { echo "glassine-device-seed: cannot read $LIB" >&2; exit 2; }
+
+say() {
+	echo "glassine-device-seed: $*" >&2
+	{ [ -w /dev/kmsg ] && echo "<5>glassine-device-seed: $*" > /dev/kmsg; } 2>/dev/null
+	return 0
+}
+gd_log() { say "$*"; }
+
+DEVICE_PART='' ENTRIES='' DEV='' MISSING='' UNREAD=''
+# read_list: ENTRIES and DEVICE_PART; exits for no device data (0, silent), an
+# invalid list (2) or a newer format (3)
+read_list() {
+	# shellcheck source=/dev/null
+	DEVICE_PART=$( [ -r "$BOARD" ] && . "$BOARD" >/dev/null 2>&1; echo "${DEVICE_PART:-}")
+	ENTRIES=$(gd_list "$LIST" "$DEVICE_PART"); _rc=$?
+	case $_rc in
+	0) ;;
+	1) exit 0 ;;
+	3) exit 3 ;;
+	*) say "the list is invalid: nothing is seeded until it is fixed"; exit 2 ;;
+	esac
+	[ -n "$DEVICE_PART" ] || { say "$LIST names device data, but the board has no DEVICE_PART: ignored"; exit 0; }
+}
+
+part_dev() { gd_part_dev "$1"; }
+
+# CHECK FILE: the file looks like what it should be
+check_file() {
+	_n=$(wc -c < "$2" 2>/dev/null) || return 1
+	[ "$_n" -gt 0 ] || return 1
+	case $1 in
+	none) return 0 ;;
+	# an E Ink waveform: a header (0x100 bytes or more) whose length field
+	# (offset 4, 32 bits, little-endian) is the file's size
+	wbf) [ "$_n" -ge 256 ] && [ "$(od -A n -t u4 -j 4 -N 4 "$2" | tr -d ' ')" = "$_n" ] ;;
+	*) say "unknown check '$1'"; return 1 ;;
+	esac
+}
+
+# the file system type of DEV, from blkid's default output (busybox blkid
+# ignores -o and -s; the space before TYPE= keeps SEC_TYPE= and PTTYPE= out)
+fs_type() {
+	blkid "$1" 2>/dev/null | sed -n 's/.*[[:space:]]TYPE="\([^"]*\)".*/\1/p' | head -n1
+}
+
+# src_dev PART: SRCDEV and SRCFS for a source partition, 1 if it can't be read
+src_dev() {
+	SRCFAKE=''
+	if [ -n "$FAKE" ]; then SRCDEV=$FAKE/src/$1; [ ! -d "$SRCDEV" ] || SRCFAKE=1
+	else SRCDEV=$(part_dev "$1") || { say "no partition $1"; return 1; }
+	fi
+	SRCFS=$(fs_type "$SRCDEV")
+	case $SRCFS in
+	ext2|ext3|ext4|vfat|btrfs) ;;
+	*) say "$1: file system '${SRCFS:-unknown}' not read"; return 1 ;;
+	esac
+}
+# src_mount / src_umount: vfat and btrfs sources, read-only, on $RUN/device-src;
+# vfat with shortname=lower: an 8.3-only name (MODEM.MDT) reads as the lower-case
+# name a list uses
+src_mount() {
+	_m=$RUN/device-src; mkdir -p "$_m" || return 1
+	if [ "$SRCFS" = btrfs ]; then mount -t btrfs -o ro,rescue=nologreplay "$SRCDEV" "$_m"
+	else mount -t vfat -o ro,shortname=lower "$SRCDEV" "$_m"; fi
+}
+src_umount() { umount "$RUN/device-src"; }
+
+# src_read PART:/PATH OUT: one file from a source, read-only
+src_read() {
+	_part=${1%%:*} _path=${1#*:} _rc=1
+	src_dev "$_part" || return 1
+	say "reading $1"
+	if [ -n "$SRCFAKE" ]; then cp "$SRCDEV$_path" "$2" 2>/dev/null; return; fi
+	case $SRCFS in
+	ext*) debugfs -R "dump -p $_path $2" "$SRCDEV" >/dev/null 2>&1; [ -s "$2" ] ;;
+	*) src_mount || return 1
+		cp "$RUN/device-src$_path" "$2" 2>/dev/null && _rc=0
+		src_umount
+		return $_rc ;;
+	esac
+}
+
+# kernel_has NAME: the running kernel's own firmware provides NAME (a seed name
+# under firmware/); prints the release
+kernel_has() {
+	case $1 in firmware/*) ;; *) return 1 ;; esac
+	[ -r "$KMAN" ] || return 1
+	for _k in $(sed -n 's/^firmware=//p' "$KMAN" | head -n 1); do
+		[ "${_k%@*}" = "${1#firmware/}" ] && { sed -n 's/^release=//p' "$KMAN" | head -n 1; return 0; }
+	done
+	return 1
+}
+
+# clash NAME SOURCE [quiet]: a name of this entry the running kernel's firmware
+# provides (a split image: the parts the manifest has for it), said; 1 = none
+clash() {
+	case $1 in
+	*.\*) _ns=$(gd_parts "$G" "${1%.\*}" "${2%.\*}" | awk '{ print $1 }') ;;
+	*) _ns=$1 ;;
+	esac
+	for _c in $_ns; do
+		_r=$(kernel_has "$_c") || continue
+		[ "${3:-}" = quiet ] || say "$_c: the kernel $_r provides firmware ${_c#firmware/} itself; refused"
+		return 0
+	done
+	return 1
+}
+
+# DEVICE_PART mounted (MODE ro or rw) on $MNT
+part_mount() {
+	if [ -n "$FAKE" ]; then
+		# $FAKE/rw_fails: a read-write mount that the kernel refuses
+		[ "$1" = rw ] && [ -e "$FAKE/rw_fails" ] && return 1
+		mkdir -p "$FAKE/part"; rm -f "$MNT"; ln -s "$FAKE/part" "$MNT"
+		return
+	fi
+	mkdir -p "$MNT"
+	if [ "$1" = rw ]; then mount -t ext4 -o rw,noatime "$DEV" "$MNT"
+	else mount -t ext4 -o ro,noload "$DEV" "$MNT"; fi
+}
+part_umount() {
+	if [ -n "$FAKE" ]; then rm -f "$MNT"; return; fi
+	! mountpoint -q "$MNT" || umount "$MNT"
+}
+part_mounted() { if [ -n "$FAKE" ]; then [ -L "$MNT" ]; else mountpoint -q "$MNT"; fi; }
+bound() { if [ -n "$FAKE" ]; then [ -L "$SEED" ]; else mountpoint -q "$SEED"; fi; }
+bind_seed() {
+	if [ -n "$FAKE" ]; then rm -f "$SEED"; ln -s "$MNT/glassine" "$SEED"
+	else mkdir -p "$SEED" && mount -o bind "$MNT/glassine" "$SEED" && mount -o remount,bind,ro "$SEED"; fi || return 1
+	gd_fw_path "$SEED" "$CMDLINE" "$FWPARAM" || say "the firmware path could not be set"
+	return 0
+}
+unbind_seed() {
+	if [ -n "$FAKE" ]; then rm -f "$SEED"; return; fi
+	! mountpoint -q "$SEED" || umount "$SEED"
+}
+
+# DEVICE_PART mounted anywhere but $MNT (another tool's mount): no rw mount then
+mounted_elsewhere() {
+	[ -n "$FAKE" ] && return 1
+	_want=$(stat -L -c %t:%T "$DEV")
+	while read -r _src _mp _rest; do
+		case $_src in /dev/*) ;; *) continue ;; esac
+		[ "$_mp" = "$MNT" ] && continue
+		[ "$(stat -L -c %t:%T "$_src" 2>/dev/null)" = "$_want" ] && return 0
+	done < /proc/mounts
+	return 1
+}
+
+needs_recovery() {
+	[ -n "$FAKE" ] && { [ -e "$FAKE/needs_recovery" ]; return; }
+	dumpe2fs -h "$DEV" 2>/dev/null | grep -q '^Filesystem features:.*needs_recovery'
+}
+
+G=$MNT/glassine
+# the manifest's line for NAME ("NAME SOURCE SHA256"), empty if none
+man_line() { awk -v n="$1" 'NR > 1 && $1 == n { print; exit }' "$G/manifest" 2>/dev/null; }
+
+# take NAME SOURCE CHECK: read one file into $T/f/NAME; 0 = take it (a fresh
+# copy), 1 = left out (said)
+take() {
+	mkdir -p "$(dirname "$T/f/$1")" || return 1
+	if ! src_read "$2" "$T/f/$1"; then say "$1: $2 could not be read"; return 1; fi
+	check_file "$3" "$T/f/$1" || { say "$1: $2 is not a valid '$3' file"; return 1; }
+	_l=$(man_line "$1")
+	if [ -n "$_l" ] && [ "$FORCE" != 1 ]; then
+		set -- "$1" "$2" $_l
+		if [ "$4" = "$2" ] && [ "$(gd_sha "$T/f/$1")" != "$5" ]; then
+			say "$1: $2 now gives other bytes than the seed recorded; left out (glassine-device-seed refresh takes them)"
+			return 1
+		fi
+	fi
+	return 0
+}
+
+# fill: copy what is missing or doesn't verify (FORCE=1: everything), drop
+# what doesn't verify and can't be copied again, the manifest last. Sets
+# MISSING (entries left out). 1 = the write failed.
+fill() {
+	T=$RUN/device-seed.tmp
+	rm -rf "$T"; mkdir -p "$T/f" || return 1
+	MISSING='' UNREAD='' fresh=''
+	if [ "$(head -n 1 "$G/manifest" 2>/dev/null)" = format=1 ]; then tail -n +2 "$G/manifest" | grep . > "$T/lines"
+	else : > "$T/lines"; fi
+	printf '%s\n' "$ENTRIES" > "$T/entries"
+	while read -r n s c; do
+		[ -n "$n" ] || continue
+		case $n in
+		*.\*)	# a split image: its .mdt, then the parts its program headers need
+			clash "$n" "$s" && { MISSING="$MISSING $n"; continue; }
+			[ "$FORCE" != 1 ] && gd_held_split "$G" "$n" "$s" && continue
+			stem=${n%.\*} sstem=${s%.\*}
+			if rel=$(kernel_has "$stem.mdt"); then say "$stem.mdt: the kernel $rel provides firmware ${stem#firmware/}.mdt itself; refused"; MISSING="$MISSING $n"; continue; fi
+			take "$stem.mdt" "$sstem.mdt" "$c" || { say "$n: left out as a whole"; MISSING="$MISSING $n"; continue; }
+			if ! need=$(gd_mdt_parts "$T/f/$stem.mdt"); then
+				say "$n: $sstem.mdt is not an ELF file the loader reads; left out as a whole"
+				MISSING="$MISSING $n"; continue
+			fi
+			ok=1 got=" $stem.mdt:$sstem.mdt"
+			for nn in $need; do
+				rn=$stem.b$nn
+				if rel=$(kernel_has "$rn"); then say "$rn: the kernel $rel provides firmware ${rn#firmware/} itself; refused"; ok=0; break; fi
+				take "$rn" "$sstem.b$nn" "$c" || { say "$n: its program headers need $sstem.b$nn; left out as a whole"; ok=0; break; }
+				got="$got $rn:$sstem.b$nn"
+			done
+			[ $ok = 1 ] || { MISSING="$MISSING $n"; continue; }
+			# the whole image replaces every line it had before (a part no longer
+			# needed loses its line, and its file goes as a stray)
+			gd_parts "$G" "$stem" "$sstem" | while read -r a _ _; do echo "$a"; done > "$T/old"
+			awk 'FILENAME == ARGV[1] { o[$1] = 1; next } !($1 in o)' "$T/old" "$T/lines" > "$T/lines.new"; mv "$T/lines.new" "$T/lines"
+			for g in $got; do echo "${g%%:*} ${g#*:} $(gd_sha "$T/f/${g%%:*}")" >> "$T/lines"; done
+			fresh="$fresh${got}" ;;
+		*)
+			clash "$n" "$s" && { MISSING="$MISSING $n"; continue; }
+			[ "$FORCE" != 1 ] && gd_held "$G" "$n" "$s" && continue
+			if take "$n" "$s" "$c"; then
+				awk -v n="$n" '$1 != n' "$T/lines" > "$T/lines.new"; mv "$T/lines.new" "$T/lines"
+				echo "$n $s $(gd_sha "$T/f/$n")" >> "$T/lines"
+				fresh="$fresh $n:$s"
+			else
+				if gd_held "$G" "$n" "$s"; then say "$n: the seed's copy stays"; UNREAD="$UNREAD $n"
+				else MISSING="$MISSING $n"; fi
+			fi ;;
+		esac
+	done < "$T/entries"
+	# what the seed holds that doesn't verify and isn't copied again goes (its
+	# line stays: the recorded bytes); so does any file no line names
+	drop=''
+	if [ -d "$G" ]; then
+		for p in $(cd "$G" && find . ! -type d | sed 's|^\./||'); do
+			[ "$p" = manifest ] && continue
+			case " $fresh " in *" $p:"*) continue ;; esac
+			l=$(awk -v n="$p" '$1 == n { print; exit }' "$T/lines")
+			if [ -z "$l" ] || [ ! -f "$G/$p" ] || [ -L "$G/$p" ] || [ "$(gd_sha "$G/$p")" != "$(echo "$l" | cut -d' ' -f3)" ]; then
+				drop="$drop $p"
+			fi
+		done
+	fi
+	if [ -z "$fresh" ] && [ -z "$drop" ] && [ -f "$G/manifest" ]; then rm -rf "$T"; return 0; fi
+	[ -n "$fresh$drop" ] || { rm -rf "$T"; return 0; }
+	{ echo format=1; LC_ALL=C sort -k1,1 "$T/lines"; } > "$T/manifest.new"
+	part_umount
+	if mounted_elsewhere; then
+		say "$DEVICE_PART is mounted elsewhere; not writing the seed"
+		rm -rf "$T"; part_mount ro; return 1
+	fi
+	part_mount rw || { say "cannot mount $DEVICE_PART read-write"; rm -rf "$T"; part_mount ro; return 1; }
+	(
+		mkdir -p "$G" || exit 1
+		for p in $drop; do rm -f "$G/$p" || exit 1; done
+		for f in $fresh; do
+			p=${f%%:*} d=$(dirname "$G/${f%%:*}") b=$(basename "${f%%:*}")
+			mkdir -p "$d" && cp "$T/f/$p" "$d/.$b.new" && sync && mv -f "$d/.$b.new" "$G/$p" || exit 1
+		done
+		cp "$T/manifest.new" "$G/.manifest.new" && sync || exit 1
+		[ "${GLASSINE_SEED_TEST:-}" != 1 ] || eval "${GLASSINE_SEED_BEFORE_MANIFEST:-}"
+		mv -f "$G/.manifest.new" "$G/manifest" && sync || exit 1
+		[ "${GLASSINE_SEED_TEST:-}" != 1 ] || eval "${GLASSINE_SEED_AFTER_MANIFEST:-}"
+	)
+	l=$?
+	# the temp files of a write that failed: never visible in the bound seed
+	find "$G" -name '.*.new' -type f -exec rm -f {} + 2>/dev/null
+	sync
+	part_umount; rm -rf "$T"
+	[ $l = 0 ] || { say "writing the seed failed"; part_mount ro; return 1; }
+	part_mount ro || return 1
+	[ -z "$drop" ] || say "removed (they didn't verify):$drop"
+	[ -z "$fresh" ] || say "seeded:$(for f in $fresh; do printf ' %s' "${f%%:*}"; done)"
+	return 0
+}
+
+# clashes: an entry clashes with the running kernel's firmware (quiet)
+clashes() {
+	printf '%s\n' "$ENTRIES" | {
+		while read -r _n _s _c; do
+			[ -n "$_n" ] || continue
+			clash "$_n" "$_s" quiet && exit 0
+		done
+		exit 1
+	}
+}
+
+status() {
+	printf '%s\n' "$ENTRIES" | while read -r n s c; do
+		[ -n "$n" ] || continue
+		case $n in
+		*.\*) if gd_held_split "$G" "$n" "$s"; then echo "$n ok ($s)"; else echo "$n missing ($s)"; fi ;;
+		*) if gd_held "$G" "$n" "$s"; then echo "$n ok ($s)"; else echo "$n missing ($s)"; fi ;;
+		esac
+	done
+	gd_complete "$G" "$ENTRIES"
+}
+
+main() {
+	verb=${1:-start} rc=0 FORCE=''
+	case $verb:${2:-}:${3:-} in
+	start::|status::|refresh:--now:) ;;
+	refresh::)
+		read_list
+		mkdir -p "${REQUEST%/*}" && : > "$REQUEST" || { say "cannot write $REQUEST"; exit 1; }
+		echo "glassine-device-seed: the seed is refreshed at the next boot"
+		exit 0 ;;
+	*) echo "usage: glassine-device-seed [refresh [--now]|status]" >&2; exit 2 ;;
+	esac
+	read_list
+	if [ "$verb" = refresh ]; then
+		# recorded first: a refresh cut off is done again at the next boot
+		FORCE=1; mkdir -p "${REQUEST%/*}" && : > "$REQUEST" || say "cannot write $REQUEST"
+	elif [ "$verb" = start ] && [ -e "$REQUEST" ]; then FORCE=1; say "refresh asked for"
+	fi
+	if [ -z "$FAKE" ]; then
+		DEV=$(part_dev "$DEVICE_PART") || { say "no partition $DEVICE_PART"; exit 1; }
+	fi
+	mkdir -p "$RUN"
+	if [ "$verb" = status ]; then
+		if bound && part_mounted; then status; exit; fi
+		[ -n "$FAKE" ] || ! mountpoint -q "$MNT" || { echo "$MNT is mounted, nothing bound"; exit 1; }
+		part_mount ro || exit 1; status; rc=$?; part_umount; exit $rc
+	fi
+	# bound by the initramfs (it verified the seed): done when complete
+	if [ "$verb" = start ] && [ -z "$FORCE" ] && bound && part_mounted && gd_complete "$G" "$ENTRIES" && ! clashes; then
+		gd_fw_path "$SEED" "$CMDLINE" "$FWPARAM" || say "the firmware path could not be set"
+		exit 0
+	fi
+	unbind_seed; part_umount
+	if needs_recovery; then
+		if mounted_elsewhere; then say "$DEVICE_PART's journal needs recovery, but it is mounted elsewhere"; exit 1; fi
+		say "replaying $DEVICE_PART's journal"
+		part_mount rw && part_umount || { say "cannot replay $DEVICE_PART's journal"; exit 1; }
+		[ -z "$FAKE" ] || rm -f "$FAKE/needs_recovery"
+	fi
+	part_mount ro || { say "cannot mount $DEVICE_PART"; exit 1; }
+	fill || rc=1
+	[ -z "$MISSING" ] || { say "incomplete, left out:$MISSING (glassine-device-seed status)"; rc=1; }
+	# a copy kept because its source can't be read again: the refresh isn't done
+	[ -z "$UNREAD" ] || { say "not read again:$UNREAD (the seed's copies stay; the refresh is tried again)"; rc=1; }
+	# a request is done once every file was read again (else the next boot tries again)
+	[ -n "$FORCE" ] && [ $rc = 0 ] && rm -f "$REQUEST"
+	if gd_verify "$G"; then
+		bind_seed || { say "cannot bind the seed"; exit 1; }
+	else
+		part_umount; rc=1
+	fi
+	exit $rc
+}
+
+main "$@"

@@ -55,6 +55,11 @@ BLOCKLIST_ABL_SHA256=
 # the system partition): glassine-bootimg install in the deployments layout
 # refuses a tree for another device.
 DEVICE=
+# The partition that holds the device seed (docs/kernel-artifacts.md, "Device
+# data"): glassine/ on it, ext4, the only place the seed tool writes; its other
+# files stay untouched. Empty: the board has no device data, and a device
+# package's list is ignored (said once per boot).
+DEVICE_PART=
 
 # --- Roles -----------------------------------------------------------------
 # How the initramfs tells a normal boot from a boot of the test slot: an
@@ -67,9 +72,11 @@ DEFAULT_ROLE_MATCH='[s_]kip_initramfs'
 
 # --- Developer mode (glassine.devmode=usb) ---------------------------------
 # Only used when the command line has glassine.devmode=usb: USB networking
-# (NCM gadget) with a root shell (telnet) and HTTP endpoints on this address.
-# Anyone with a cable gets root: never put glassine.devmode in CMDLINE below
-# for an end-user device.
+# (NCM gadget) with a root shell (telnet) and HTTP endpoints on this address in
+# the initramfs. Anyone with a cable gets root: never put glassine.devmode in
+# CMDLINE below for an end-user device. In the booted system the same keys give
+# an SSH server on this address, with the keys of the developer folder only
+# (glassine-devmode; the address server serves DEVMODE_DHCP_START..END there too).
 DEVMODE_ADDR=172.16.42.1
 DEVMODE_NETMASK=255.255.255.0
 DEVMODE_DHCP_START=172.16.42.2
