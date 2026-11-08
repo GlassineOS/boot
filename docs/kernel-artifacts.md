@@ -108,9 +108,9 @@ userdata, or the tmpfs on a bare boot) makes the mount points, then binds:
 The kernel's built-in search order puts `/lib/firmware/updates` ahead of `/lib/firmware`,
 so nothing goes on the command line for it, and the base needs no knowledge of the release.
 The base ships only the empty directories `/lib/modules/` and `/lib/firmware/updates/`
-(no files under the latter: the bind hides them). Today `gr_modules` needs the base to
-carry `/lib/modules/<release>`; it changes to `mkdir -p` through the merged root. A
-missing subvolume is logged loudly; the boot continues without modules. Packages can't
+(no files under the latter: the bind hides them). `gr_modules` makes
+`/lib/modules/<release>` through the merged root, so the base needs no directory for
+the release. A missing subvolume is logged loudly; the boot continues without modules. Packages can't
 install modules into the read-only bind: out-of-tree modules are built with the kernel.
 
 **Firmware tied to the kernel** (for example GPU microcode the driver depends on) comes from
@@ -476,10 +476,10 @@ What changes with it:
   two binds, `DEVICE_PART` after `gr_carry`, the kernel trial); its line that the Note Air
   uses `plain`, which is out of date.
 - `initramfs/init` (`TRIES=1` and `ID=` from `/var/lib/glassine-bootimg`, and the "no staged
-  test boot in this layout" path), `lib/glassine-root.sh` (`gr_modules` `mkdir -p`; a
+  test boot in this layout" path), `lib/glassine-root.sh` (a
   `gr_boot` mode that boots current without a try; the `DEVICE_PART` mount),
   `openrc/glassine-deploy-accept` (skips a kernel trial), `sbin/glassine-bootimg` (`ST`, `MODS`, the inputs it packs from),
-  `test/root/inner.sh` (the base's `/lib/modules/<release>`), README.md (Kernel updates),
+  README.md (Kernel updates),
   `conf/board.conf.example`.
 - docs.glassine.org, Boot flow: vendor partitions are mounted read-only without replaying a
   journal, except the seed's read-write copy.
