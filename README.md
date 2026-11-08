@@ -124,7 +124,11 @@ booted system reads the board keys from `/etc/glassine-bootimg/board.conf`, whic
 image builder installs, and needs `openssh-server` (OpenSSH, because its server takes
 the authorized keys file, the host keys and the listen address from its configuration;
 dropbear reads `authorized_keys` only from the user's home) and `busybox-extras` (the
-address server). `glassine-devmode status` says what runs. Without
+address server). The service starts it in the background: the USB device controller
+can appear only after the device manager's coldplug (its PHY waits for regulators a
+module provides), so it waits for one, up to 90 s (`GLASSINE_DEVMODE_UDC_WAIT`), and
+tells NetworkManager, when it runs, to leave the USB interface alone. Its messages go
+to the kernel log. `glassine-devmode status` says what runs. Without
 `glassine.devmode=usb` it starts no USB function, address server or SSH server.
 
 In developer mode, image builders can extend the initramfs with hooks
