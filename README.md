@@ -37,6 +37,7 @@ the deployment's layers on userdata) and manages them with `glassine-deploy`:
 | `lib/glassine-root.sh` | assembling a deployment's root: btrfs base + build layer + live upper (overlayfs), `/` read-only with writable `/etc`, `/var`, `/usr/local`, `/opt`; the interim try counter; the initramfs boot steps for `ROOT_LAYOUT=deployments` (hibernation resume or invalidate, pick + assemble with fallbacks, mounts carried to `/run/glassine/`) |
 | `sbin/glassine-switch-hook`, `openrc/glassine-switch` | the shutdown switch: a staged deployment is carried and selected at a shutdown the user started (`--user-shutdown` from the power menu) with the charger or enough battery; a service of the OpenRC shutdown runlevel |
 | `conf/deploy.conf.example` | where the system partition and userdata are |
+| `sbin/glassine-device-seed`, `openrc/glassine-device-seed`, `lib/glassine-device.sh` | device data: the files a device takes from its own partitions (its package's `/usr/share/glassine/device-data.list`), copied once into a verified seed on the board's `DEVICE_PART` and bound read-only on `/run/glassine/device`; the initramfs step and the seed service ([kernel-artifacts.md](docs/kernel-artifacts.md#device-data-files-from-the-device-itself)) |
 | `test/` | host tests in an Alpine container |
 
 ## Boot roles

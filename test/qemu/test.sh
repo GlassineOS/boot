@@ -11,7 +11,20 @@
 #      accepted deployment; a full reset, a user shutdown
 #   5  the full reset as the candidate: home and Flatpak's data kept; then
 #      flatpak/ on userdata made a file
-#   6  the storage step can't make flatpak/: logged, reported, the boot goes on
+#   6  the storage step can't make flatpak/: logged, reported, the boot goes on;
+#      a device-data list from here on (boots 1-6 have none: no step, the
+#      board's DEVICE_PART untouched)
+#   7  the initramfs finds no seed, the seed service fills it (a pattern, a
+#      rename, directories, a vfat source), the firmware path; hibernate
+#      refused while DEVICE_PART is read-write; a copy damaged
+#   8  the initramfs binds nothing, the service repairs it; a source changed,
+#      refreshed, gone; a grown list, its fill cut off after the manifest's
+#      rename (a power cut)
+#   9  complete after the cut; a shorter list, a name the kernel provides, a
+#      gap in a split image, a source on DEVICE_PART; a refresh cut off before
+#      the manifest's rename
+#  10  the cut refresh done again at boot
+# The sources must read the same after every boot (only the test changes them).
 # Every boot checks the person's storage (home/, flatpak/ bound from
 # userdata, /var/tmp shared, d1's own /home hidden and reported).
 # The virt kernel has no watchdog driver, so the watchdog stop around the
@@ -44,9 +57,13 @@ boot 3
 boot 4 glassine.noresume
 boot 5
 boot 6
+boot 7
+boot 8
+boot 9
+boot 10
 pass=$(cat "$OUT"/boot*.log | grep -ac 'QTEST ok' || true)
 fail=$(cat "$OUT"/boot*.log | grep -ac 'QTEST FAIL' || true)
-done=$(grep -ac 'QTEST DONE' "$OUT/boot6.log" || true)
+done=$(grep -ac 'QTEST DONE' "$OUT/boot10.log" || true)
 sw=$(cat "$OUT/boot1.log" "$OUT/boot4.log" | grep -ac 'glassine-switch: .* boots next' || true)
 echo "qemu: $pass ok, $fail FAIL, switch at shutdown: $sw, done: $done"
-[ "$fail" = 0 ] && [ "$done" = 1 ] && [ "$sw" = 2 ] && [ "$pass" -ge 36 ]
+[ "$fail" = 0 ] && [ "$done" = 1 ] && [ "$sw" = 2 ] && [ "$pass" -ge 62 ]

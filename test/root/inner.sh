@@ -23,7 +23,7 @@ loop() {
 }
 finish() {
     gr_boot_umount $W/root 2>/dev/null
-    umount $W/udmnt $W/sysmnt 2>/dev/null
+    umount $W/udmnt $W/sysmnt $W/dpmnt 2>/dev/null
     for l in $LOOPS; do losetup -d "$l" 2>/dev/null; done
     cd /; umount $W 2>/dev/null
 }
@@ -400,6 +400,18 @@ umount /dev/kmsg
 HB=$(gs_dev_block $UDEV $P/swap/hibernate)
 HMM=$(stat -L -c '%t %T' $UDEV); HMM=$(printf '%d:%d' 0x${HMM% *} 0x${HMM#* })
 ok "check: ready, the block the initramfs finds" "hn check && grep -q \"swap block $HB on $HMM\" $W/hout"
+# the board's DEVICE_PART (sysfs stand-in: GD_SYS_BLOCK) mounted read-write: refused
+truncate -s 16M $W/devdata.img; mkfs.ext4 -q -F $W/devdata.img; loop $W/devdata.img; DPD=$LOOP
+mkdir -p $W/sysblock/dp $W/dpmnt; printf 'MAJOR=7\nDEVNAME=%s\nPARTNAME=devdata\n' "${DPD#/dev/}" > $W/sysblock/dp/uevent
+printf 'DEVICE_PART=devdata\n' > $W/board.conf
+hd() { GLASSINE_BOARD_CONF=$W/board.conf GD_SYS_BLOCK=$W/sysblock hn "$@"; }
+mount -o ro $DPD $W/dpmnt
+ok "check: DEVICE_PART mounted read-only: ready" "hd check"
+umount $W/dpmnt; mount -o rw $DPD $W/dpmnt
+ok "check: DEVICE_PART mounted read-write (the seed tool writing): exit 3, said" "hd check; [ \$? = 3 ] && grep -q 'devdata (the device seed.s partition, $DPD) is mounted read-write' $W/hout"
+ok "now: DEVICE_PART mounted read-write: exit 3, nothing touched" "hd now; [ \$? = 3 ] && [ ! -s $HC ] && [ ! -e $HP/resume ]"
+umount $W/dpmnt
+ok "check: DEVICE_PART not mounted: ready" "hd check"
 : > $W/run/switching
 ok "now, a switch running: exit 4, nothing touched" "hn now; [ \$? = 4 ] && [ ! -s $HC ] && [ ! -e $HP/resume ]"
 rm $W/run/switching
@@ -565,6 +577,36 @@ ok "a bare boot binds nothing from userdata; /var/tmp shared" "! mountpoint -q $
 gr_boot_umount $R
 mount -t btrfs $SD $S && mount -t ext4 $UDEV $W/udmnt
 ok "base unchanged after everything" "[ \"\$(basesum)\" = \"\$SUM0\" ]"
+
+# The initramfs's device data step (gd_boot, lib/glassine-device.sh) on a real
+# ext4 DEVICE_PART ($DPD): bind when the seed's files verify, else nothing.
+. /p/lib/glassine-device.sh
+GD=$W/gdroot; mkdir -p $GD/run; : > $W/gdcmd; FWP=$W/fwparam
+gdb() { : > $FWP; gd_boot $GD $DPD $W/gdcmd $FWP 2>$W/gdlog; }
+gdun() { umount $GD/run/glassine/device 2>/dev/null; umount $GD/run/glassine/device-part 2>/dev/null; }
+gdnone() { ! mountpoint -q $GD/run/glassine/device && ! mountpoint -q $GD/run/glassine/device-part && [ ! -s $FWP ]; }
+gdw() { mount -o rw $DPD $W/dpmnt && sh -c "$1" && umount $W/dpmnt; }
+echo keep > $W/other
+gdw "cp $W/other $W/dpmnt/other"
+ok "gd_boot: no seed on DEVICE_PART: nothing bound, said" "gdb && gdnone && grep -q 'no seed on $DPD yet' $W/gdlog"
+gdw "mkdir -p $W/dpmnt/glassine/firmware/vendor && echo w > $W/dpmnt/glassine/waveform.wbf && echo f > $W/dpmnt/glassine/firmware/vendor/a.bin && printf 'format=1\nfirmware/vendor/a.bin p1:/a %s\nwaveform.wbf p1:/w %s\nfirmware/vendor/b.bin p1:/b %s\n' \$(echo f | sha256sum | cut -d' ' -f1) \$(echo w | sha256sum | cut -d' ' -f1) 0123 > $W/dpmnt/glassine/manifest"
+ok "gd_boot: a seed that verifies (one line not held): bound read-only, DEVICE_PART read-only" "gdb && [ \"\$(cat $GD/run/glassine/device/waveform.wbf)\" = w ] && ! touch $GD/run/glassine/device/x 2>/dev/null && awk -v m=$GD/run/glassine/device-part '\$2 == m' /proc/mounts | grep -q ' ro,' && grep -q 'seed bound on /run/glassine/device, firmware path set' $W/gdlog"
+ok "gd_boot: the firmware path as the booted system sees it, no newline" "[ \"\$(od -c $FWP | head -n 1 | tr -s ' ')\" = \"\$(printf '/run/glassine/device/firmware' | od -c | head -n 1 | tr -s ' ')\" ] && [ \$(wc -c < $FWP) = 29 ]"
+gdun
+echo 'console=ttyS0 firmware_class.path=/lib/fw-board' > $W/gdcmd
+ok "gd_boot: firmware_class.path on the command line: bound, the parameter not written" "gdb && mountpoint -q $GD/run/glassine/device && [ ! -s $FWP ]"
+gdun; : > $W/gdcmd
+gdw "echo x > $W/dpmnt/glassine/waveform.wbf"
+ok "gd_boot: a file that doesn't verify: nothing bound, nothing left mounted" "gdb && gdnone && grep -q \"doesn't verify\" $W/gdlog"
+gdw "echo w > $W/dpmnt/glassine/waveform.wbf && echo s > $W/dpmnt/glassine/.waveform.wbf.new"
+ok "gd_boot: a stray file (a cut-off write's temp file): nothing bound" "gdb && gdnone"
+gdw "rm $W/dpmnt/glassine/.waveform.wbf.new"
+debugfs -w -R 'feature needs_recovery' $DPD >/dev/null 2>&1
+ok "gd_boot: the journal needs recovery: nothing bound, DEVICE_PART not mounted" "gdb && gdnone && grep -q 'journal of $DPD needs recovery' $W/gdlog"
+debugfs -w -R 'feature -needs_recovery' $DPD >/dev/null 2>&1
+ok "gd_boot: bound again once it verifies" "gdb && mountpoint -q $GD/run/glassine/device"
+gdun
+ok "gd_boot: DEVICE_PART's other files untouched" "mount -o ro $DPD $W/dpmnt && cmp -s $W/dpmnt/other $W/other; r=\$?; umount $W/dpmnt; [ \$r = 0 ]"
 
 finish
 echo "$fails failed"

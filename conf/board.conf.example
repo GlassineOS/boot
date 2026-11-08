@@ -55,6 +55,11 @@ BLOCKLIST_ABL_SHA256=
 # the system partition): glassine-bootimg install in the deployments layout
 # refuses a tree for another device.
 DEVICE=
+# The partition that holds the device seed (docs/kernel-artifacts.md, "Device
+# data"): glassine/ on it, ext4, the only place the seed tool writes; its other
+# files stay untouched. Empty: the board has no device data, and a device
+# package's list is ignored (said once per boot).
+DEVICE_PART=
 
 # --- Roles -----------------------------------------------------------------
 # How the initramfs tells a normal boot from a boot of the test slot: an

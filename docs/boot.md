@@ -23,6 +23,10 @@ image):
 | `HANDOFF` | empty | how a new kernel reaches the bootloader in the deployments layout: `bootpart-test`, `blocklist` (no board sets it yet: [blocklist.md](blocklist.md#board-keys)), empty = kernel updates paused ([kernel-artifacts.md](kernel-artifacts.md)) |
 | `BLOCKLIST_RECORD_PART`, `BLOCKLIST_REBOOT_REASON`, `BLOCKLIST_ABL_PART`, `BLOCKLIST_ABL_SHA256` | — | the `blocklist` hand-off ([blocklist.md](blocklist.md#board-keys)) |
 | `DEVICE` | — | the device name of the board's device trees (`<device>@<id>`), for `glassine-bootimg install` |
+| `DEVICE_PART` | empty | GPT name of the ext4 partition that holds the device seed (`glassine/`); empty = no device data ([kernel-artifacts.md](kernel-artifacts.md#device-data-files-from-the-device-itself)) |
+
+The booted system reads the same keys from `/etc/glassine-bootimg/board.conf`, which the
+image builder installs (the seed tool takes `DEVICE_PART` from there).
 
 ## Plain layout
 
@@ -70,7 +74,14 @@ steps from `lib/glassine-root.sh`:
      nothing to `/run/glassine/kernel-boot` (`glassine-deploy-accept` skips the first
      two). What the storage step did goes to `/run/glassine/storage`.
    - The lock is released.
-5. `switch_root`.
+6. **Device data** (`gd_boot`, `lib/glassine-device.sh`), only when the root's
+   `/usr/share/glassine/device-data.list` names files and the board has `DEVICE_PART`:
+   the seed on `DEVICE_PART` is mounted `ro,noload` on `/run/glassine/device-part` and,
+   if its files verify, `glassine/` bound read-only on `/run/glassine/device` and the
+   firmware path set; otherwise nothing is bound and the seed service in sysinit fills
+   it ([kernel-artifacts.md](kernel-artifacts.md#device-data-files-from-the-device-itself)).
+   No list: no step, nothing logged.
+7. `switch_root`.
 
 **The base must list `/` as `bind,ro` in `/etc/fstab`:** `overlay / overlay bind,ro 0 0`.
 OpenRC's `root` service (pulled in by `localmount`) remounts `/` read-write unless
