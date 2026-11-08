@@ -105,4 +105,18 @@ for name, a in [
         ('no extents', (ID, 'userdata', B, SHA, [])),
         ('extents that don\'t add up', (ID, 'userdata', 2 * B, SHA, [(1, 1)]))]:
     ok(f'encode: {name}: refused', refused(gb.encode, *a))
+with tempfile.NamedTemporaryFile() as t:
+    t.write(bytes(B)); t.flush()
+    direct, preadv = os.O_DIRECT, os.preadv
+    os.O_DIRECT, os.preadv = 0, lambda *a: 1
+    try:
+        gb.read_blocks(t.name, [(0, 1)])
+        short = False
+    except gb.Unreadable:
+        short = True
+    except gb.Refused:
+        short = False
+    finally:
+        os.O_DIRECT, os.preadv = direct, preadv
+    ok('a short read is a read that failed, not blocks that differ', short)
 sys.exit(1 if fails else 0)

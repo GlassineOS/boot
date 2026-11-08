@@ -61,6 +61,9 @@ reboot-test ──► test boot ──► glassine-bootimg-promote ──► hea
                                                        └─► no / hang ──► old kernel stays
 ```
 
+A board with no spare slot uses the block-list hand-off instead of a test slot
+([docs/blocklist.md](docs/blocklist.md)); no board sets it yet.
+
 1. The kernel package runs `glassine-bootimg install KVER`. It builds the boot image
    from the board's `KERNEL`, `DTB`, `INITRAMFS` and `CMDLINE`, writes it to the test
    slot and reads it back.

@@ -18,8 +18,11 @@
 #
 # Hand-off (board key HANDOFF, FR-007): bootpart-test writes the candidate to
 # TEST_DEV, a spare slot the bootloader boots once when asked (never the
-# recovery partition, FR-008); empty: kernel updates are paused; blocklist:
-# not built yet (hub#56).
+# recovery partition, FR-008); empty: kernel updates are paused; blocklist: the
+# bootloader reads the candidate from an immutable file on userdata, through a
+# record in the default slot (docs/blocklist.md, specs/005). With it, userdata
+# holds what the bootloader reads (candidate_img, failed_img), and state/bootimg
+# what can go back into the default slot (current_img, previous_img, writing).
 #
 # The trial (FR-011, FR-012): the initramfs takes the try on the candidate's
 # boot (lib/glassine-root.sh, gr_boot) and boots the current deployment;
@@ -49,6 +52,20 @@ GK_FORMAT=1
 GK_KEYS='current previous current_img previous_img candidate candidate_img tries failed failed_img deferred requested writing writing_op'
 # also in state/kernel, not printed by status: deferred_dtb, deferred_initramfs
 HANDOFF=${HANDOFF:-} DEVICE=${DEVICE:-}
+# the block-list hand-off; test hooks: GLASSINE_BI_RECORD_DEV, _USERDATA_DEV,
+# _USERDATA_MNT, _ABL_DEV, _BLOCKLIST, _REBOOT_MODES, GLASSINE_POWER_SUPPLY
+BLOCKLIST_RECORD_PART=${BLOCKLIST_RECORD_PART:-} BLOCKLIST_REBOOT_REASON=${BLOCKLIST_REBOOT_REASON:-}
+BLOCKLIST_ABL_PART=${BLOCKLIST_ABL_PART:-} BLOCKLIST_ABL_SHA256=${BLOCKLIST_ABL_SHA256:-}
+USERDATA_PART=${USERDATA_PART:-} USERDATA_PREFIX=${USERDATA_PREFIX:-media/glassine}
+SWITCH_MIN_CAPACITY=${SWITCH_MIN_CAPACITY:-30}
+GK_BLDEV=${GLASSINE_BI_RECORD_DEV:-/dev/disk/by-partlabel/$BLOCKLIST_RECORD_PART}
+GK_UDDEV=${GLASSINE_BI_USERDATA_DEV:-${USERDATA_DEV:-/dev/disk/by-partlabel/$USERDATA_PART}}
+GK_UDMNT=${GLASSINE_BI_USERDATA_MNT:-${USERDATA_MNT:-/run/glassine/userdata}}
+GK_BLK=$GK_UDMNT/$USERDATA_PREFIX/kernel
+GK_ABLDEV=${GLASSINE_BI_ABL_DEV:-/dev/disk/by-partlabel/$BLOCKLIST_ABL_PART}
+GK_BLTOOL=${GLASSINE_BI_BLOCKLIST:-/usr/lib/glassine-bootimg/glassine-blocklist}
+GK_MODES=${GLASSINE_BI_REBOOT_MODES:-/sys/class/reboot-mode}
+GK_PSDIR=${GLASSINE_POWER_SUPPLY:-/sys/class/power_supply}
 GK_RAM=''
 GK_STARTED=$TMP/glassine-bootimg.started
 GK_REQUESTED=$TMP/glassine-bootimg.requested    # reboot-test ran on this boot (in RAM)
@@ -99,12 +116,20 @@ gk_handoff() {
     case "$HANDOFF" in
     bootpart-test) ;;
     '') die "kernel updates are paused on this board (no HANDOFF in $BOARD)" ;;
-    blocklist) die "the blocklist hand-off is not built yet (hub#56); kernel updates are paused" ;;
+    blocklist) gk_bl_handoff; return 0 ;;
     *) die "unknown HANDOFF '$HANDOFF' in $BOARD" ;;
     esac
     [ -n "$TESTDEV" ] && [ -n "$DEFDEV" ] || die "no TEST_DEV/DEFAULT_DEV in $BOARD"
     [ "$(gk_partname "$TESTDEV")" != recovery ] ||
         die "TEST_DEV is the recovery partition: bootpart-test needs a spare slot (the recovery stays the recovery)"
+}
+
+# gk_bl_handoff: the board's keys for the block-list hand-off are coherent
+gk_bl_handoff() {
+    [ -n "$DEFDEV" ] || die "no DEFAULT_DEV in $BOARD"
+    [ -n "$BLOCKLIST_REBOOT_REASON" ] || die "no BLOCKLIST_REBOOT_REASON in $BOARD"
+    [ -n "$(readlink -f "$GK_BLDEV")" ] && [ "$(readlink -f "$GK_BLDEV")" = "$(readlink -f "$DEFDEV")" ] ||
+        die "BLOCKLIST_RECORD_PART in $BOARD is not the default slot"
 }
 
 # --- reading and writing slots -----------------------------------------------
@@ -250,6 +275,156 @@ gk_bl_clear() {
     return "$_rzr"
 }
 
+# gk_bl_settle: no record of anything but the candidate (FR-010). A failed
+# clear is logged and goes on: without the reboot reason, the record is never read.
+gk_bl_settle() {
+    _rs=$(gk_bl_id "$DEFDEV") || return 0
+    [ "$_rs" != none ] && [ "$_rs" != "$(k candidate_img)" ] || return 0
+    if gk_bl_clear "$DEFDEV"; then log "the record of image $_rs is cleared"
+    else log "the record of image $_rs could not be cleared (harmless: nothing sets the reboot reason for it)"
+    fi
+}
+
+# gk_bl_mode: the running kernel can write this hand-off's reboot reason
+gk_bl_mode() {
+    cat "$GK_MODES"/*/reboot_modes 2>/dev/null | tr ' ' '\n' | grep -qx "$BLOCKLIST_REBOOT_REASON"
+}
+
+# gk_power_ok: a charger online, or a battery at SWITCH_MIN_CAPACITY or more
+# (the shutdown switch's rule); no battery at all = ok. Sets GK_POWER.
+gk_power_ok() {
+    _bat='' GK_POWER=''
+    for _p in "$GK_PSDIR"/*; do
+        [ -r "$_p/type" ] || continue
+        case $(cat "$_p/type") in
+        Mains|USB|USB_*|Wireless) [ "$(cat "$_p/online" 2>/dev/null)" = 1 ] && { GK_POWER="charger ${_p##*/}"; return 0; } ;;
+        Battery) _bat=$(cat "$_p/capacity" 2>/dev/null) ;;
+        esac
+    done
+    [ -n "$_bat" ] || { GK_POWER="no battery"; return 0; }
+    case $_bat in *[!0-9]*) GK_POWER="battery capacity unreadable"; return 1 ;; esac
+    GK_POWER="battery $_bat %"
+    [ "$_bat" -ge "$SWITCH_MIN_CAPACITY" ]
+}
+
+# gk_bl_checks DTB: what a real install needs (FR-005), before anything changes
+gk_bl_checks() {
+    case $(cat "$GK_RUN/booted" 2>/dev/null) in
+    bare:*) die "install: this is a bare boot: userdata isn't in use" ;;
+    esac
+    [ -n "$USERDATA_PART" ] || die "install: no USERDATA_PART in $BOARD"
+    [ -n "$BLOCKLIST_ABL_SHA256" ] || die "install: no bootloader build is known to read the record (BLOCKLIST_ABL_SHA256 in $BOARD)"
+    _as=$(sha256sum < "$GK_ABLDEV" 2>/dev/null | cut -d' ' -f1)
+    case " $BLOCKLIST_ABL_SHA256 " in
+    *" ${_as:-unreadable} "*) ;;
+    *) die "install: this bootloader (${_as:-unreadable}) is not one known to read the record" ;;
+    esac
+    gk_bl_mode || die "install: the running kernel has no reboot mode '$BLOCKLIST_REBOOT_REASON'"
+    grep -aqF "mode-$BLOCKLIST_REBOOT_REASON" "$1" || die "install: the candidate's device tree has no mode-$BLOCKLIST_REBOOT_REASON"
+    mkdir -p "$GK_BLK" || die "install: cannot create $GK_BLK"
+    _be=$(python3 "$GK_BLTOOL" check-fs "$GK_BLK" 2>&1) || die "install: $_be"
+    _bs=$(gk_devsize "$DEFDEV")
+    [ -n "$_bs" ] && [ "$_bs" -ge $((PART_SIZE)) ] || die "install: $DEFDEV (${_bs:-unreadable}) is smaller than PART_SIZE"
+    _bb=$(gk_bl_block "$DEFDEV") || die "install: cannot place the record in $DEFDEV"
+    _bh=$TMP/glassine-bootimg.hdr.$$
+    gk_read "$DEFDEV" 4096 > "$_bh" || { rm -f "${_bh:?}"; die "install: cannot read $DEFDEV"; }
+    _be=$(gk_hdr_size "$_bh"); rm -f "${_bh:?}"
+    [ -n "$_be" ] || die "install: $DEFDEV holds no boot image"
+    [ "$_be" -le $((_bb * 4096)) ] || die "install: the image in $DEFDEV reaches the record"
+}
+
+# gk_bl_file_ok ID: the candidate's file on userdata matches its manifest
+gk_bl_file_ok() {
+    [ -r "$GK_BLK/$1.img" ] && [ -r "$BI/$1.manifest" ] || return 1
+    gk_record_ok "$BI/$1.manifest"
+    [ "$(stat -c %s "$GK_BLK/$1.img")" = "$(man "$1" size)" ] && [ "$(gk_sha "$GK_BLK/$1.img")" = "$(man "$1" sha256)" ]
+}
+
+# gk_bl_store ID SIZE SHA FROM: FROM becomes userdata's immutable ID.img, in
+# as few extents as allocation gives: allocated, written in full, synced,
+# renamed, made immutable. An existing file with this content is kept.
+gk_bl_store() {
+    _bf=$GK_BLK/$1.img _bn=$GK_BLK/.$1.img.new
+    if [ -e "$_bf" ]; then
+        if [ "$(gk_sha "$_bf")" = "$3" ]; then
+            rm -f "${4:?}"
+            chattr +i "$_bf"
+            return
+        fi
+        chattr -i "$_bf" 2>/dev/null
+        rm -f "${_bf:?}" || return 1
+    fi
+    rm -f "${_bn:?}"
+    fallocate -l "$2" "$_bn" && dd if="$4" of="$_bn" bs=4096 conv=notrunc,fsync 2>/dev/null &&
+        [ "$(gk_sha "$_bn")" = "$3" ] && mv -f "$_bn" "$_bf" && sync && chattr +i "$_bf" && sync ||
+        { rm -f "${_bn:?}"; return 1; }
+    rm -f "${4:?}"
+}
+
+# gk_bl_record ID SIZE SHA: the file's blocks checked, read back through the
+# raw partition, then the record (install's steps 4 to 6). A file whose blocks
+# don't hold its image is removed; one that couldn't be read back is kept (the
+# read-back says nothing about it). 0 = the record names ID.
+gk_bl_record() {
+    _bf=$GK_BLK/$1.img _br=$TMP/glassine-bootimg.newrec.$$
+    _bm=$(python3 "$GK_BLTOOL" map "$_bf" 2>&1) || { log "$_bm"; return 1; }
+    if ! _be=$(printf '%s\n' "$_bm" | python3 "$GK_BLTOOL" encode "$_br" "$1" "$USERDATA_PART" "$2" "$3" 2>&1); then
+        log "$_be"; rm -f "${_br:?}"; return 1
+    fi
+    _be=$(python3 "$GK_BLTOOL" check "$_br" "$_bf" "$GK_UDDEV" 2>&1); _brc=$?
+    if [ "$_brc" = 3 ]; then
+        log "$_be: the file is kept"
+        rm -f "${_br:?}"
+        return 1
+    fi
+    if [ "$_brc" != 0 ]; then
+        log "$_be: the file is removed"
+        chattr -i "$_bf" 2>/dev/null; rm -f "${_bf:?}" "${_br:?}"
+        return 1
+    fi
+    gk_bl_put "$DEFDEV" "$_br"; _brc=$?
+    rm -f "${_br:?}"
+    return "$_brc"
+}
+
+# gk_bl_verify ID: the slot's record names ID, ID's file still has the record's
+# blocks, and they hold its image (FR-007). 0 = yes; 1 = no, why on stdout;
+# 2 = this can't be checked here (no python3, userdata not mounted, the
+# partition can't be read), why on stdout.
+gk_bl_verify() {
+    command -v python3 >/dev/null 2>&1 && [ -r "$GK_BLTOOL" ] || { echo "no python3"; return 2; }
+    mountpoint -q "$GK_UDMNT" || { echo "userdata is not mounted at $GK_UDMNT"; return 2; }
+    _rv=$TMP/glassine-bootimg.verify.$$
+    _vid=$(gk_bl_id "$DEFDEV") && gk_bl_read "$DEFDEV" "$_rv" || { rm -f "${_rv:?}"; echo "the record can't be read"; return 1; }
+    [ "$_vid" = "$1" ] || { rm -f "${_rv:?}"; echo "the record names ${_vid}, not $1"; return 1; }
+    _ve=$(python3 "$GK_BLTOOL" check "$_rv" "$GK_BLK/$1.img" "$GK_UDDEV" 2>&1); _vk=$?
+    if [ "$_vk" != 0 ]; then
+        rm -f "${_rv:?}"; echo "$_ve"
+        if [ "$_vk" = 3 ]; then return 2; fi
+        return 1
+    fi
+    _vr=0
+    python3 "$GK_BLTOOL" decode "$_rv" | grep -qx "sha256=$(man "$1" sha256)" || { echo "the record's sha256 is not the manifest's"; _vr=1; }
+    rm -f "${_rv:?}"
+    return "$_vr"
+}
+
+# gk_bl_copy ID: the candidate's image onto the system partition, before an
+# accept touches the default slot (FR-009). A good ID already there (a rollback
+# target or a seed, installed again) is left as it is. The copy is checked
+# before it replaces anything, and a failure removes only the temporary file.
+gk_bl_copy() {
+    if gk_img_ok "$1"; then return 0; fi
+    gk_bl_file_ok "$1" || { log "accept: $GK_BLK/$1.img is gone or damaged"; return 1; }
+    if cp "$GK_BLK/$1.img" "$BI/$1.img.tmp" && sync && [ "$(gk_sha "$BI/$1.img.tmp")" = "$(man "$1" sha256)" ] &&
+        mv -f "$BI/$1.img.tmp" "$BI/$1.img" && gk_img_ok "$1"; then
+        return 0
+    fi
+    rm -f "${BI:?}/${1:?}.img.tmp"
+    log "accept: cannot copy image $1 to the system partition"
+    return 1
+}
+
 # gk_img_ok ID: state/bootimg/ID.img is there and matches its record
 gk_img_ok() {
     [ -r "$BI/$1.img" ] && [ -r "$BI/$1.manifest" ] || return 1
@@ -276,17 +451,33 @@ gk_deploy_trial() {
 # gk_prune: drop every state/bootimg/*.img no key names (FR-003); the
 # manifests stay
 gk_prune() {
-    _keep=" $(k current_img) $(k previous_img) $(k candidate_img) $(k failed_img) $(k writing) "
+    _keep=" $(k current_img) $(k previous_img) $(k writing) "
+    [ "$HANDOFF" = blocklist ] || _keep="$_keep$(k candidate_img) $(k failed_img) "
     for _f in "$BI"/*.img; do
         [ -e "$_f" ] || continue
         _i=${_f##*/}; _i=${_i%.img}
         case "$_keep" in *" $_i "*) ;; *) rm -f "$_f" && log "removed the unused image $_i" ;; esac
+    done
+    [ "$HANDOFF" = blocklist ] || return 0
+    # userdata: what the bootloader reads, and never what a record names (FR-008)
+    _rid=$(gk_bl_id "$DEFDEV") || return 0
+    _keep=" $(k candidate_img) $(k failed_img) $_rid "
+    for _f in "$GK_BLK"/*.img "$GK_BLK"/.*.img.new "$GK_BLK"/.pack.*; do
+        [ -e "$_f" ] || continue
+        _i=${_f##*/}; _i=${_i%.img}
+        case "$_keep" in
+        *" $_i "*) ;;
+        *) chattr -i "$_f" 2>/dev/null; rm -f "${_f:?}" && log "removed the unused image file $_i" ;;
+        esac
     done
 }
 
 # gk_fail REASON: the candidate failed (its record says why)
 gk_fail() {
     _ci=$(k candidate_img) _c=$(k candidate)
+    if [ "$HANDOFF" = blocklist ]; then
+        gk_bl_clear "$DEFDEV" || log "the record could not be cleared (harmless: nothing sets the reboot reason for it)"
+    fi
     [ -z "$_ci" ] || [ ! -e "$BI/$_ci.manifest" ] || gs_update "$BI/$_ci.manifest" "reason=$1" || die "cannot write $BI/$_ci.manifest"
     kset "failed=$_c" "failed_img=$_ci" candidate= candidate_img= tries= requested=
     log "kernel $_c ($_ci) FAILED: $1; the default boot keeps $(k current)"
@@ -420,13 +611,20 @@ gk_install() {
     [ -n "$_ci" ] && [ "$(k tries)" = 0 ] && gk_fail no-verdict
 
     # pack (rule 2: the packer checks PART_SIZE; the slots are checked here)
-    _img=$(mktemp "$TMP/glassine-bootimg.XXXXXX") || die "mktemp in $TMP failed"
+    if [ "$HANDOFF" = blocklist ]; then
+        gk_bl_checks "$SYS/boot/dtb/$_dtb.dtb"
+        _img=$(mktemp "$GK_BLK/.pack.XXXXXX") || die "mktemp in $GK_BLK failed"
+    else
+        _img=$(mktemp "$TMP/glassine-bootimg.XXXXXX") || die "mktemp in $TMP failed"
+    fi
     _out=$(python3 "$PACK" "$BOARD" "$_md/Image.gz" "$SYS/boot/dtb/$_dtb.dtb" "$_irf" "$_img" --expect-release "$_rel" 2>&1) ||
         { rm -f "$_img"; die "install $_rel: pack failed: $_out"; }
     _id=$(echo "$_out" | sed -n 's/.*ID=\([0-9a-f]*\).*/\1/p') _size=$(echo "$_out" | sed -n 's/.*SIZE=\([0-9]*\).*/\1/p')
     _sha=$(echo "$_out" | sed -n 's/.*SHA=\([0-9a-f]*\).*/\1/p')
     [ -n "$_id" ] && [ -n "$_size" ] && [ -n "$_sha" ] || { rm -f "$_img"; die "install $_rel: pack said '$_out'"; }
-    for _d in "$TESTDEV" "$DEFDEV"; do
+    _tsl=$TESTDEV; [ "$HANDOFF" != blocklist ] || _tsl=''     # this hand-off has no test slot
+    for _d in "$_tsl" "$DEFDEV"; do
+        [ -n "$_d" ] || continue
         _ds=$(gk_devsize "$_d")
         [ -n "$_ds" ] && [ "$_size" -le "$_ds" ] || { rm -f "$_img"; die "install $_rel: the image ($_size bytes) doesn't fit $_d (${_ds:-unreadable})"; }
     done
@@ -434,11 +632,10 @@ gk_install() {
 
     # the record, then the candidate
     _cmd=$(gk_hdr_cmdline "$_img")
+    if [ "$HANDOFF" = blocklist ]; then gk_bl_install; return; fi
     mv -f "$_img" "$BI/$_id.img.tmp" && sync && mv -f "$BI/$_id.img.tmp" "$BI/$_id.img" ||
         { rm -f "$_img" "$BI/$_id.img.tmp"; die "install $_rel: cannot write $BI/$_id.img"; }
-    printf 'format=1\nid=%s\nrelease=%s\nsize=%s\nsha256=%s\nstaged=%s\nreason=\ndevice=%s\nkernel=%s\ndtb=%s\ninitramfs=%s\ncmdline=%s\nboard=%s\n' \
-        "$_id" "$_rel" "$_size" "$_sha" "$(gk_utc)" "${_dtb%@*}" "$_rel" "$_dtb" "$_ird" "$_cmd" "$(gk_sha "$BOARD")" |
-        gs_write "$BI/$_id.manifest" || die "install $_rel: cannot write $BI/$_id.manifest"
+    gk_manifest
     _old=$(k candidate_img)
     if [ -n "$_old" ]; then
         log "install $_rel: replaces the candidate $(k candidate) ($_old), whose trial never started"
@@ -455,6 +652,42 @@ gk_install() {
     else kset "candidate=$_rel" "candidate_img=$_id" tries=1; fi
     gk_prune
     log "install $_rel: the candidate, on the test slot (image $_id, $_size bytes)"
+    echo "glassine-bootimg: kernel $_rel is ready. Reboot to test it (glassine-bootimg reboot-test)."
+}
+
+# gk_manifest: state/bootimg/ID.manifest for the image gk_install just packed
+gk_manifest() {
+    printf 'format=1\nid=%s\nrelease=%s\nsize=%s\nsha256=%s\nstaged=%s\nreason=\ndevice=%s\nkernel=%s\ndtb=%s\ninitramfs=%s\ncmdline=%s\nboard=%s\n' \
+        "$_id" "$_rel" "$_size" "$_sha" "$(gk_utc)" "${_dtb%@*}" "$_rel" "$_dtb" "$_ird" "$_cmd" "$(gk_sha "$BOARD")" |
+        gs_write "$BI/$_id.manifest" || die "install $_rel: cannot write $BI/$_id.manifest"
+}
+
+# gk_bl_install: the rest of gk_install for the block-list hand-off
+# (docs/blocklist.md, "install"), with what it packed in _img. The record is
+# cleared before anything it could name changes, and written before the
+# candidate keys, so a cut install leaves at worst a record and no candidate.
+gk_bl_install() {
+    _fr=$(df -Pk "$SYS" | awk 'NR == 2 {print $4}')
+    [ -n "$_fr" ] && [ $((_fr * 1024)) -ge "$_size" ] ||
+        { rm -f "${_img:?}"; die "install $_rel: no room on the system partition for the image ($_size bytes), which an accept copies there"; }
+    gk_bl_clear "$DEFDEV" || { rm -f "${_img:?}"; die "install $_rel: cannot clear the record; nothing installed"; }
+    _old=$(k candidate_img)
+    if [ -n "$_old" ]; then
+        log "install $_rel: replaces the candidate $(k candidate) ($_old), whose trial never started"
+        echo "glassine-bootimg: kernel $_rel replaces the candidate $(k candidate)"
+    fi
+    kset candidate= candidate_img= tries= requested=
+    gk_bl_store "$_id" "$_size" "$_sha" "$_img" ||
+        { rm -f "${_img:?}"; gk_prune; die "install $_rel: cannot write $GK_BLK/$_id.img: there is no kernel candidate now"; }
+    gk_manifest
+    if ! gk_bl_record "$_id" "$_size" "$_sha"; then
+        gk_prune
+        die "install $_rel: the record could not be made: there is no kernel candidate now (the default image is untouched)"
+    fi
+    if [ "$(k deferred)" = "$_rel" ]; then kset "candidate=$_rel" "candidate_img=$_id" tries=1 deferred= deferred_dtb= deferred_initramfs=
+    else kset "candidate=$_rel" "candidate_img=$_id" tries=1; fi
+    gk_prune
+    log "install $_rel: the candidate, on userdata (image $_id, $_size bytes)"
     echo "glassine-bootimg: kernel $_rel is ready. Reboot to test it (glassine-bootimg reboot-test)."
 }
 
@@ -488,6 +721,9 @@ gk_cancel() {
     _c=$(gs_kernel_candidate "$K")
     [ -n "$_c" ] || { echo "glassine-bootimg: no kernel candidate"; return 0; }
     _trial=''; [ "$(run_id)" = "$(k candidate_img)" ] && _trial=1
+    if [ "$HANDOFF" = blocklist ]; then
+        gk_bl_clear "$DEFDEV" || log "cancel: the record could not be cleared (harmless: nothing sets the reboot reason for it)"
+    fi
     gs_kernel_cancel "$K" || die "cannot write $K"
     log "cancel: the kernel candidate $_c is dropped; its files stay"
     if [ -n "$_trial" ]; then
@@ -506,13 +742,23 @@ gk_reboot_test() {
     [ "$(run_id)" != "$_ci" ] || die "reboot-test: this is the candidate's trial boot already"
     _why=$(gk_deploy_trial)
     [ -z "$_why" ] || die "reboot-test: $_why is waiting for its trial: one trial at a time"
-    gk_slot_holds "$TESTDEV" "$_ci" || die "reboot-test: the test slot doesn't hold the candidate's image any more; run glassine-bootimg retry"
+    _reason=$TEST_REBOOT_REASON
+    if [ "$HANDOFF" = blocklist ]; then
+        _reason=$BLOCKLIST_REBOOT_REASON
+        gk_bl_mode || die "reboot-test: the running kernel has no reboot mode '$_reason'"
+        gk_power_ok || die "reboot-test: $GK_POWER, below $SWITCH_MIN_CAPACITY % without a charger"
+        _v=$(gk_bl_verify "$_ci"); _vc=$?
+        [ "$_vc" != 2 ] || die "reboot-test: the record can't be checked: $_v"
+        [ "$_vc" = 0 ] || die "reboot-test: $_v; run glassine-bootimg install again"
+    else
+        gk_slot_holds "$TESTDEV" "$_ci" || die "reboot-test: the test slot doesn't hold the candidate's image any more; run glassine-bootimg retry"
+    fi
     echo "$_ci" > "$GK_REQUESTED" || die "cannot write $GK_REQUESTED"
     kset "requested=$_ci"
     log "reboot-test: $(k candidate) ($_ci)"
     [ -n "${GLASSINE_BI_NOREBOOT:-}" ] && return 0
     exec 9>&-       # the lock released: the shutdown's own steps (the switch) take it
-    exec "$REBOOT_CLEAN" "$TEST_REBOOT_REASON"
+    exec "$REBOOT_CLEAN" "$_reason"
 }
 
 gk_retry() {
@@ -524,9 +770,17 @@ gk_retry() {
     [ -n "$_id" ] || die "retry: no kernel candidate and no failed one"
     _why=$(gk_deploy_trial)
     [ -z "$_why" ] || die "retry: $_why is waiting for its trial: one trial at a time"
-    gk_img_ok "$_id" || die "retry: $BI/$_id.img is gone or damaged; install the kernel again"
     _rel=$(man "$_id" release)
-    if ! gk_slot_holds "$TESTDEV" "$_id"; then
+    if [ "$HANDOFF" = blocklist ]; then
+        gk_bl_file_ok "$_id" || die "retry: $GK_BLK/$_id.img is gone or damaged; install the kernel again"
+        if ! gk_bl_record "$_id" "$(man "$_id" size)" "$(man "$_id" sha256)"; then
+            [ "$_from" = failed ] && die "retry: the record could not be made; $_rel stays failed"
+            kset candidate= candidate_img= tries= requested=
+            die "retry: the record could not be made: there is no kernel candidate now"
+        fi
+    elif ! gk_img_ok "$_id"; then
+        die "retry: $BI/$_id.img is gone or damaged; install the kernel again"
+    elif ! gk_slot_holds "$TESTDEV" "$_id"; then
         log "retry: the test slot doesn't hold image $_id; writing it again"
         if ! gk_put "$BI/$_id.img" "$TESTDEV"; then
             [ "$_from" = failed ] && die "retry: writing the test slot failed; $_rel stays failed"
@@ -560,6 +814,10 @@ gk_accept() {
 # stays).
 gk_accept_now() {
     _ci=$(k candidate_img)
+    if [ "$HANDOFF" = blocklist ] && ! gk_bl_copy "$_ci"; then
+        gk_fail "copy to the system partition"
+        return 1
+    fi
     gk_img_ok "$_ci" || { log "accept: $BI/$_ci.img is gone or damaged; nothing written"; return 1; }
     gk_write_default "$_ci" accept
     case $? in
@@ -597,6 +855,7 @@ gk_complete() {
         ;;
     esac
     rm -f "$GK_STARTED"
+    [ "$HANDOFF" != blocklist ] || gk_bl_settle
     gk_prune
     log "$_op of image $_w completed"
 }
@@ -605,6 +864,9 @@ gk_rollback() {
     gk_handoff
     gk_open rw
     [ -z "$(k writing)" ] || die "rollback: a write of the default slot is unfinished (image $(k writing))"
+    if [ "$HANDOFF" = blocklist ]; then
+        gk_power_ok || die "rollback: $GK_POWER, below $SWITCH_MIN_CAPACITY % without a charger"
+    fi
     _pi=$(k previous_img) _p=$(k previous)
     [ -n "$_pi" ] && gk_img_ok "$_pi" || die "rollback: no previous image"
     [ -z "$_p" ] || [ -d "$SYS/modules/$_p" ] || log "rollback: warning: $SYS/modules/$_p is gone (that kernel boots without modules)"
@@ -663,8 +925,21 @@ gk_requested() {
         kset requested=
         log "promote: the trial boot left requested set (the initramfs took no try): cleared"
     elif [ "$(k tries)" = 1 ]; then
-        gk_fail no-boot
+        gk_fail "$(gk_no_boot_reason "$_ci")"
     fi
+}
+
+# gk_no_boot_reason ID: why a requested trial never reached the initramfs. On
+# the block-list hand-off, `handoff` if the bootloader said it rejected the
+# record, or the record or its blocks no longer pass; if they pass, or can't be
+# checked, no-boot. Only a label: the boot that fell back has already happened.
+gk_no_boot_reason() {
+    if [ "$HANDOFF" != blocklist ]; then echo no-boot; return 0; fi
+    if grep -qE 'glassine[._]handoff_err=' "$CMDLINE"; then echo handoff; return 0; fi
+    _nv=$(gk_bl_verify "$1"); _nc=$?
+    [ "$_nc" != 1 ] || { log "promote: the hand-off of image $1 can't have worked: $_nv"; echo handoff; return 0; }
+    [ "$_nc" != 2 ] || log "promote: the hand-off of image $1 can't be checked: $_nv"
+    echo no-boot
 }
 
 # gk_trial_root: why this trial didn't run the system it must prove (empty:
@@ -730,7 +1005,12 @@ gk_deferred() {
 
 gk_promote() {
     gk_open         # nothing to do (most boots): no lock, nothing written
-    [ -n "$(k writing)$(k requested)$(k candidate_img)$(k deferred)" ] || return 0
+    _srec=''
+    if [ "$HANDOFF" = blocklist ]; then     # FR-010: read only, ash only
+        _srec=$(gk_bl_id "$DEFDEV" 2>/dev/null) || _srec=''
+        [ "$_srec" != none ] && [ "$_srec" != "$(k candidate_img)" ] || _srec=''
+    fi
+    [ -n "$_srec$(k writing)$(k requested)$(k candidate_img)$(k deferred)" ] || return 0
     gk_open rw
     gk_writing || exit 1
     # reboot-test ran on this boot and the shutdown is under way: its
@@ -741,6 +1021,7 @@ gk_promote() {
     fi
     gk_requested
     gk_verdict || exit 1
+    [ "$HANDOFF" != blocklist ] || gk_bl_settle
     gk_deferred
 }
 

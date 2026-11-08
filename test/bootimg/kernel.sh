@@ -67,7 +67,7 @@ cp $K $W/k0
 bset HANDOFF ''
 ok "HANDOFF empty: install refused, kernel updates are paused, nothing written" "! $B install 7.1.0-a --dtb dev1@aaaa --initramfs c1 2>$W/err && grep -q 'kernel updates are paused' $W/err && cmp -s $K $W/k0 && [ ! -e $BI ]"
 bset HANDOFF blocklist
-ok "HANDOFF=blocklist: refused until hub#56" "! $B install 7.1.0-a --dtb dev1@aaaa --initramfs c1 2>$W/err && grep -q 'not built yet (hub#56)' $W/err && cmp -s $K $W/k0"
+ok "HANDOFF=blocklist, its record partition not the default slot: refused" "! $B install 7.1.0-a --dtb dev1@aaaa --initramfs c1 2>$W/err && grep -q 'not the default slot' $W/err && cmp -s $K $W/k0"
 bset HANDOFF kexec
 ok "an unknown HANDOFF: refused" "! $B install 7.1.0-a --dtb dev1@aaaa --initramfs c1 2>$W/err && grep -q \"unknown HANDOFF 'kexec'\" $W/err && cmp -s $K $W/k0"
 bset HANDOFF bootpart-test

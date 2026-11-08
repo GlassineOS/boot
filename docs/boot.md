@@ -20,7 +20,7 @@ image):
 | `ROOT_LAYOUT` | `plain` | `plain` or `deployments` |
 | `USERDATA_PART` | — | GPT name of userdata (deployments) |
 | `USERDATA_PREFIX` | `media/glassine` | the directory on userdata, the same value as deploy.conf's |
-| `HANDOFF` | empty | how a new kernel reaches the bootloader in the deployments layout: `bootpart-test`, `blocklist` (not built), empty = kernel updates paused ([kernel-artifacts.md](kernel-artifacts.md)) |
+| `HANDOFF` | empty | how a new kernel reaches the bootloader in the deployments layout: `bootpart-test`, `blocklist` (no board sets it yet: [blocklist.md](blocklist.md#board-keys)), empty = kernel updates paused ([kernel-artifacts.md](kernel-artifacts.md)) |
 | `BLOCKLIST_RECORD_PART`, `BLOCKLIST_REBOOT_REASON`, `BLOCKLIST_ABL_PART`, `BLOCKLIST_ABL_SHA256` | — | the `blocklist` hand-off ([blocklist.md](blocklist.md#board-keys)) |
 | `DEVICE` | — | the device name of the board's device trees (`<device>@<id>`), for `glassine-bootimg install` |
 
