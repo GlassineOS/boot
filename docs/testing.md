@@ -44,6 +44,42 @@ overlay), and the agent in the base (`test/qemu/agent.sh`) drives each stage. Th
 virt kernel has no watchdog driver, so the watchdog stop around the resume is covered by
 `test/root` only.
 
+`test/qemu/test.sh --base FULL.btrfs.zst [--base2 DELTA.btrfs.zst] [--base2-file PATH]`
+boots an outside base instead, as an image builder makes it (GlassineOS/images runs it
+as its acceptance test). The harness keeps its kernel, modules (a `modules/<release>`
+subvolume) and initramfs (the deployments board configuration). The base is received
+with `btrfs receive` into `bases/` (read-only, with a received UUID, as on a device)
+and never changed. What the test adds goes into the first deployment's own build layer
+(`build-base.sh`): the agent (`agent-base.sh`, as `/usr/local/sbin/qtest-agent`), its
+OpenRC service and runlevel link, two health checks, the base's `deploy.conf` with the
+test disk's devices and `ACCEPT_AFTER=40`, a guard that keeps `bluetooth` from starting
+(the virt kernel has no Bluetooth, and a crashed service would block every accept), a
+pass in place of the base's health checks of its graphical session (`*desktop*`: no
+panel in the VM), and a migrate list naming all of these, so each switch carries them into the next
+deployment like any other setting. The guest runs the base's own `glassine-deploy` and
+has QEMU user networking for the live package. Boots, each followed by a read-only
+check of both file systems from the host (`btrfs check`, `e2fsck -fn`, ext4
+`needs_recovery`):
+
+1. d1 (the candidate, no current yet) comes up: booted, `/` the read-only overlay of
+   its build layer and base, the machine id filled in, every enabled service of
+   sysinit, boot and default started and none crashed; the boot-success step accepts
+   it. `apk add tree` live through the base's wrapper, and `packages` names it; a file
+   of the base's migrate list and an account changed; the delta received; `stage`
+   replays the package; a user shutdown switches.
+2. The staged deployment boots as the candidate on the second base: the second base's
+   file, the migrate list, the machine id and the account carried, the package
+   replayed; accepted; `rollback`.
+3. d1 again, with its own state; accepted; `reset`; a user shutdown.
+4. The reset: the migrate list kept, the package gone; accepted; another `reset`,
+   marked to fail its health check.
+5. and 6. That candidate is not accepted (its two tries).
+7. The reset boots as current again, the candidate is marked failed.
+
+A boot that does not power off within `QTEST_BOOT_TIMEOUT` fails, and the run stops
+after the first boot with a failed check (`--keep-going` goes on). Hibernation needs
+this repository's code in the base, so it stays on the default path.
+
 ## Proven where
 
 | Behaviour | Host test | Hardware |
