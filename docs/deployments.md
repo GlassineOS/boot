@@ -35,6 +35,8 @@ system partition (btrfs, top level)
 userdata (ext4) under USERDATA_PREFIX (default media/glassine)
 ├── home/                       /home of every deployment (below), root:root 0755
 ├── flatpak/                    /var/lib/flatpak of every deployment, root:root 0755
+├── devmode/                    the developer folder, root:root 0700: authorized_keys and
+│                               the SSH host keys (README, "Developer mode")
 ├── deployments/<id>/
 │   ├── meta                    key=value (below)
 │   ├── build/                  the layer built for this deployment; read-only once it exists
@@ -60,7 +62,9 @@ init system remounts it read-write.
 Home (`/home`) and Flatpak's system data (`/var/lib/flatpak`) are the directories
 `home/` and `flatpak/` under `USERDATA_PREFIX`, outside the deployments, so every
 deployment sees the same files and no reset touches them (`reset` and `reset --full`
-keep them; no base or migrate list carries them).
+keep them; no base or migrate list carries them). The same holds for the developer
+folder `devmode/` (`root:root`, `0700`), which `glassine-devmode` reads and makes on its
+first start with `glassine.devmode=usb` (README, "Developer mode"); nothing binds it.
 
 - **Who binds them:** the initramfs, while it assembles the booted deployment's root
   (`gr_storage` in `lib/glassine-root.sh`, from `gr_boot`), before `switch_root`, so they
@@ -186,7 +190,7 @@ glassine-deploy accept ID
 | `select ID` | ID becomes the candidate with 2 tries; selecting current cancels a candidate. Never makes an untried deployment current. |
 | `rollback` | `select` previous |
 | `hibernate-invalidate` | turns a hibernate image back into a plain swap file (that session is lost) |
-| `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Neither touches home or Flatpak's data (`home/`, `flatpak/` above). |
+| `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Neither touches home, Flatpak's data or the developer folder (`home/`, `flatpak/`, `devmode/` above). |
 | `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. |
 | `stage BASE` flags | `--no-replay` the bare base, `--without NAME` (repeatable) leaves an added package out, `--accept-downgrades` takes lower versions. Exit 7: the replay needs one of these; nothing staged. |
 | `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. The only verb that needs btrfs-progs (and zstd for `.zst`). |
