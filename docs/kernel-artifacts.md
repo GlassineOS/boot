@@ -55,8 +55,15 @@ it right whatever the clone has (tags or not):
 - The build sets `LOCALVERSION=-<flavor>.<cfg6>-g<commit12>` itself, with
   `CONFIG_LOCALVERSION_AUTO` off and `CONFIG_LOCALVERSION` empty. `scripts/setlocalversion`
   then appends nothing.
-- `<flavor>` names the SoC (`sdm660`), never a device or a person; a device-specific config
-  gets its own flavor.
+- `<flavor>` names the SoC (`sdm660`), never a device or a person. One kernel serves every
+  device on a SoC. Its configuration has three parts: the SoC's own (SoC and PMIC support),
+  GlassineOS's (policy, the same on every SoC), and each device's board drivers, **as modules
+  only** (built in only where a driver is needed before modules can load, with the reason
+  beside it). A device's drivers don't make a flavor of their own: the other devices on the
+  SoC carry its modules and never load them, and adding a device's drivers changes the
+  configuration, so the release, for all of them. A device whose configuration needs more
+  than its own drivers (a different SoC option) gets its own flavor, named after what differs,
+  never after the device.
 - `<cfg6>`: the first 6 hex digits of the sha256 of these bytes, in this order: the final
   `.config` as the build left it, then three lines, each ended by a newline:
   - `builder=<image>@sha256:<64 hex>`: the builder image as the build pins it, by the
