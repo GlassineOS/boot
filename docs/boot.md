@@ -47,12 +47,17 @@ steps from `lib/glassine-root.sh`:
    - The deployment is picked (one try used) and assembled with its modules
      subvolume for `uname -r`. On a trial or a finishing boot, current is assembled
      instead, with no pick and no deployment try.
+   - The person's storage is bound into it: `home/` and `flatpak/` under the userdata
+     prefix on `/home` and `/var/lib/flatpak`, and `/var/tmp` made a shared bind of
+     itself (`gr_storage`; [deployments.md](deployments.md#the-persons-storage)). A
+     bind that fails leaves the deployment's own directory and is reported in
+     `/run/glassine/storage`; the boot goes on.
    - Fallbacks:
      - a candidate that does not assemble is marked failed;
      - after that come current, then previous;
      - without userdata, or with no deployment that assembles, a bare boot: the base
-       read-only with a tmpfs upper (nothing kept). The base is current's, or else the
-       last by name.
+       read-only with a tmpfs upper (nothing kept, nothing bound from userdata; only
+       `/var/tmp` is made shared). The base is current's, or else the last by name.
    - A state format newer than the initramfs is read but never written, and the boot is
      neither a trial nor a finishing boot.
 4. The boot's pstore save, the log and the developer hooks run. `/var` is writable.
@@ -63,7 +68,7 @@ steps from `lib/glassine-root.sh`:
      `/run/glassine/{system,userdata,root}`.
    - The booted id is written to `/run/glassine/booted`, and `trial`, `finishing` or
      nothing to `/run/glassine/kernel-boot` (`glassine-deploy-accept` skips the first
-     two).
+     two). What the storage step did goes to `/run/glassine/storage`.
    - The lock is released.
 5. `switch_root`.
 

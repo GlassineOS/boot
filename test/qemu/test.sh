@@ -8,7 +8,12 @@
 #      hibernate
 #   3  the initramfs resumes it (memory state kept); hibernate again
 #   4  glassine.noresume: the image is cancelled, a fresh boot of the
-#      accepted deployment
+#      accepted deployment; a full reset, a user shutdown
+#   5  the full reset as the candidate: home and Flatpak's data kept; then
+#      flatpak/ on userdata made a file
+#   6  the storage step can't make flatpak/: logged, reported, the boot goes on
+# Every boot checks the person's storage (home/, flatpak/ bound from
+# userdata, /var/tmp shared, d1's own /home hidden and reported).
 # The virt kernel has no watchdog driver, so the watchdog stop around the
 # resume write is covered by test/root only.
 # Slow (minutes per boot, emulated) and not part of `make check`. Needs
@@ -37,9 +42,11 @@ boot 1
 boot 2
 boot 3
 boot 4 glassine.noresume
+boot 5
+boot 6
 pass=$(cat "$OUT"/boot*.log | grep -ac 'QTEST ok' || true)
 fail=$(cat "$OUT"/boot*.log | grep -ac 'QTEST FAIL' || true)
-done=$(grep -ac 'QTEST DONE' "$OUT/boot4.log" || true)
-sw=$(grep -ac 'glassine-switch: .* boots next' "$OUT/boot1.log" || true)
+done=$(grep -ac 'QTEST DONE' "$OUT/boot6.log" || true)
+sw=$(cat "$OUT/boot1.log" "$OUT/boot4.log" | grep -ac 'glassine-switch: .* boots next' || true)
 echo "qemu: $pass ok, $fail FAIL, switch at shutdown: $sw, done: $done"
-[ "$fail" = 0 ] && [ "$done" = 1 ] && [ "$sw" = 1 ] && [ "$pass" -ge 25 ]
+[ "$fail" = 0 ] && [ "$done" = 1 ] && [ "$sw" = 2 ] && [ "$pass" -ge 36 ]

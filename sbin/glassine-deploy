@@ -48,8 +48,9 @@
 # or nothing after reset --full, merges the user accounts into the new base's
 # (lib/glassine-accounts.sh), and only then makes it the candidate; an
 # interrupted switch selects nothing and is redone in full the next time. So
-# changes made between the reset and the shutdown are carried. Home is on
-# userdata, outside the deployments, and never touched. accept ID is the
+# changes made between the reset and the shutdown are carried. Home and
+# Flatpak's system data are on userdata, outside the deployments, and never
+# touched. accept ID is the
 # boot-success service's: the booted candidate ID becomes current.
 #
 # --porcelain: the first line is "glassine-deploy 1" (the output format
@@ -204,10 +205,14 @@ ud_mounted() { is_mounted "$USERDATA_MNT"; }
 # /data), or empty; compares the resolved device nodes
 mounted_at() {
     _rd=$(readlink -f "$1" 2>/dev/null) || return 0
-    while read -r _src _mp _rest; do
+    # only a mount of the file system's top directory (mountinfo's root "/"),
+    # never a bind of a directory inside it (the person's /home is one)
+    while read -r _id _par _mm _root _mp _rest; do
+        [ "$_root" = / ] || continue
+        _src=${_rest#* - }; _src=${_src#* }; _src=${_src%% *}
         case "$_src" in /*) ;; *) continue ;; esac
         [ "$(readlink -f "$_src" 2>/dev/null)" = "$_rd" ] && { printf '%b\n' "$_mp"; return 0; }
-    done < "${GLASSINE_DEPLOY_MOUNTS:-/proc/mounts}"
+    done < "${GLASSINE_DEPLOY_MOUNTINFO:-/proc/self/mountinfo}"
 }
 
 # userdata mounted somewhere else than USERDATA_MNT: use that mount. Never
@@ -354,6 +359,26 @@ emit() {
     REC=''
 }
 
+# storage_status: the person's storage as this boot left it (the initramfs's
+# RUN_DIR/storage; empty outside a deployments boot): home=, flatpak=
+# (bound, failed, or empty on a bare boot or without the file), <name>_error=,
+# <name>_hidden=yes when the deployment's own directory under the bind holds
+# files (RUN_DIR/root is the merged root without the binds), vartmp=
+storage_status() {
+    _sf=$RUN_DIR/storage
+    for _e in home:home flatpak:var/lib/flatpak; do
+        _n=${_e%%:*} _h=''
+        _v=$(gs_kv "$_sf" "$_n" 2>/dev/null)
+        if [ -d "$RUN_DIR/root/${_e#*:}" ]; then
+            if [ -n "$(ls -A "$RUN_DIR/root/${_e#*:}" 2>/dev/null)" ]; then _h=yes; else _h=no; fi
+        fi
+        out "$_n" "$_v"
+        [ "$_v" != failed ] || out "${_n}_error" "$(gs_kv "$_sf" "${_n}_error")"
+        out "${_n}_hidden" "$_h"
+    done
+    out vartmp "$(gs_kv "$_sf" vartmp 2>/dev/null)"
+}
+
 cmd_status() {
     system_open || die "cannot mount $SYSTEM_DEV read-only"
     rc=0
@@ -387,6 +412,7 @@ cmd_status() {
         if [ -e "$USERDATA_MNT/$_k" ]; then _kv=yes; else _kv=no; fi
     fi
     out twrp_keep "$_kv"
+    storage_status
     out swapfile "$SWAPFILE"
     out guard "$GUARD"
     [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
@@ -552,9 +578,9 @@ cmd_reset() {
     [ -n "$base" ] && [ -d "$SYSTEM_MNT/bases/$base" ] || die "deployment $cur: base ${base:-?} is missing"
     when="at the next shutdown"; [ "$NOW" = 1 ] && when=now
     if [ "$FULL" = 1 ]; then
-        confirm "Full reset: a new deployment on base $base with nothing carried over (accounts, Wi-Fi, Bluetooth, settings, packages; home stays), prepared $when?"
+        confirm "Full reset: a new deployment on base $base with nothing carried over (accounts, Wi-Fi, Bluetooth, settings, packages); your home and Flatpak apps stay, prepared $when?"
     else
-        confirm "Reset system: a new deployment on base $base that keeps only the migrate list (accounts, Wi-Fi, Bluetooth, settings; your packages and edits go), prepared $when?"
+        confirm "Reset system: a new deployment on base $base that keeps only the migrate list (accounts, Wi-Fi, Bluetooth, settings; your packages and edits go); your home and Flatpak apps stay, prepared $when?"
     fi
     kind=reset carry=migrate; [ "$FULL" = 1 ] && kind=reset-full carry=none
     [ "$NOW" = 0 ] || kernel_gate cancel

@@ -450,6 +450,8 @@ rm -f $W/run/booted $W/shim/swapon $W/shim/swapoff $W/shim/sync
 
 # --- the boot steps (initramfs): resume or invalidate, boot, carry ---------------
 CUR=$(gr_would_pick $S/state)
+# a file in the deployment's own /home, which the storage bind must hide, never move
+mkdir -p $U/deployments/$CUR/switch/home && echo own > $U/deployments/$CUR/switch/home/own-file
 debugfs_w() { printf "$1" > $W/dbg; debugfs -w -f $W/dbg $UDEV >/dev/null 2>&1; }
 umount $W/udmnt $S          # the initramfs starts with nothing mounted
 GR_SYSPOWER=$W/power GR_TMP=$W/grtmp; mkdir -p $GR_SYSPOWER
@@ -487,6 +489,15 @@ ok "gr_boot: the stale hibernate guard removed" "[ ! -e $R.ud/$P/swap/hibernate.
 ok "gr_carry: mounts under /run/glassine, booted recorded, lock released" "gr_carry $R && mountpoint -q $R/run/glassine/system && mountpoint -q $R/run/glassine/userdata && mountpoint -q $R/run/glassine/root && ! mountpoint -q $R.sys && [ \"\$(cat $R/run/glassine/booted)\" = $CUR ] && flock -n $R/run/glassine/system/state/.lock true"
 ok "after the carry: / still read-only, /etc writable" "ro $R/usr/bin/x && echo c > $R/etc/carried && [ -e $R/run/glassine/userdata/$P/deployments/$CUR/switch/etc/carried ]"
 sed -e "s|^SYSTEM_MNT=.*|SYSTEM_MNT=$R/run/glassine/system|" -e "s|^USERDATA_MNT=.*|USERDATA_MNT=$R/run/glassine/userdata|" -e "s|^RUN_DIR=.*|RUN_DIR=$R/run/glassine|" $W/deploy.conf > $W/deploy3.conf
+# the person's storage (FR-014..019)
+RU=$R/run/glassine/userdata/$P
+shared() { awk -v m="$1" '$5 == m { for (i = 7; $i != "-"; i++) if ($i ~ /^shared:/) s = 1 } END { exit !s }' /proc/self/mountinfo; }
+ok "storage: home/ and flatpak/ made on userdata (root:root 0755), bound on /home and /var/lib/flatpak" "mountpoint -q $R/home && mountpoint -q $R/var/lib/flatpak && [ \"\$(stat -c '%u:%g %a' $RU/home)\" = '0:0 755' ] && [ \"\$(stat -c '%u:%g %a' $RU/flatpak)\" = '0:0 755' ]"
+ok "storage: a write in /home and /var/lib/flatpak lands on userdata, not in the deployment" "mkdir -p $R/home/1000 && echo h > $R/home/1000/f && echo a > $R/var/lib/flatpak/app && [ -e $RU/home/1000/f ] && [ -e $RU/flatpak/app ] && [ ! -e $RU/deployments/$CUR/switch/home/1000 ] && [ ! -e $RU/deployments/$CUR/switch/var/lib/flatpak/app ]"
+ok "storage: the deployment's own /home hidden by the bind, not moved or deleted" "[ ! -e $R/home/own-file ] && [ \"\$(cat $RU/deployments/$CUR/switch/home/own-file)\" = own ]"
+ok "storage: /var/tmp a shared bind of itself, its files in the deployment's /var" "shared $R/var/tmp && echo t > $R/var/tmp/t && [ -e $RU/deployments/$CUR/switch/var/tmp/t ]"
+ok "storage: recorded for status in /run/glassine/storage" "[ \"\$(cat $R/run/glassine/storage | tr '\n' ' ')\" = 'home=bound flatpak=bound vartmp=shared ' ]"
+ok "storage: status reports the binds and the non-empty hidden /home" "GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G status --porcelain | grep -q '	home=bound	home_hidden=yes	flatpak=bound	flatpak_hidden=no	vartmp=shared	'"
 ok "the system's glassine-deploy works on the carried mounts (select = a state write)" "GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G select d1 >/dev/null && [ \"\$(gs_kv $R/run/glassine/system/state/deploy candidate)\" = d1 ] && GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G select $CUR >/dev/null"
 # the shutdown switch in the running system: OpenRC's localmount has unmounted
 # /run/glassine/*; a mount on top of / must not leak into the carried state
@@ -496,6 +507,7 @@ mount -t tmpfs tmpfs $R/var/lib/bluetooth && echo submount > $R/var/lib/bluetoot
 umount $R/run/glassine/root $R/run/glassine/userdata $R/run/glassine/system
 ok "switch in the running deployment: carries from its live root, selects, leaves nothing mounted" "GLASSINE_DEPLOY_CONF=$W/deploy3.conf GLASSINE_DEPLOY_ROOT=$R $G switch >/dev/null && LSW=$U/deployments/$LS/switch && mount -t ext4 $UDEV $W/udmnt && [ \"\$(cat $W/udmnt/$P/deployments/$LS/switch/etc/eink/eink.conf)\" = live ] && ! grep -q 'view\.' /proc/mounts"
 ok "switch in the running deployment: a mount on top of / is not carried" "[ -e $W/udmnt/$P/deployments/$LS/switch/var/lib/bluetooth/k ] && [ ! -e $W/udmnt/$P/deployments/$LS/switch/var/lib/bluetooth/fromsubmount ]"
+ok "switch in the running deployment: home and Flatpak's data not carried (the binds), still on userdata" "[ ! -e $W/udmnt/$P/deployments/$LS/switch/home/1000 ] && [ ! -e $W/udmnt/$P/deployments/$LS/switch/var/lib/flatpak/app ] && [ -e $W/udmnt/$P/home/1000/f ]"
 umount $W/udmnt $R/var/lib/bluetooth
 mkdir -p $R/run/glassine/system $R/run/glassine/userdata && mount -t btrfs $SD $R/run/glassine/system && mount -t ext4 $UDEV $R/run/glassine/userdata
 ok "after the switch: the staged one is the candidate" "[ \"\$(gs_kv $R/run/glassine/system/state/deploy candidate)\" = $LS ]"
@@ -538,7 +550,18 @@ ok "gr_carry, no kernel trial: kernel-boot empty" "gr_carry $R && [ -e $R/run/gl
 echo version=1 > $R/run/glassine/system/state/format; rm $R/run/glassine/system/state/kernel
 gs_update $R/run/glassine/system/state/deploy candidate= tries=0
 gr_boot_umount $R
+# storage failures: flatpak/ can't be created (a file of that name), the /home bind fails
+mount -t ext4 $UDEV $W/udmnt && echo notadir > $U/flatpak.tmp && mv $U/flatpak $W/flatpak.saved && mv $U/flatpak.tmp $U/flatpak && umount $W/udmnt
+( mount() { case "$*" in *--bind*/home*) return 1 ;; esac; command mount "$@"; }; gr_boot $SD $UDEV $P $R 7.3.0 2>$W/blog && gr_carry $R )
+ok "storage: a failed bind and a directory that can't be made: logged, the deployment's own directories, the boot goes on" "[ \"\$(cat $R/run/glassine/booted)\" = $CUR ] && grep -q '/home: the bind on /home failed' $W/blog && grep -q '/var/lib/flatpak: cannot create flatpak/ on userdata' $W/blog && ! mountpoint -q $R/home && ! mountpoint -q $R/var/lib/flatpak && [ \"\$(cat $R/home/own-file)\" = own ]"
+ok "storage: nothing written into the userdata directories, the failures recorded" "[ \"\$(cat $R/run/glassine/userdata/$P/flatpak)\" = notadir ] && [ -z \"\$(ls -A $R/run/glassine/userdata/$P/home | grep -v '^1000\$')\" ] && grep -qx home=failed $R/run/glassine/storage && grep -qx 'home_error=the bind on /home failed' $R/run/glassine/storage && grep -qx flatpak=failed $R/run/glassine/storage && grep -qx vartmp=shared $R/run/glassine/storage"
+ok "storage: status reports the failures" "GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G status --porcelain | grep -q '	home=failed	home_error=the bind on /home failed	home_hidden=yes	flatpak=failed	flatpak_error=cannot create flatpak/ on userdata	'"
+rm -f $R/run/glassine/userdata/$P/flatpak && mv $W/flatpak.saved $R/run/glassine/userdata/$P/flatpak
+gr_boot_umount $R
+ok "storage: the next boot tries again and binds both" "gr_boot $SD $UDEV $P $R 7.3.0 2>$W/blog && mountpoint -q $R/home && mountpoint -q $R/var/lib/flatpak && [ -e $R/var/lib/flatpak/app ] && [ -e $R/home/1000/f ]"
+gr_boot_umount $R
 ok "gr_boot without userdata: bare on the newest base" "gr_boot $SD '' $P $R 7.3.0 2>$W/blog && [ \"\$GR_BOOTED\" = bare:b1 ] && [ \"\$(cat $R/etc/motd)\" = welcome ] && gr_carry $R && mountpoint -q $R/run/glassine/bare"
+ok "a bare boot binds nothing from userdata; /var/tmp shared" "! mountpoint -q $R/home && ! mountpoint -q $R/var/lib/flatpak && shared $R/var/tmp && [ \"\$(cat $R/run/glassine/storage)\" = vartmp=shared ]"
 gr_boot_umount $R
 mount -t btrfs $SD $S && mount -t ext4 $UDEV $W/udmnt
 ok "base unchanged after everything" "[ \"\$(basesum)\" = \"\$SUM0\" ]"
