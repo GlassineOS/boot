@@ -284,6 +284,16 @@ Otherwise the deployment stays staged for the next shutdown. The hook never stop
 shutdown. A hibernate never runs it, because the kernel powers off without the init
 system's shutdown.
 
+After it, the OpenRC service `glassine-mount-ro` (also in the `shutdown` runlevel, after
+`mount-ro`) makes userdata and then the system partition read-only, with every mount and
+bind of them (`gr_shutdown_ro` in `lib/glassine-root.sh`). OpenRC's own `mount-ro`
+can't: by then `localmount`'s stop has taken `/run/glassine/*` out of the mount table,
+while the root's overlay keeps both file systems alive, so userdata's ext4 journal would
+need a replay at every boot. The service mounts each device again (the same live file
+system), remounts that mount read-only and unmounts it. A file system that isn't alive
+(a bare boot never mounted userdata) is left alone. It never stops a shutdown; a file
+system it can't make read-only (still in use) is logged.
+
 ## Accepting a candidate
 
 `glassine-deploy-accept`, started by the OpenRC service `glassine-deploy-accept` in the
