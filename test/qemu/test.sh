@@ -21,7 +21,7 @@
 #      refreshed, gone; a grown list, its fill cut off after the manifest's
 #      rename (a power cut)
 #   9  complete after the cut; a shorter list, a name the kernel provides, a
-#      gap in a split image, a source on DEVICE_PART; a refresh cut off before
+#      split image missing a needed part, a source on DEVICE_PART; a refresh cut off before
 #      the manifest's rename
 #  10  the cut refresh done again at boot
 # The sources must read the same after every boot (only the test changes them).

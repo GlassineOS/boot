@@ -1,7 +1,9 @@
 #!/bin/sh
 # test/seed: glassine-device-seed on plain directories (GLASSINE_SEED_FAKE): a
 # directory stands in for DEVICE_PART's file system and one per source
-# partition. Runs in a plain Alpine container (busybox, as on the device).
+# partition, except one real vfat image on a loop device (8.3 names). Runs in
+# a privileged Alpine container (busybox, as on the device; python3 only makes
+# the synthetic .mdt files, mkmdt.py).
 set -u
 fails=0
 ok() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
@@ -23,7 +25,12 @@ rnd() { mkdir -p "$(dirname "$2")"; head -c "$1" /dev/urandom > "$2"; }
 mkdir -p $f/src/sysa/waveform $f/src/sysa/image $f/src/sysa/fw $f/src/vend
 wbf 4096 $f/src/sysa/waveform/panel.wbf
 rnd 3000 $f/src/sysa/fw/x.bin
-for p in mdt b00 b01 b02; do rnd 500 $f/src/sysa/image/dsp.$p; done
+# a split image (ELF32): index 0 not loadable, 1 the hash segment, 2 and 4 need
+# their parts, 3 has no file bytes (filesz 0), 5 lies inside the .mdt; the
+# source also has parts the headers don't need (b01, b03)
+mdt() { python3 /p/test/seed/mkmdt.py "$@"; }
+mdt $f/src/sysa/image/dsp.mdt 32 0,0,0,0,0 1,0x2000000,0,100,100 1,0,4096,500,500 1,0,0,0,1000 1,0,8192,500,500 1,0,0,52,52
+for p in b01 b02 b03 b04; do rnd 500 $f/src/sysa/image/dsp.$p; done
 rnd 200 $f/src/vend/BOARD.BIN
 printf 'DEVICE_PART=devdata\n' > $d/board
 printf 'release=7.3.0-test\nfirmware=gpuvendor/gpu.fw@0123456789abcdef other.fw@0123456789abcdef\n' > $d/kernel.manifest
@@ -71,8 +78,9 @@ ok "no format line: invalid" "seed; [ \$? = 2 ]"
 # --- the first seed ---
 list "$L_BASE"; newlog
 ok "first seed: exit 0, bound" "seed && [ -f $B/waveform.wbf ]"
-ok "first seed: copies match their sources (a directory, a rename, a split image, a vfat source)" "cmp -s $S/waveform.wbf $f/src/sysa/waveform/panel.wbf && cmp -s $S/firmware/vendor/a.bin $f/src/sysa/fw/x.bin && cmp -s $S/firmware/board.bin $f/src/vend/BOARD.BIN && for p in mdt b00 b01 b02; do cmp -s $S/firmware/vendor/dsp.\$p $f/src/sysa/image/dsp.\$p || exit 1; done"
-ok "manifest: format=1, one line per resolved file with its source and sha256" "[ \"\$(head -n1 $S/manifest)\" = format=1 ] && [ \$(lines) = 7 ] && [ \"\$(line firmware/vendor/dsp.b01)\" = \"firmware/vendor/dsp.b01 sysa:/image/dsp.b01 \$(sha $S/firmware/vendor/dsp.b01)\" ] && [ \"\$(line waveform.wbf)\" = \"waveform.wbf sysa:/waveform/panel.wbf \$(sha $S/waveform.wbf)\" ]"
+ok "first seed: copies match their sources (a directory, a rename, a split image, a vfat source)" "cmp -s $S/waveform.wbf $f/src/sysa/waveform/panel.wbf && cmp -s $S/firmware/vendor/a.bin $f/src/sysa/fw/x.bin && cmp -s $S/firmware/board.bin $f/src/vend/BOARD.BIN && for p in mdt b02 b04; do cmp -s $S/firmware/vendor/dsp.\$p $f/src/sysa/image/dsp.\$p || exit 1; done"
+ok "the split image: only the parts its program headers need (not the hash segment, no file bytes, inside the .mdt, unneeded)" "[ -z \"\$(ls $S/firmware/vendor | grep -v '^dsp\.\(mdt\|b02\|b04\)\$' | grep '^dsp\.')\" ]"
+ok "manifest: format=1, one line per resolved file with its source and sha256" "[ \"\$(head -n1 $S/manifest)\" = format=1 ] && [ \$(lines) = 6 ] && [ \"\$(line firmware/vendor/dsp.b04)\" = \"firmware/vendor/dsp.b04 sysa:/image/dsp.b04 \$(sha $S/firmware/vendor/dsp.b04)\" ] && [ \"\$(line waveform.wbf)\" = \"waveform.wbf sysa:/waveform/panel.wbf \$(sha $S/waveform.wbf)\" ]"
 ok "first seed: no temp files" "! find $S -name '.*' | grep -q ."
 ok "the firmware path: the seed's firmware/, no newline" "[ \"\$(cat $d/fwpath)\" = $B/firmware ] && [ \$(wc -c < $d/fwpath) = $(( ${#B} + 9 )) ]"
 ok "status: complete, every entry ok" "seed status > $d/st && [ \$(grep -c ' ok ' $d/st) = 4 ]"
@@ -111,16 +119,34 @@ ok "a grown list: the new file copied, nothing else read" "seed && cmp -s $S/fir
 list "$L_BASE"; rm $B; newlog
 ok "a shorter list: complete, nothing removed" "seed && [ -f $S/firmware/new.bin ] && [ -n \"\$(line firmware/new.bin)\" ] && [ -f $B/firmware/new.bin ]"
 
-# split images that fail as a whole
-mkdir -p $f/src/sysa/gap; for p in mdt b00 b02; do rnd 50 $f/src/sysa/gap/g.$p; done
-mkdir -p $f/src/sysa/nomdt; rnd 50 $f/src/sysa/nomdt/n.b00
-list "$L_BASE" "firmware/g.* sysa:/gap/g.*" "firmware/n.* sysa:/nomdt/n.*"; newlog
-ok "a split image with a gap, one with no .mdt: refused as a whole, nothing of either added" "seed; [ \$? = 1 ] && grep -q 'firmware/g.\\*: the parts of sysa:/gap/g.\\* have a gap (00 02)' $d/log && grep -q 'firmware/n.\\*: no sysa:/nomdt/n.mdt' $d/log && ! ls $S/firmware | grep -q '^[gn]\\.' && [ -z \"\$(line firmware/g.mdt)\$(line firmware/g.b00)\" ]"
-rm -rf $f/src/sysa/nomdt; rnd 50 $f/src/sysa/gap/g.b01; list "$L_BASE" "firmware/g.* sysa:/gap/g.*"; newlog
-ok "the gap filled: the image taken" "seed && [ -f $S/firmware/g.b01 ] && [ \$(line firmware/g.mdt | wc -l) = 1 ]"
-for p in mdt b00; do rnd 60 $f/src/sysa/gap/g.$p; done; rm $f/src/sysa/gap/g.b01 $f/src/sysa/gap/g.b02
-newlog
-ok "a split image refreshed with fewer parts: its old parts go with it" "seed refresh --now && [ ! -e $S/firmware/g.b01 ] && [ -z \"\$(line firmware/g.b01)\" ] && cmp -s $S/firmware/g.b00 $f/src/sysa/gap/g.b00"
+# split images that fail as a whole (ELF64 g: indexes 0 and 2 need parts, 1
+# has no file bytes; n: a .mdt that isn't ELF; o: no .mdt at all)
+mkdir -p $f/src/sysa/gap $f/src/sysa/nelf $f/src/sysa/nomdt
+mdt $f/src/sysa/gap/g.mdt 64 1,0,9000,50,50 1,0,0,0,50 1,0,9000,50,50
+rnd 50 $f/src/sysa/gap/g.b00
+rnd 200 $f/src/sysa/nelf/n.mdt; rnd 50 $f/src/sysa/nelf/n.b00
+rnd 50 $f/src/sysa/nomdt/o.b00
+list "$L_BASE" "firmware/g.* sysa:/gap/g.*" "firmware/n.* sysa:/nelf/n.*" "firmware/o.* sysa:/nomdt/o.*"; newlog
+ok "a needed part missing, a .mdt that isn't ELF, no .mdt: each refused as a whole, nothing of them added" "seed; [ \$? = 1 ] && grep -q 'firmware/g.\\*: its program headers need sysa:/gap/g.b02; left out as a whole' $d/log && grep -q 'firmware/n.\\*: sysa:/nelf/n.mdt is not an ELF file' $d/log && grep -q 'firmware/o.\\*: left out as a whole' $d/log && ! ls $S/firmware | grep -q '^[gno]\\.' && [ -z \"\$(line firmware/g.mdt)\$(line firmware/g.b00)\$(line firmware/n.mdt)\" ]"
+rm -rf $f/src/sysa/nelf $f/src/sysa/nomdt; rnd 50 $f/src/sysa/gap/g.b02; rnd 50 $f/src/sysa/gap/g.b01
+list "$L_BASE" "firmware/g.* sysa:/gap/g.*"; newlog
+ok "the needed part there: the image taken; a segment with no file bytes needs no part (b01 not copied)" "seed && [ -f $S/firmware/g.b02 ] && [ -f $S/firmware/g.b00 ] && [ ! -e $S/firmware/g.b01 ] && [ \$(line firmware/g.mdt | wc -l) = 1 ] && seed status >/dev/null"
+mdt $f/src/sysa/gap/g.mdt 64 1,0,9000,50,50; newlog
+ok "a split image refreshed with fewer parts: its old parts go with it" "seed refresh --now && [ ! -e $S/firmware/g.b02 ] && [ -z \"\$(line firmware/g.b02)\" ] && cmp -s $S/firmware/g.b00 $f/src/sysa/gap/g.b00 && seed status >/dev/null"
+# a damaged seed .mdt: the image is not held, read again
+echo junk > $S/firmware/g.mdt; rm -f $B; newlog
+ok "a seed .mdt that doesn't verify: read again, complete" "seed && cmp -s $S/firmware/g.mdt $f/src/sysa/gap/g.mdt"
+
+# a vfat source with 8.3 names only (upper case on disk): mounted with
+# shortname=lower, a split image matched by its lower-case name
+truncate -s 8M $d/v.img; mkfs.vfat -n VSRC $d/v.img >/dev/null
+mdt $d/MODEM.MDT 32 1,0,8192,100,100 1,0,0,0,100; rnd 100 $d/MODEM.B00
+mcopy -i $d/v.img $d/MODEM.MDT ::MODEM.MDT && mcopy -i $d/v.img $d/MODEM.B00 ::MODEM.B00
+LP=$(losetup -f); [ -b "$LP" ] || mknod "$LP" b 7 "${LP#/dev/loop}"; losetup "$LP" $d/v.img
+ln -s "$LP" $f/src/vimg; echo "$f/src/vimg: UUID=\"B00C\" TYPE=\"vfat\"" > $f/src/vimg.blkid
+list "$L_BASE" "firmware/modem.* vimg:/modem.*"; newlog
+ok "an upper-case 8.3 split image on a real vfat source: seeded under the lower-case name" "mdir -i $d/v.img -b | grep -q 'MODEM.MDT' && seed && cmp -s $S/firmware/modem.mdt $d/MODEM.MDT && cmp -s $S/firmware/modem.b00 $d/MODEM.B00 && ! grep -qs device-src /proc/mounts"
+list "$L_BASE"; rm $f/src/vimg $f/src/vimg.blkid; losetup -d "$LP"
 
 # a name the running kernel's own firmware provides
 rnd 10 $f/src/sysa/fw/gpu.fw; list "$L_BASE" "firmware/gpuvendor/gpu.fw sysa:/fw/gpu.fw"; newlog

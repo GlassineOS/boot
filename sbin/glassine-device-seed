@@ -50,7 +50,9 @@ KMAN=${GLASSINE_SEED_KERNEL_MANIFEST:-/lib/modules/$(uname -r)/kernel.manifest}
 FWPARAM=${GLASSINE_SEED_FW_PARAM:-/sys/module/firmware_class/parameters/path}
 CMDLINE=${GLASSINE_SEED_CMDLINE:-/proc/cmdline}
 # tests: a directory stands in for the partitions. $FAKE/part is DEVICE_PART's
-# file system, $FAKE/src/PART/PATH the sources; binding becomes a symlink.
+# file system, $FAKE/src/PART/PATH the sources (a $FAKE/src/PART that is not a
+# directory is a real block device or image, read as on a device); binding
+# becomes a symlink.
 # GLASSINE_SEED_BEFORE_MANIFEST / _AFTER_MANIFEST: shell code run right before
 # and after the manifest's rename (a cut-off write), only with
 # GLASSINE_SEED_TEST=1.
@@ -106,7 +108,8 @@ fs_type() {
 
 # src_dev PART: SRCDEV and SRCFS for a source partition, 1 if it can't be read
 src_dev() {
-	if [ -n "$FAKE" ]; then SRCDEV=$FAKE/src/$1
+	SRCFAKE=''
+	if [ -n "$FAKE" ]; then SRCDEV=$FAKE/src/$1; [ ! -d "$SRCDEV" ] || SRCFAKE=1
 	else SRCDEV=$(part_dev "$1") || { say "no partition $1"; return 1; }
 	fi
 	SRCFS=$(fs_type "$SRCDEV")
@@ -115,11 +118,13 @@ src_dev() {
 	*) say "$1: file system '${SRCFS:-unknown}' not read"; return 1 ;;
 	esac
 }
-# src_mount / src_umount: vfat and btrfs sources, read-only, on $RUN/device-src
+# src_mount / src_umount: vfat and btrfs sources, read-only, on $RUN/device-src;
+# vfat with shortname=lower: an 8.3-only name (MODEM.MDT) reads as the lower-case
+# name a list uses
 src_mount() {
 	_m=$RUN/device-src; mkdir -p "$_m" || return 1
 	if [ "$SRCFS" = btrfs ]; then mount -t btrfs -o ro,rescue=nologreplay "$SRCDEV" "$_m"
-	else mount -t vfat -o ro "$SRCDEV" "$_m"; fi
+	else mount -t vfat -o ro,shortname=lower "$SRCDEV" "$_m"; fi
 }
 src_umount() { umount "$RUN/device-src"; }
 
@@ -128,29 +133,13 @@ src_read() {
 	_part=${1%%:*} _path=${1#*:} _rc=1
 	src_dev "$_part" || return 1
 	say "reading $1"
-	if [ -n "$FAKE" ]; then cp "$SRCDEV$_path" "$2" 2>/dev/null; return; fi
+	if [ -n "$SRCFAKE" ]; then cp "$SRCDEV$_path" "$2" 2>/dev/null; return; fi
 	case $SRCFS in
 	ext*) debugfs -R "dump -p $_path $2" "$SRCDEV" >/dev/null 2>&1; [ -s "$2" ] ;;
 	*) src_mount || return 1
 		cp "$RUN/device-src$_path" "$2" 2>/dev/null && _rc=0
 		src_umount
 		return $_rc ;;
-	esac
-}
-
-# src_ls PART:/DIR: the regular files in a source directory, one name per line
-src_ls() {
-	_part=${1%%:*} _dir=${1#*:}
-	src_dev "$_part" || return 1
-	if [ -n "$FAKE" ]; then
-		for _f in "$SRCDEV$_dir"/*; do [ -f "$_f" ] && echo "${_f##*/}"; done; return 0
-	fi
-	case $SRCFS in
-	# debugfs ls -p: /inode/mode/uid/gid/name/size/, regular files have mode 100xxx
-	ext*) debugfs -R "ls -p $_dir" "$SRCDEV" 2>/dev/null | awk -F/ '$3 ~ /^100/ { print $6 }' ;;
-	*) src_mount || return 1
-		for _f in "$RUN/device-src$_dir"/*; do [ -f "$_f" ] && echo "${_f##*/}"; done
-		src_umount ;;
 	esac
 }
 
@@ -260,27 +249,26 @@ fill() {
 	while read -r n s c; do
 		[ -n "$n" ] || continue
 		case $n in
-		*.\*)	# a split image: resolved against its source, taken as a whole
+		*.\*)	# a split image: its .mdt, then the parts its program headers need
 			clash "$n" "$s" && { MISSING="$MISSING $n"; continue; }
 			[ "$FORCE" != 1 ] && gd_held_split "$G" "$n" "$s" && continue
-			stem=${n%.\*} sstem=${s%.\*} sdir=${s%/*}
-			files=$(src_ls "$sdir") || { say "$n: ${s%%:*} can't be read"; MISSING="$MISSING $n"; continue; }
-			base=${sstem##*/}
-			echo "$files" | grep -qx "$base.mdt" || { say "$n: no $sstem.mdt"; MISSING="$MISSING $n"; continue; }
-			parts=$(echo "$files" | sed -n "s/^$(echo "$base" | sed 's/[.]/\\./g')\.b\([0-9][0-9]*\)\$/\1/p")
-			if [ -n "$parts" ] && ! echo "$parts" | gd_contiguous; then
-				say "$n: the parts of $sstem.* have a gap ($(echo "$parts" | sort -n | tr '\n' ' '| sed 's/ $//')); left out"
+			stem=${n%.\*} sstem=${s%.\*}
+			if rel=$(kernel_has "$stem.mdt"); then say "$stem.mdt: the kernel $rel provides firmware ${stem#firmware/}.mdt itself; refused"; MISSING="$MISSING $n"; continue; fi
+			take "$stem.mdt" "$sstem.mdt" "$c" || { say "$n: left out as a whole"; MISSING="$MISSING $n"; continue; }
+			if ! need=$(gd_mdt_parts "$T/f/$stem.mdt"); then
+				say "$n: $sstem.mdt is not an ELF file the loader reads; left out as a whole"
 				MISSING="$MISSING $n"; continue
 			fi
-			ok=1 got=''
-			for suf in mdt $(echo "$parts" | sort -n | sed 's/^/b/'); do
-				rn=$stem.$suf
+			ok=1 got=" $stem.mdt:$sstem.mdt"
+			for nn in $need; do
+				rn=$stem.b$nn
 				if rel=$(kernel_has "$rn"); then say "$rn: the kernel $rel provides firmware ${rn#firmware/} itself; refused"; ok=0; break; fi
-				take "$rn" "$sstem.$suf" "$c" || { ok=0; break; }
-				got="$got $rn:$sstem.$suf"
+				take "$rn" "$sstem.b$nn" "$c" || { say "$n: its program headers need $sstem.b$nn; left out as a whole"; ok=0; break; }
+				got="$got $rn:$sstem.b$nn"
 			done
 			[ $ok = 1 ] || { MISSING="$MISSING $n"; continue; }
-			# the whole image replaces every line it had before
+			# the whole image replaces every line it had before (a part no longer
+			# needed loses its line, and its file goes as a stray)
 			gd_parts "$G" "$stem" "$sstem" | while read -r a _ _; do echo "$a"; done > "$T/old"
 			awk 'FILENAME == ARGV[1] { o[$1] = 1; next } !($1 in o)' "$T/old" "$T/lines" > "$T/lines.new"; mv "$T/lines.new" "$T/lines"
 			for g in $got; do echo "${g%%:*} ${g#*:} $(gd_sha "$T/f/${g%%:*}")" >> "$T/lines"; done

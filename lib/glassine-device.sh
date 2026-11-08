@@ -7,7 +7,8 @@
 # first line "format=1", then one entry per line, "NAME SOURCE [CHECK]"; "#"
 # starts a comment. NAME: the path in the seed (relative, no "."/".." parts or
 # hidden parts, not "manifest"); NAME.* with a SOURCE ending in .*: a split
-# image (a .mdt and its numbered parts .b00, .b01, ...). SOURCE: PART:/PATH.
+# image, a .mdt and the parts .bNN its ELF program headers need (gd_mdt_parts).
+# SOURCE: PART:/PATH.
 # CHECK: wbf (a waveform header), none when left out.
 #
 # The seed: glassine/ on DEVICE_PART (ext4): "manifest" (format=1, then one line
@@ -137,19 +138,42 @@ gd_parts() {
     }' "$1/manifest" 2>/dev/null
 }
 
-# gd_contiguous: the part numbers on stdin (one per line) run 0, 1, ... with no gap
-gd_contiguous() { sort -n | awk '$1 + 0 != NR - 1 { exit 1 }'; }
+# gd_mdt_parts MDT: the parts a split image's .mdt needs, as the kernel's mdt
+# loader requests them (drivers/soc/qcom/mdt_loader.c): one line per program
+# header index NN (two digits, "%02d") of a segment that is loadable as the
+# loader counts it (PT_LOAD, not the hash segment, p_memsz > 0), has
+# p_filesz > 0, and isn't wholly inside the .mdt itself (p_offset + p_filesz
+# > the .mdt's size). ELF32 and ELF64, little-endian. 1 = not such an ELF file.
+gd_mdt_parts() {
+    [ -f "$1" ] || return 1
+    od -A n -t u1 -v "$1" 2>/dev/null | awk '
+        { for (i = 1; i <= NF; i++) b[n++] = $i }
+        function u(o, k,   v, i) { v = 0; for (i = k - 1; i >= 0; i--) v = v * 256 + b[o + i]; return v }
+        END {
+            if (n < 52 || b[0] != 127 || b[1] != 69 || b[2] != 76 || b[3] != 70 || b[5] != 1) exit 1
+            if (b[4] == 1) { po = u(28, 4); pe = u(42, 2); pn = u(44, 2); if (pe != 32) exit 1 }
+            else if (b[4] == 2) { if (n < 64) exit 1; po = u(32, 8); pe = u(54, 2); pn = u(56, 2); if (pe != 56) exit 1 }
+            else exit 1
+            if (po + pe * pn > n) exit 1
+            for (i = 0; i < pn; i++) {
+                h = po + i * pe
+                if (b[4] == 1) { t = u(h, 4); o = u(h + 4, 4); fs = u(h + 16, 4); ms = u(h + 20, 4); fl = u(h + 24, 4) }
+                else { t = u(h, 4); fl = u(h + 4, 4); o = u(h + 8, 8); fs = u(h + 32, 8); ms = u(h + 40, 8) }
+                # PT_LOAD = 1; the segment type in flags bits 24-26, 2 = the hash segment
+                if (t == 1 && int(fl / 16777216) % 8 != 2 && ms > 0 && fs > 0 && o + fs > n) printf "%02d\n", i
+            }
+        }'
+}
 
 # gd_held_split DIR NAME SOURCE: the seed holds the split image NAME.* from
-# SOURCE.*: its .mdt and parts .b00 up to the last one with no gap, all there
-# and matching (decided from the manifest alone: no source is read)
+# SOURCE.*: its .mdt and every part the seed's .mdt needs, all there and
+# matching (no source is read)
 gd_held_split() {
     _gd_n=${2%.\*} _gd_s=${3%.\*}
-    _gd_ls=$(gd_parts "$1" "$_gd_n" "$_gd_s")
-    printf '%s\n' "$_gd_ls" | grep -q "^$_gd_n\.mdt " || return 1
-    printf '%s\n' "$_gd_ls" | awk -v n="$_gd_n" '$1 != n ".mdt" { print substr($1, length(n) + 3) }' | gd_contiguous || return 1
-    printf '%s\n' "$_gd_ls" | while read -r _gd_a _gd_b _gd_c; do
-        [ -f "$1/$_gd_a" ] && [ ! -L "$1/$_gd_a" ] && [ "$(gd_sha "$1/$_gd_a")" = "$_gd_c" ] || exit 1
+    gd_held "$1" "$_gd_n.mdt" "$_gd_s.mdt" || return 1
+    _gd_need=$(gd_mdt_parts "$1/$_gd_n.mdt") || return 1
+    for _gd_i in $_gd_need; do
+        gd_held "$1" "$_gd_n.b$_gd_i" "$_gd_s.b$_gd_i" || return 1
     done
 }
 

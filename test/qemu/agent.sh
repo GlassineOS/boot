@@ -59,7 +59,7 @@ cut_at() { echo 1 > /proc/sys/kernel/sysrq; _w=$1 _f=$2; shift 2
 L1='waveform.wbf srcext:/waveform/panel.wbf wbf
 firmware/vendor/x-renamed.bin srcext:/fw/x.bin
 firmware/vendor/dsp.* srcext:/image/dsp.*
-firmware/board.bin srcvfat:/BOARD.BIN'
+firmware/board.bin srcvfat:/board.bin'
 
 # hibernate: the real hibernate step (glassine-hibernate); returns after the resume
 hibernate() {
@@ -158,8 +158,8 @@ case $stage in
     chk "device data: the initramfs found no seed yet" "dmesg | grep -q 'device data: no seed on $DP yet'"
     chk "device data: the service made the seed, complete, bound read-only" "complete && bound_ro && [ \$(grep -c ' ok ' /run/qtest/status.out) = 4 ]"
     chk "device data: a rename into a directory, the waveform" "same_sx firmware/vendor/x-renamed.bin /fw/x.bin && same_sx waveform.wbf /waveform/panel.wbf"
-    chk "device data: the split image resolved, each part a line of the manifest" "same_sx firmware/vendor/dsp.mdt /image/dsp.mdt && same_sx firmware/vendor/dsp.b01 /image/dsp.b01 && [ \$(grep -c '^firmware/vendor/dsp\.' $DS/manifest) = 3 ] && [ ! -e $DS/firmware/vendor/dsp.b02 ]"
-    chk "device data: the vfat source" "[ \"\$(sha256sum < $DS/firmware/board.bin)\" = \"\$(sv_cat /BOARD.BIN | sha256sum)\" ]"
+    chk "device data: the split image by its program headers, each part a line of the manifest, an unneeded part not copied" "same_sx firmware/vendor/dsp.mdt /image/dsp.mdt && same_sx firmware/vendor/dsp.b02 /image/dsp.b02 && [ \$(grep -c '^firmware/vendor/dsp\.' $DS/manifest) = 3 ] && [ ! -e $DS/firmware/vendor/dsp.b01 ]"
+    chk "device data: the vfat source (an 8.3 name, BOARD.BIN on disk, listed in lower case)" "[ \"\$(sha256sum < $DS/firmware/board.bin)\" = \"\$(sv_cat /BOARD.BIN | sha256sum)\" ]"
     # the virt kernel builds the firmware loader without its path parameter: the
     # value is checked where it exists (test/root, test/seed check it on files)
     if [ -e $FWP ]; then
@@ -201,8 +201,7 @@ firmware/vendor/y.bin srcext:/fw/y.bin"
     printf 'format=1\nwaveform.wbf srcext:/waveform/panel.wbf wbf\n' > /run/qtest/l3
     chk "device data: a shorter list: complete, the old files stay" "GLASSINE_SEED_LIST=/run/qtest/l3 glassine-device-seed > /run/qtest/seed.out 2>&1 && [ -f $DS/firmware/board.bin ] && bound_ro"
     chk "device data: a name the kernel's firmware provides: refused, named" "printf 'format=1\nfirmware/qtest/a.fw srcext:/fw/y.bin\n' > /run/qtest/l4; GLASSINE_SEED_LIST=/run/qtest/l4 glassine-device-seed > /run/qtest/seed.out 2>&1; [ \$? = 1 ] && said 'firmware/qtest/a.fw: the kernel .* provides firmware qtest/a.fw itself; refused' && [ ! -e $DS/firmware/qtest ]"
-    head -c 50 /dev/urandom > /run/qtest/g; for p in mdt b00 b02; do debugfs -w -R "write /run/qtest/g /image/gap.$p" $SX >/dev/null 2>&1; done; srcsum > $Q/src.sum
-    chk "device data: a split image with a gap: fails as a whole, adds nothing" "printf 'format=1\nfirmware/gap.* srcext:/image/gap.*\n' > /run/qtest/l5; GLASSINE_SEED_LIST=/run/qtest/l5 glassine-device-seed > /run/qtest/seed.out 2>&1; [ \$? = 1 ] && said 'have a gap' && ! ls $DS/firmware/gap.* 2>/dev/null"
+    chk "device data: a split image missing a part its headers need: fails as a whole, adds nothing" "printf 'format=1\nfirmware/gap.* srcext:/image/gap.*\n' > /run/qtest/l5; GLASSINE_SEED_LIST=/run/qtest/l5 glassine-device-seed > /run/qtest/seed.out 2>&1; [ \$? = 1 ] && said 'program headers need srcext:/image/gap.b01' && ! ls $DS/firmware/gap.* 2>/dev/null"
     chk "device data: a source on DEVICE_PART: the list is invalid, nothing seeded" "printf 'format=1\nx devdata:/other\n' > /run/qtest/l6; GLASSINE_SEED_LIST=/run/qtest/l6 glassine-device-seed > /run/qtest/seed.out 2>&1; [ \$? = 2 ] && said 'invalid' && [ ! -e $DS/x ]"
     chk "device data: none of these changed the seed's manifest" "[ \"\$(sha256sum < $DS/manifest)\" = \"$M0\" ]"
     # a refresh with a changed source, cut off before the manifest's rename
