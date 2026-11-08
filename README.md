@@ -80,8 +80,9 @@ it). A kernel that arrives during a test boot is staged after the verdict.
 In the deployments layout (`ROOT_LAYOUT=deployments`), the records live on the system
 partition and the image is packed from `modules/<release>/` and `boot/` there; only the
 hand-off to the bootloader (`HANDOFF`) differs per board. The commands there are
-`install`, `status` (`format=1`), `cancel`, `reboot-test`, `retry`, `accept` and
-`rollback`; the trial and promote's verdict are not built yet. See
+`install`, `status` (`format=1`), `cancel`, `reboot-test`, `retry`, `accept`,
+`rollback` and `promote` (the trial's verdict, and finishing a cut default-slot write).
+See
 [docs/kernel-artifacts.md](docs/kernel-artifacts.md).
 
 Packages can hook in at `/etc/glassine-bootimg/post-promote.d/` and `post-fail.d/`.

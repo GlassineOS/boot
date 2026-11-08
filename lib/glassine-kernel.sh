@@ -21,22 +21,24 @@
 # recovery partition, FR-008); empty: kernel updates are paused; blocklist:
 # not built yet (hub#56).
 #
-# Not built yet (phase 2 of specs/004): the trial in the initramfs and
-# promote's verdict. Until then `promote` does nothing in this layout, a
-# deferred release waits, and nothing finishes a cut default-slot write
-# (status says state=writing).
+# The trial (FR-011, FR-012): the initramfs takes the try on the candidate's
+# boot (lib/glassine-root.sh, gr_boot) and boots the current deployment;
+# `promote` (glassine-bootimg-promote, at every boot) then finishes a cut
+# default-slot write, clears `requested`, gives the verdict and installs a
+# deferred release.
 #
 # Exit codes: 0 done, 1 error, 2 usage, 3 the state format (or a record) is
 # newer than this tool, 6 busy (state/.lock held).
 #
 # busybox ash only, except the packer (python3). Test hooks: GLASSINE_BI_SYSTEM
 # (the system partition's top level), GLASSINE_BI_SYSBLOCK (/sys/class/block),
+# GLASSINE_BI_RUN_DIR (RUN_DIR, deploy.conf), GLASSINE_BI_MOUNTS (/proc/mounts),
 # GLASSINE_BI_AFTER_BODY (eval'd in gk_put after an image's body is written and
 # before its header: the tests cut or corrupt writes with it; only with
 # GLASSINE_BI_TEST=1, never on an ordinary write).
 
 GK_CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
-SYSTEM_MNT=/run/glassine/system
+SYSTEM_MNT=/run/glassine/system RUN_DIR=/run/glassine
 # shellcheck source=/dev/null
 [ -r "$GK_CONF" ] && . "$GK_CONF"
 SYS=${GLASSINE_BI_SYSTEM:-$SYSTEM_MNT}
@@ -47,6 +49,9 @@ GK_KEYS='current previous current_img previous_img candidate candidate_img tries
 HANDOFF=${HANDOFF:-} DEVICE=${DEVICE:-}
 GK_RAM=''
 GK_STARTED=$TMP/glassine-bootimg.started
+GK_REQUESTED=$TMP/glassine-bootimg.requested    # reboot-test ran on this boot (in RAM)
+GK_RUN=${GLASSINE_BI_RUN_DIR:-$RUN_DIR}
+GK_LOCKED=''
 
 fail() { _c=$1; shift; log "$*"; exit "$_c"; }
 k() { gs_kv "$K" "$1"; }                         # k KEY: a key of state/kernel
@@ -64,8 +69,10 @@ gk_open() {
     [ "$_v" != none ] || die "no deployment state at $SYS/state (the system partition is not mounted there, or not migrated)"
     gs_format_ok "$_v" || fail 3 "state format $_v is newer than this tool ($GS_FORMAT_SUPPORTED); update glassine-bootimg"
     [ "${1:-}" = rw ] || return 0
+    [ -z "$GK_LOCKED" ] || return 0     # promote's deferred install: the lock is held already
     : >>"$S/.lock" 2>/dev/null || die "$S is not writable"
     gs_lock "$S" || fail 6 "busy: another glassine-bootimg or glassine-deploy holds $S/.lock"
+    GK_LOCKED=1
     mkdir -p "$BI" || die "cannot create $BI"
 }
 
@@ -418,6 +425,7 @@ gk_reboot_test() {
     _why=$(gk_deploy_trial)
     [ -z "$_why" ] || die "reboot-test: $_why is waiting for its trial: one trial at a time"
     gk_slot_holds "$TESTDEV" "$_ci" || die "reboot-test: the test slot doesn't hold the candidate's image any more; run glassine-bootimg retry"
+    echo "$_ci" > "$GK_REQUESTED" || die "cannot write $GK_REQUESTED"
     kset "requested=$_ci"
     log "reboot-test: $(k candidate) ($_ci)"
     [ -n "${GLASSINE_BI_NOREBOOT:-}" ] && return 0
@@ -452,29 +460,63 @@ gk_retry() {
 }
 
 # accept: the candidate's trial boot passed; its image becomes the default
-# (phase 2's promote runs this after the health check; by hand it is refused
-# on any other boot)
+# (promote runs it after the health check; by hand it is refused on any
+# other boot)
 gk_accept() {
     gk_handoff
     gk_open rw
     [ -z "$(k writing)" ] || die "accept: a write of the default slot is unfinished (image $(k writing))"
-    _ci=$(k candidate_img) _c=$(k candidate)
+    _ci=$(k candidate_img)
     [ -n "$_ci" ] || die "accept: no kernel candidate"
     [ "$(run_id)" = "$_ci" ] || die "accept: this boot runs image $(run_id), not the candidate's ($_ci)"
-    gk_img_ok "$_ci" || die "accept: $BI/$_ci.img is gone or damaged; nothing written"
+    gk_accept_now || exit 1
+}
+
+# gk_accept_now: the candidate's image onto the default slot (FR-009), then
+# the accept completed. The state open and locked. 1 = not accepted (a
+# write put back: the candidate failed; or a slot that can't boot: writing
+# stays).
+gk_accept_now() {
+    _ci=$(k candidate_img)
+    gk_img_ok "$_ci" || { log "accept: $BI/$_ci.img is gone or damaged; nothing written"; return 1; }
     gk_write_default "$_ci" accept
     case $? in
     0) ;;
-    1) gk_fail "default slot write"; exit 1 ;;
-    *) exit 1 ;;
+    1) gk_fail "default slot write"; return 1 ;;
+    *) return 1 ;;
     esac
-    kset "previous=$(k current)" "previous_img=$(k current_img)" "current=$_c" "current_img=$_ci" \
-        candidate= candidate_img= tries= requested= writing= writing_op=
+    gk_complete
+    log "accept: the default slot = $(k current) ($_ci); previous: $(k previous) ($(k previous_img))"
+}
+
+# gk_complete: what writing_op names, once the default slot holds the image
+# `writing` names (FR-010; kernel-artifacts.md, "A kernel trial"), in the
+# state write that clears writing and writing_op. 1 = not done (writing stays).
+gk_complete() {
+    _w=$(k writing) _op=$(k writing_op)
+    case "$_op" in
+    accept)
+        _rel=$(man "$_w" release); [ -n "$_rel" ] || _rel=$(k candidate)
+        kset "previous=$(k current)" "previous_img=$(k current_img)" "current=$_rel" "current_img=$_w" \
+            candidate= candidate_img= tries= requested= writing= writing_op=
+        echo "Kernel $_rel is now the default." > "$TMP/glassine-bootimg.notice" 2>/dev/null
+        ;;
+    rollback)
+        [ "$(k previous_img)" = "$_w" ] ||
+            { log "rollback of image $_w: the previous image is $(k previous_img) now; writing=$_w stays"; return 1; }
+        kset "current=$(k previous)" "previous=$(k current)" "current_img=$_w" "previous_img=$(k current_img)" writing= writing_op=
+        ;;
+    repair)
+        kset candidate= candidate_img= tries= requested= writing= writing_op=
+        ;;
+    *)
+        log "writing_op '$_op' is unknown to this tool; writing=$_w stays"
+        return 1
+        ;;
+    esac
     rm -f "$GK_STARTED"
     gk_prune
-    log "accept: the default slot = $_c ($_ci); previous: $(k previous) ($(k previous_img))"
-    echo "Kernel $_c is now the default." > "$TMP/glassine-bootimg.notice" 2>/dev/null
-    return 0
+    log "$_op of image $_w completed"
 }
 
 gk_rollback() {
@@ -494,11 +536,130 @@ gk_rollback() {
     else
         gk_write_default "$_pi" rollback || exit 1
     fi
-    kset "current=$_p" "previous=$(k current)" "current_img=$_pi" "previous_img=$(k current_img)" writing= writing_op=
-    rm -f "$GK_STARTED"
-    gk_prune
+    gk_complete || exit 1
     log "rollback: the default slot = ${_p:-the previous kernel} ($_pi) again"
     echo "glassine-bootimg: the default kernel is ${_p:-the previous one} ($_pi) again; reboot to use it"
+}
+
+# --- promote (FR-012) ------------------------------------------------------------
+# 1. writing (FR-010): whatever this boot's glassine.img=, the default slot
+# is checked against `writing`'s record; written again when it doesn't hold
+# it (no RAM copy: it holds nothing good), then writing_op completed. 1 =
+# the slot can't boot, writing stays (status: default_slot=bad).
+gk_writing() {
+    _w=$(k writing)
+    [ -n "$_w" ] || return 0
+    [ -n "$DEFDEV" ] || { log "promote: writing=$_w, but no DEFAULT_DEV in $BOARD: nothing checked"; return 1; }
+    if gk_slot_holds "$DEFDEV" "$_w"; then
+        log "promote: the default slot holds image $_w: completing $(k writing_op)"
+    else
+        log "promote: the default slot doesn't hold image $_w (its write was cut): writing it again"
+        if ! gk_img_ok "$_w"; then
+            log "promote: $BI/$_w.img is gone or damaged: the default slot cannot boot (writing=$_w stays)"
+            return 1
+        fi
+        if ! gk_put "$BI/$_w.img" "$DEFDEV"; then
+            log "promote: writing the default slot again failed: it cannot boot (writing=$_w stays)"
+            echo "The default boot slot could not be written. Keep the device on and charged, and get help before rebooting." \
+                > "$TMP/glassine-bootimg.notice" 2>/dev/null
+            return 1
+        fi
+    fi
+    gk_complete
+}
+
+# 2. requested (Story 2.5): the trial boot clears it with the try, so one
+# left on another boot means the candidate never reached the initramfs
+# (no-boot); one naming another image than the candidate's is stale
+gk_requested() {
+    _r=$(k requested) _ci=$(k candidate_img)
+    [ -n "$_r" ] || return 0
+    if [ "$_r" != "$_ci" ]; then
+        kset requested=
+        log "promote: requested=$_r is stale (the candidate is ${_ci:-none}): cleared"
+    elif [ "$(run_id)" = "$_ci" ]; then
+        kset requested=
+        log "promote: the trial boot left requested set (the initramfs took no try): cleared"
+    elif [ "$(k tries)" = 1 ]; then
+        gk_fail no-boot
+    fi
+}
+
+# gk_trial_root: why this trial didn't run the system it must prove (empty:
+# it did): every later boot would run this kernel, so a fallback isn't a pass.
+# The current deployment assembled (not bare, not previous), with this
+# kernel's modules bound.
+gk_trial_root() {
+    _b=$(cat "$GK_RUN/booted" 2>/dev/null) _dc=$(gs_kv "$S/deploy" current) _kr=$(uname_r)
+    case "$_b" in
+    '') echo "the booted deployment is not recorded"; return 0 ;;
+    bare:*) echo "bare boot ($_b): userdata or the deployment did not come up"; return 0 ;;
+    esac
+    [ "$_b" = "$_dc" ] || { echo "booted $_b, not the current deployment ${_dc:-(none)}"; return 0; }
+    awk -v m="/lib/modules/$_kr" '$2 == m {ok = 1} END {exit !ok}' "${GLASSINE_BI_MOUNTS:-/proc/mounts}" ||
+        echo "no modules bound for $_kr"
+}
+
+# 3. the verdict: on the candidate's trial, the system it ran (gk_trial_root),
+# health() (glassine-bootimg), then accept or fail; a candidate at tries=0 on
+# another boot ended its trial without one (no-verdict). 1 = an accept that
+# didn't complete.
+gk_verdict() {
+    _ci=$(k candidate_img)
+    [ -n "$_ci" ] || return 0
+    if [ "$(run_id)" = "$_ci" ]; then
+        gk_handoff
+        if _why=$(gk_trial_root) && [ -z "$_why" ] && _why=$(health); then gk_accept_now || return 1
+        else gk_fail "health: $_why"; fi
+    elif [ "$(k tries)" = 0 ]; then
+        gk_fail no-verdict
+    else
+        log "promote: kernel candidate $(k candidate) ($_ci) waits for its trial (glassine-bootimg reboot-test)"
+    fi
+}
+
+# 4. a deferred release, once nothing it waited for is pending, on a boot of
+# the default kernel (after a cancel in the trial boot, it waits for the
+# next boot: Story 3.2). Its keys are cleared first, as the plain layout
+# does: an install that fails isn't tried again at every boot, and says so in
+# the notice. The lock stays held from here through the install (the subshell
+# shares it), so no other writer sees the keys gone before the install runs.
+gk_deferred() {
+    _d=$(k deferred) _run=$(run_id)
+    [ -n "$_d" ] && [ -z "$(k writing)" ] || return 0
+    _why=$(gk_deploy_trial)
+    [ -z "$_why" ] || { log "promote: the deferred $_d waits for $_why"; return 0; }
+    if [ -n "$_run" ] && [ "$_run" = "$(k candidate_img)" ]; then return 0; fi
+    if [ -n "$_run" ] && [ "$_run" != "$(k current_img)" ] && [ -e "$BI/$_run.manifest" ]; then
+        log "promote: the deferred $_d waits for a boot of the default kernel (this boot runs image $_run)"
+        return 0
+    fi
+    gk_handoff      # paused: the release stays deferred
+    _dd=$(k deferred_dtb) _di=$(k deferred_initramfs)
+    kset deferred= deferred_dtb= deferred_initramfs=
+    log "promote: installing the deferred $_d${_dd:+ (device tree $_dd, initramfs $_di)}"
+    ( gk_install "$_d" ${_dd:+--dtb "$_dd"} ${_di:+--initramfs "$_di"} )
+    _rc=$?
+    [ "$_rc" = 0 ] && return 0
+    log "promote: installing the deferred $_d failed (exit $_rc)"
+    echo "Kernel $_d could not be installed. Install it again." > "$TMP/glassine-bootimg.notice" 2>/dev/null
+    exit "$_rc"
+}
+
+gk_promote() {
+    gk_open         # nothing to do (most boots): no lock, nothing written
+    [ -n "$(k writing)$(k requested)$(k candidate_img)$(k deferred)" ] || return 0
+    gk_open rw
+    gk_writing || exit 1
+    # reboot-test ran on this boot and the shutdown is under way: its
+    # `requested` is not a boot that failed to happen (Story 2.5)
+    if [ -n "$(k requested)" ] && [ "$(cat "$GK_REQUESTED" 2>/dev/null)" = "$(k requested)" ]; then
+        log "promote: the reboot into the trial of $(k requested) is under way: nothing to judge"
+        return 0
+    fi
+    gk_requested
+    gk_verdict || exit 1
+    gk_deferred
 }
 
 gk_usage() {
@@ -517,7 +678,7 @@ gk_main() {
     retry:0) gk_retry ;;
     accept:0) gk_accept ;;
     rollback:0) gk_rollback ;;
-    promote:0) gk_open; log "promote: the kernel trial is not built in the deployments layout yet (specs/004, phase 2): nothing done" ;;
+    promote:0) gk_promote ;;
     *) gk_usage ;;
     esac
 }

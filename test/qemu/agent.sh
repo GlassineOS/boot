@@ -33,6 +33,8 @@ case $stage in
     chk "carried mounts still there in the default runlevel" "mountpoint -q /run/glassine/system && mountpoint -q $UD"
     chk "/ is read-only" "! touch /usr/qtest 2>/dev/null"
     chk "/etc and /var are writable" "mkdir -p /etc/qtest && echo first > /etc/qtest/a && touch /var/qtest"
+    chk "/proc/mounts: /var read-write, as glassine-bootimg's health check reads it here" "awk '\$2 == \"/var\" && \$4 ~ /^rw(,|\$)/ {ok = 1} END {exit !ok}' /proc/mounts"
+    chk "kernel-boot recorded, empty (no kernel trial)" "[ -e /run/glassine/kernel-boot ] && [ -z \"\$(cat /run/glassine/kernel-boot)\" ]"
     chk "modules subvolume on /lib/modules" "mountpoint -q /lib/modules/$(uname -r)"
     chk "the kernel's firmware on /lib/firmware/updates, read-only" "[ \"\$(cat /lib/firmware/updates/qtest/a.fw)\" = fw ] && grep -q ' /lib/firmware/updates [^ ]* ro[, ]' /proc/mounts"
     chk "state lock free for the system" "flock -n /run/glassine/system/state/.lock true"

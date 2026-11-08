@@ -1,11 +1,12 @@
 # Kernel artifacts: what a build hands to a device
 
 Status: **agreed design; partly implemented.** Built and host-tested, nothing run on a
-device ([specs/004](../specs/004-kernel-records/spec.md), phase 1): the kernel records,
-`glassine-bootimg` `install` (the `bootpart-test` hand-off), `status`, `cancel`, `retry`,
-`accept`, `rollback`, the default-slot write, the interlocks with `glassine-deploy` and
-`glassine-hibernate`. Not built: the trial (the initramfs and promote's verdict, phase 2),
-the `blocklist` hand-off, the feature table (`conf/kernel-features`; until it exists,
+device ([specs/004](../specs/004-kernel-records/spec.md), phases 1 and 2): the kernel
+records, `glassine-bootimg` `install` (the `bootpart-test` hand-off), `status`, `cancel`,
+`retry`, `accept`, `rollback`, the default-slot write, the interlocks with
+`glassine-deploy` and `glassine-hibernate`, the trial in the initramfs, and `promote`
+(finishing a cut write, `requested`, the verdict, a deferred install). Not built: the
+`blocklist` hand-off, the feature table (`conf/kernel-features`; until it exists,
 `provides`, `features` and `needs` are empty, so rule 1 passes), and everything under
 "Not covered here". It builds on
 `glassine-deploy`'s `receive --modules`, `stage` and `bases remove`. Kernel updates stay
@@ -110,7 +111,8 @@ so nothing goes on the command line for it, and the base needs no knowledge of t
 The base ships only the empty directories `/lib/modules/` and `/lib/firmware/updates/`
 (no files under the latter: the bind hides them). `gr_modules` makes
 `/lib/modules/<release>` through the merged root, so the base needs no directory for
-the release. A missing subvolume is logged loudly; the boot continues without modules. Packages can't
+the release. A missing subvolume is logged loudly; the boot continues without modules,
+and a kernel trial fails its verdict. Packages can't
 install modules into the read-only bind: out-of-tree modules are built with the kernel.
 
 **Firmware tied to the kernel** (for example GPU microcode the driver depends on) comes from
@@ -281,7 +283,8 @@ tree or initramfs for the running kernel).
 4. `glassine-deploy-accept` doesn't run on either. `glassine-bootimg-promote` (OpenRC,
    last):
    - On a trial, it checks the boot and accepts the kernel (`current` ← candidate, the
-     old one to `previous`). A trial that fails, hangs or ends before the check leaves
+     old one to `previous`). The check includes the system the trial ran: the current
+     deployment, not a bare boot or a fallback, with the kernel's modules bound. A trial that fails, hangs or ends before the check leaves
      the candidate at `tries=0`: the next boot is the old kernel, and it marks the
      candidate failed.
    - **Whenever `writing` is set,** on a finishing boot or on any other boot, it first

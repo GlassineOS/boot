@@ -20,6 +20,10 @@
 # Without that the bootloader counts a try per boot after a kernel update and
 # ends up in the other system. A bare boot (userdata broken) does not mark it.
 #
+# Not on a kernel trial or finishing boot (/run/glassine/kernel-boot, from the
+# initramfs): that boot runs the current deployment, and glassine-bootimg-promote
+# judges it.
+#
 # Exit: 0 accepted or nothing to accept, 1 not accepted (logged).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
@@ -46,6 +50,10 @@ slot_todo() {
 
 booted=$(cat "$RUN_DIR/booted" 2>/dev/null)
 case $booted in ''|bare:*) exit 0 ;; esac
+# a kernel trial or finishing boot (the initramfs says so, FR-012): the boot
+# is the kernel's to judge (glassine-bootimg-promote), not the deployment's
+kboot=$(cat "$RUN_DIR/kernel-boot" 2>/dev/null)
+case $kboot in trial|finishing) say "a kernel $kboot boot: no deployment accept"; exit 0 ;; esac
 cand=0 slot=0
 [ "$booted" = "$(field candidate)" ] && cand=1
 slot_todo && slot=1

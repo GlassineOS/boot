@@ -41,7 +41,7 @@
 #   glassine-bootimg retry          the candidate's (or the failed one's) image back on the test slot, tries=1
 #   glassine-bootimg accept         the trial boot's candidate becomes the default kernel
 #   glassine-bootimg rollback       the previous kernel's image back as the default
-#   glassine-bootimg promote        the verdict (not built in this layout yet)
+#   glassine-bootimg promote        finish a cut write, the verdict, a deferred install (glassine-bootimg-promote)
 set -u
 ST=${GLASSINE_BI_STATE:-/var/lib/glassine-bootimg}
 BOARD=${GLASSINE_BI_BOARD:-/etc/glassine-bootimg/board.conf}
@@ -175,13 +175,17 @@ cmd_retry() {
 # the health of this (test) boot: the generic checks, then every executable
 # $HOOKS/health.d/* (the device and desktop packages ship them): a non-zero
 # exit = unhealthy, its first output line = the reason (else its name); one
-# that runs longer than GLASSINE_BI_HEALTH_TIMEOUT (60 s) counts as unhealthy
+# that runs longer than GLASSINE_BI_HEALTH_TIMEOUT (60 s) counts as unhealthy.
+# The deployments layout's / is a read-only bind by design (docs/boot.md):
+# there the writable binds are checked instead, /var for all of them.
 health() {
     [ -n "${GLASSINE_BI_HEALTH:-}" ] && { eval "$GLASSINE_BI_HEALTH"; return; }
-    local bad="" up h why
+    local bad="" up h why rw=/
+    [ "${ROOT_LAYOUT:-plain}" != deployments ] || rw=/var
     up=$(cut -d. -f1 "${GLASSINE_BI_UPTIME:-/proc/uptime}")
     [ "$up" -ge 90 ] || bad="$bad uptime<90s"
-    awk '$2 == "/" && $4 ~ /^rw(,|$)/ {ok = 1} END {exit !ok}' "${GLASSINE_BI_MOUNTS:-/proc/mounts}" || bad="$bad root-not-rw"
+    awk -v m="$rw" '$2 == m && $4 ~ /^rw(,|$)/ {ok = 1} END {exit !ok}' "${GLASSINE_BI_MOUNTS:-/proc/mounts}" ||
+        if [ "$rw" = / ]; then bad="$bad root-not-rw"; else bad="$bad var-not-rw"; fi
     rc-status --crashed 2>/dev/null | grep -q . && bad="$bad crashed:$(rc-status --crashed | tr '\n' ',')"
     for h in "$HOOKS"/health.d/*; do
         [ -x "$h" ] || continue

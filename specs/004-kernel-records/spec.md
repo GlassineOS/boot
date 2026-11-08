@@ -1,8 +1,8 @@
 # Feature Specification: Kernel records, trial and hand-off
 
 **Feature branch:** `kernel-records`
-**Created:** 2026-11-07 · **Status:** phase 1 built and host-tested (nothing run on a
-device); phase 2 not built
+**Created:** 2026-11-07 · **Status:** phases 1 and 2 built and host-tested (nothing run
+on a device)
 **Builds on:** [001-deployments](../001-deployments/spec.md) · **Interface:**
 [docs/kernel-artifacts.md](../../docs/kernel-artifacts.md) ("Kernel records, trials and
 hand-off", "Records", "Packing", "Order on the device", "What the user sees"),
@@ -84,7 +84,8 @@ Each story says which phase it belongs to.
    `requested`. `no-boot` means the candidate never reached the initramfs: the kernel
    died before it, or the reboot never happened. `status` says both and offers `retry`.
    A `requested` that names another image than `candidate_img` is stale: it is cleared
-   and logged, and nothing is failed.
+   and logged, and nothing is failed. On the boot that ran `reboot-test` (a marker in
+   `/run`), the shutdown is under way, and promote judges nothing.
 6. **Given** `writing` set, **when** a boot runs, **then** promote checks the default
    slot before it does anything with `writing` (FR-010). If it holds the image
    `writing` names, it completes `writing_op`. If not, the write didn't finish, and
@@ -207,10 +208,14 @@ Each story says which phase it belongs to.
 - **FR-012** `glassine-bootimg-promote`, at every boot of this layout, in this order:
   1. `writing` (FR-010);
   2. `requested` (Story 2.5);
-  3. the verdict: on a trial, today's `health` (the generic checks and `health.d`), then
-     accept or fail; a candidate at `tries=0` on another boot is failed with reason
-     `no-verdict`;
-  4. a `deferred` install.
+  3. the verdict: on a trial, the system it ran, then today's `health` (the generic checks
+     and `health.d`), then accept or fail. A trial fails (`reason` `health: ...`) when
+     `/run/glassine/booted` is missing, a bare boot or not `state/deploy`'s `current`, or
+     when `/lib/modules/<release>` isn't bound; a candidate at `tries=0` on another boot is failed with reason
+     `no-verdict`. The generic check of a read-write root checks `/var` in this layout
+     (reason `var-not-rw`), because `/` is a read-only bind there (`docs/boot.md`);
+  4. a `deferred` install, with the lock held from clearing its keys through the install.
+     One that fails writes the notice, and isn't tried again.
 
   `glassine-deploy-accept` doesn't run on a trial or a finishing boot (phase 2).
 - **FR-013** Who clears `requested`:
@@ -275,7 +280,7 @@ Each story says which phase it belongs to.
 - `receive --boot`, and `bases remove` for modules and `boot/` files.
 - The feature table (`conf/kernel-features`), the `provides`/`needs` coverage of a
   deployment, and exit 8 "not covered by the current kernel".
-- The `DEVICE_PART` seed, and the modules and firmware binds of "On the system partition".
+- The `DEVICE_PART` seed.
 - `glassine-hibernate`'s refusal while `DEVICE_PART` is read-write (it comes with the
   seed).
 - The `blocklist` hand-off (hub#56) and `repair`, which the recovery runs.

@@ -187,6 +187,18 @@ gr_resume_refusal() {
     [ "$_gr_p" = "$_gr_v" ] || { echo "state/ boots $_gr_p, the session ran $_gr_v"; return 0; }
 }
 
+# gr_kernel_mode SYSDEV IMG: what this boot of image IMG (its glassine.img=)
+# is to the kernel records (gs_kernel_boot: trial, finishing or empty), read
+# before gr_resume from the system partition mounted read-only without a log
+# replay (rule 1). A state format newer than this code: empty (FR-011).
+gr_kernel_mode() {
+    [ -n "$2" ] || return 0
+    mkdir -p "$GR_TMP/peek" && mount -t btrfs -o ro,rescue=nologreplay "$1" "$GR_TMP/peek" 2>/dev/null || return 0
+    gs_format_ok "$(gs_format_version "$GR_TMP/peek")" && gs_kernel_boot "$GR_TMP/peek/state/kernel" "$2"
+    umount "$GR_TMP/peek"
+    return 0
+}
+
 # gr_resume SYSDEV UDDEV PREFIX MAY: before anything mounts either partition
 # read-write. A hibernate image on userdata is resumed when MAY = resume and
 # every check passes (the kernel does not return then); otherwise it is
@@ -214,25 +226,35 @@ gr_resume() {
     return 1
 }
 
-# gr_boot SYSDEV UDDEV PREFIX NEWROOT KREL: after gr_resume. The system
+# gr_boot SYSDEV UDDEV PREFIX NEWROOT KREL [IMG]: after gr_resume. The system
 # partition read-write at NEWROOT.sys with its state locked (fd 9, until
 # gr_carry), userdata checked and mounted at NEWROOT.ud, the deployment picked
-# (gr_pick: a try used) and assembled at NEWROOT. One that does not assemble is
+# (gr_pick: a try used) and assembled at NEWROOT. IMG is this boot's
+# glassine.img=: when state/kernel makes it a kernel trial or a finishing boot
+# (gs_kernel_boot, GR_KBOOT), the current deployment boots with no pick and no
+# deployment try, and a trial takes its kernel try (tries=0, requested
+# cleared, one write; FR-011). One that does not assemble is
 # skipped (a candidate is marked failed) for current, then previous. Without
 # userdata (UDDEV empty or not mountable) or any deployment: bare, on the
 # current deployment's base or else the last base by name. A state format
 # newer than this code, or a held lock: the state is read, never written.
 # A hibernate guard left on userdata (the image was invalidated) is removed.
-# Sets GR_BOOTED (the id, or bare:<base>). 1 = nothing bootable, nothing left
-# mounted.
+# Sets GR_BOOTED (the id, or bare:<base>) and GR_KBOOT. 1 = nothing
+# bootable, nothing left mounted.
 gr_boot() {
-    _gr_sm=$4.sys _gr_um=$4.ud GR_BOOTED='' _gr_ud=''
+    _gr_sm=$4.sys _gr_um=$4.ud GR_BOOTED='' GR_KBOOT='' _gr_ud=''
     mkdir -p "$_gr_sm" && mount -t btrfs -o rw,noatime "$1" "$_gr_sm" || { gr_log "cannot mount $1"; return 1; }
     _gr_f=$(gs_format_version "$_gr_sm")
     [ "$_gr_f" != none ] || { gr_log "the system partition has no state/ (not migrated)"; umount "$_gr_sm"; return 1; }
     _gr_rw=1
     gs_format_ok "$_gr_f" || { gr_log "state format $_gr_f is newer than this initramfs: state read only"; _gr_rw=0; }
     [ $_gr_rw = 0 ] || gs_lock "$_gr_sm/state" || { gr_log "state is locked: read only"; _gr_rw=0; }
+    ! gs_format_ok "$_gr_f" || GR_KBOOT=$(gs_kernel_boot "$_gr_sm/state/kernel" "${6:-}")
+    if [ "$GR_KBOOT" = trial ]; then
+        if [ $_gr_rw = 1 ] && gs_update "$_gr_sm/state/kernel" tries=0 requested=; then
+            gr_log "kernel trial of image $6: its try taken"
+        else gr_log "kernel trial of image $6: its try could not be taken (the state is read only, or its write failed)"; fi
+    fi
     if [ -n "$2" ] && [ -e "$2" ]; then
         e2fsck -p "$2" >/dev/null 2>&1; _gr_rc=$?
         [ $_gr_rc -lt 4 ] || gr_log "e2fsck -p $2: exit $_gr_rc (mounting anyway)"
@@ -243,7 +265,10 @@ gr_boot() {
     fi
     _gr_st=$_gr_sm/state/deploy
     if [ -n "$_gr_ud" ]; then
-        if [ $_gr_rw = 1 ]; then _gr_id=$(gr_pick "$_gr_sm/state"); else _gr_id=$(gr_would_pick "$_gr_sm/state"); fi
+        if [ -n "$GR_KBOOT" ]; then
+            _gr_id=$(gs_kv "$_gr_st" current)
+            gr_log "kernel $GR_KBOOT boot: the current deployment ${_gr_id:-(none)}, no pick"
+        elif [ $_gr_rw = 1 ]; then _gr_id=$(gr_pick "$_gr_sm/state"); else _gr_id=$(gr_would_pick "$_gr_sm/state"); fi
         for _gr_try in "$_gr_id" "$(gs_kv "$_gr_st" current)" "$(gs_kv "$_gr_st" previous)"; do
             [ -n "$_gr_try" ] || continue
             if gr_assemble "$_gr_sm" "$_gr_ud" "$_gr_try" "$4" "$5"; then GR_BOOTED=$_gr_try; return 0; fi
@@ -276,7 +301,8 @@ gr_boot_umount() {
 # overlay moved to /run/glassine/{system,userdata,root} (deploy.conf's
 # SYSTEM_MNT, USERDATA_MNT), a bare boot's tmpfs to /run/glassine/bare, the
 # booted deployment in /run/glassine/booted (for the boot-success service's
-# accept); the state lock released, so the system's glassine-deploy can take it.
+# accept), GR_KBOOT in /run/glassine/kernel-boot (that service skips a kernel
+# trial or finishing boot); the state lock released, so the system's glassine-deploy can take it.
 gr_carry() {
     _gr_r=$1/run/glassine
     # a base without /run: made in the overlay underneath (/ is read-only)
@@ -288,5 +314,6 @@ gr_carry() {
     mount --move "$1.rw" "$_gr_r/root" || return 1
     if mountpoint -q "$1.tmp"; then mkdir -p "$_gr_r/bare" && mount --move "$1.tmp" "$_gr_r/bare" || return 1; fi
     echo "$GR_BOOTED" > "$_gr_r/booted"
+    echo "${GR_KBOOT:-}" > "$_gr_r/kernel-boot"
     exec 9>&-
 }

@@ -81,6 +81,16 @@ gs_kernel_candidate() {
     echo "$_gs_c"
 }
 
+# gs_kernel_boot FILE IMG: what a boot of image IMG is to state/kernel FILE
+# (FR-011): `finishing` (IMG is `writing`: a default-slot write started and
+# its state write didn't happen), `trial` (IMG is `candidate_img`), or empty
+gs_kernel_boot() {
+    [ -n "$2" ] && [ -r "$1" ] || return 0
+    if [ "$2" = "$(gs_kv "$1" writing)" ]; then echo finishing
+    elif [ "$2" = "$(gs_kv "$1" candidate_img)" ]; then echo trial
+    fi
+}
+
 # gs_kernel_cancel FILE: drop the kernel candidate (glassine-bootimg cancel);
 # the default boot and the image files are left alone
 gs_kernel_cancel() { gs_update "$1" candidate= candidate_img= tries= requested=; }

@@ -508,7 +508,35 @@ ok "gr_boot: a candidate that does not assemble: failed, current boots" "gr_boot
 rm -rf $R.ud/$P/deployments/dz; gs_update $R.sys/state/deploy candidate=d1 tries=2 failed=; echo version=9 > $R.sys/state/format
 gr_boot_umount $R
 ok "gr_boot: a newer state format: boots what it would pick, writes nothing" "gr_boot $SD $UDEV $P $R 7.3.0 2>$W/blog && [ \"\$GR_BOOTED\" = d1 ] && [ \"\$(gs_kv $R.sys/state/deploy tries)\" = 2 ] && grep -q 'newer than this initramfs' $W/blog"
-echo version=1 > $R.sys/state/format; gs_update $R.sys/state/deploy candidate= tries=0
+echo version=1 > $R.sys/state/format
+# the kernel trial (FR-011): a deployment candidate it must not pick or try
+gs_update $R.sys/state/deploy candidate=d1 tries=2
+printf 'current=7.3.0\ncandidate=7.4.0\ncandidate_img=c0ffee\ntries=1\nrequested=c0ffee\n' > $R.sys/state/kernel
+gr_boot_umount $R
+ok "gr_kernel_mode: the candidate's image a trial, another none, read-only and unmounted again" "[ \"\$(gr_kernel_mode $SD c0ffee)\" = trial ] && [ -z \"\$(gr_kernel_mode $SD beef)\$(gr_kernel_mode $SD '')\" ] && ! grep -q '$GR_TMP' /proc/mounts"
+# the state lock held on a trial boot: it still boots as a trial, nothing written
+mount -t btrfs $SD $S; ( exec 8>>$S/state/.lock; flock -n 8 && : > $W/lheld; exec sleep 60 ) & LH=$!
+while [ ! -e $W/lheld ]; do sleep 0.1; done
+ok "gr_boot, a kernel trial with the state locked: boots current, the try not taken, said" "gr_boot $SD $UDEV $P $R 7.3.0 c0ffee 2>$W/blog && [ \"\$GR_KBOOT\" = trial ] && [ \"\$GR_BOOTED\" = $CUR ] && [ \"\$(gs_kv $R.sys/state/kernel tries)\" = 1 ] && [ \"\$(gs_kv $R.sys/state/kernel requested)\" = c0ffee ] && grep -q 'its try could not be taken' $W/blog"
+kill $LH; wait $LH 2>/dev/null; rm -f $W/lheld
+gr_boot_umount $R; umount $S
+ok "gr_boot, a kernel trial: the try taken, requested cleared, current with no deployment pick or try" "gr_boot $SD $UDEV $P $R 7.3.0 c0ffee 2>$W/blog && [ \"\$GR_KBOOT\" = trial ] && [ \"\$GR_BOOTED\" = $CUR ] && [ \"\$(gs_kv $R.sys/state/kernel tries)\" = 0 ] && [ -z \"\$(gs_kv $R.sys/state/kernel requested)\" ] && [ \"\$(gs_kv $R.sys/state/deploy candidate)\" = d1 ] && [ \"\$(gs_kv $R.sys/state/deploy tries)\" = 2 ]"
+ok "gr_carry after a trial: kernel-boot = trial" "gr_carry $R && [ \"\$(cat $R/run/glassine/kernel-boot)\" = trial ]"
+# a release the base has no directory for (a base never carries one)
+mkdir -p $R/run/glassine/system/modules/7.4.0-new; echo ko > $R/run/glassine/system/modules/7.4.0-new/x.ko
+gr_boot_umount $R
+ok "gr_boot: a release the base has no directory for: made through the merged root, the modules bound" "gr_boot $SD $UDEV $P $R 7.4.0-new c0ffee 2>$W/blog && [ \"\$(cat $R/lib/modules/7.4.0-new/x.ko)\" = ko ] && mountpoint -q $R/lib/modules/7.4.0-new && ! grep -q 'no modules for' $W/blog"
+gr_carry $R
+gs_update $R/run/glassine/system/state/kernel writing=c0ffee writing_op=accept requested=c0ffee
+gr_boot_umount $R
+ok "gr_kernel_mode: the image writing names: finishing" "[ \"\$(gr_kernel_mode $SD c0ffee)\" = finishing ]"
+ok "gr_boot, a finishing boot: no try taken, state/kernel unwritten, current with no pick" "gr_boot $SD $UDEV $P $R 7.3.0 c0ffee 2>$W/blog && [ \"\$GR_KBOOT\" = finishing ] && [ \"\$GR_BOOTED\" = $CUR ] && [ \"\$(gs_kv $R.sys/state/kernel requested)\" = c0ffee ] && [ \"\$(gs_kv $R.sys/state/deploy tries)\" = 2 ]"
+gs_update $R.sys/state/kernel writing= writing_op=; echo version=9 > $R.sys/state/format
+gr_boot_umount $R
+ok "a newer state format: no kernel trial, state/kernel unwritten" "[ -z \"\$(gr_kernel_mode $SD c0ffee)\" ] && gr_boot $SD $UDEV $P $R 7.3.0 c0ffee 2>$W/blog && [ -z \"\$GR_KBOOT\" ] && [ \"\$GR_BOOTED\" = d1 ] && [ \"\$(gs_kv $R.sys/state/kernel requested)\" = c0ffee ]"
+ok "gr_carry, no kernel trial: kernel-boot empty" "gr_carry $R && [ -e $R/run/glassine/kernel-boot ] && [ -z \"\$(cat $R/run/glassine/kernel-boot)\" ]"
+echo version=1 > $R/run/glassine/system/state/format; rm $R/run/glassine/system/state/kernel
+gs_update $R/run/glassine/system/state/deploy candidate= tries=0
 gr_boot_umount $R
 ok "gr_boot without userdata: bare on the newest base" "gr_boot $SD '' $P $R 7.3.0 2>$W/blog && [ \"\$GR_BOOTED\" = bare:b1 ] && [ \"\$(cat $R/etc/motd)\" = welcome ] && gr_carry $R && mountpoint -q $R/run/glassine/bare"
 gr_boot_umount $R
