@@ -41,6 +41,7 @@ install: glassine-reboot glassine-slot
 	install -Dm755 openrc/glassine-devmode $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-devmode
 	install -Dm644 conf/deploy.conf.example $(DESTDIR)$(PREFIX)/share/glassine-boot/deploy.conf.example
 	install -Dm755 sbin/glassine-reboot-clean $(DESTDIR)$(PREFIX)/sbin/glassine-reboot-clean
+	install -Dm755 openrc/glassine-reboot-reason $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-reboot-reason
 	install -Dm755 glassine-reboot $(DESTDIR)$(PREFIX)/sbin/glassine-reboot
 	install -Dm755 glassine-slot $(DESTDIR)$(PREFIX)/sbin/glassine-slot
 	install -Dm755 lib/glassine-bootimg-pack $(DESTDIR)$(PREFIX)/lib/glassine-bootimg/glassine-bootimg-pack
@@ -60,6 +61,7 @@ check:
 	sh test/blocklist/test.sh
 	sh test/seed/test.sh
 	sh test/devmode/test.sh
+	sh test/reboot/test.sh
 
 clean:
 	rm -f glassine-reboot glassine-slot initramfs.cpio.gz
