@@ -37,7 +37,7 @@
 # up to GLASSINE_DEVMODE_UDC_WAIT seconds (default 90); the service runs it in
 # the background so nothing else waits with it.
 set -u
-CMDLINE=${GLASSINE_PROC_CMDLINE:-/proc/cmdline}
+PROC_CMDLINE=${GLASSINE_PROC_CMDLINE:-/proc/cmdline}   # not CMDLINE: board.conf has its own (the boot image's)
 BOARD=${GLASSINE_BOARD_CONF:-/etc/glassine-bootimg/board.conf}
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 RUN=${GLASSINE_DEVMODE_RUN:-/run/glassine-devmode}
@@ -66,7 +66,7 @@ say() {
     return 0
 }
 
-asked() { grep -qw 'glassine.devmode=usb' "$CMDLINE" 2>/dev/null; }
+asked() { grep -qw 'glassine.devmode=usb' "$PROC_CMDLINE" 2>/dev/null; }
 
 # the developer folder: only on a deployment's boot with userdata mounted
 folder() {
