@@ -261,6 +261,9 @@ Each story says which phase it belongs to.
   - `failed`.
 
   Readers ignore unknown keys; a key changing meaning bumps `format`.
+- **FR-018** A new boot image or boot entry keeps the identity keys of the running
+  boot's command line (`glassine.system=`, `glassine.userdata=`; 001 FR-020) unchanged.
+  `install` refuses an image whose command line would drop or change them.
 
 ## Decisions this spec adds to the contract (for review)
 
