@@ -1,5 +1,5 @@
 #!/bin/sh
-# Host test of glassine-reboot-clean and the glassine-reboot-reason service with
+# Host test of reboot, glassine-reboot-clean and the glassine-reboot-reason service with
 # stubs for init's reboot and glassine-reboot.
 #   test.sh            exit 0 = all checks pass
 set -eu
