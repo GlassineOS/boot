@@ -56,9 +56,13 @@ USB_VENDOR=0x1d6b USB_PRODUCT=0x0104 USB_MANUFACTURER=GlassineOS
 [ -r "$BOARD" ] && . "$BOARD"
 D=$USERDATA_MNT/$USERDATA_PREFIX/devmode
 
+# to stderr, the kernel log and the system log (the service runs it in the
+# background with no terminal; a system log on disk keeps the messages after
+# a reboot, where the kernel log needs a running log reader)
 say() {
     echo "glassine-devmode: $*" >&2
     { [ -w /dev/kmsg ] && echo "<5>glassine-devmode: $*" > /dev/kmsg; } 2>/dev/null
+    command -v logger >/dev/null 2>&1 && logger -t glassine-devmode -p daemon.notice -- "$*" 2>/dev/null
     return 0
 }
 
@@ -110,6 +114,7 @@ running() { [ -s "$RUN/$1.pid" ] && kill -0 "$(cat "$RUN/$1.pid")" 2>/dev/null; 
 
 start() {
     asked || return 0
+    say "starting (glassine.devmode=usb)"
     [ -n "$DEVMODE_ADDR" ] || { say "glassine.devmode=usb, but $BOARD has no DEVMODE_ADDR: nothing started"; return 0; }
     folder || return 0
     running sshd && { say "already running"; return 0; }
