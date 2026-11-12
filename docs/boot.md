@@ -26,6 +26,20 @@ image):
 | `DEVMODE_ADDR`, `DEVMODE_NETMASK`, `DEVMODE_DHCP_START`, `DEVMODE_DHCP_END`, `USB_VENDOR`, `USB_PRODUCT`, `USB_MANUFACTURER` | — | developer mode (`glassine.devmode=usb` only): the USB network's address and developer range, in the initramfs (telnet, HTTP) and in the booted system (`glassine-devmode`: SSH with the developer folder's keys; README, "Developer mode") |
 | `DEVICE_PART` | empty | GPT name of the ext4 partition that holds the device seed (`glassine/`); empty = no device data ([kernel-artifacts.md](kernel-artifacts.md#device-data-files-from-the-device-itself)) |
 
+### Command-line keys
+
+Set by the installer in the boot entry of a machine whose partitions it made (a PC), and
+kept by every later boot image or entry (spec 004 FR-018). They take precedence over
+`ROOT_PART` and `USERDATA_PART` (spec 001 FR-020; specified, not built).
+
+| Key | Meaning |
+|---|---|
+| `glassine.system=PARTUUID=<id>` | the system partition (deployments layout) |
+| `glassine.userdata=PARTUUID=<id>` | userdata |
+
+A key that is given and whose partition doesn't appear stops the boot with a message; it
+is never replaced by a name or a partition type.
+
 The booted system reads the same keys from `/etc/glassine-bootimg/board.conf`, which the
 image builder installs (the seed tool takes `DEVICE_PART` from there, `glassine-devmode`
 the developer mode keys).
