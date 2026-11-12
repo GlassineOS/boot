@@ -124,6 +124,14 @@ start() {
         say "made the ed25519 host key in $D"
     fi
     [ -e "$D/authorized_keys" ] || say "no $D/authorized_keys yet: nobody can log in (an administrator or the recovery puts the keys there)"
+    # sshd reads the keys from a copy in $RUN: its StrictModes check walks every
+    # directory above the keys file, and userdata's may belong to another system
+    # (Android's media directory is media_rw, group-writable); a changed key
+    # takes effect at the next start
+    rm -f "$RUN/authorized_keys"
+    if [ -e "$D/authorized_keys" ]; then
+        cp "$D/authorized_keys" "$RUN/authorized_keys" && chmod 0600 "$RUN/authorized_keys" || { say "cannot copy the keys to $RUN"; return 1; }
+    fi
     IF=$(usbnet) || { say "the USB network did not come up"; usbnet_down; return 1; }
     # NetworkManager would otherwise take the new interface over (an automatic
     # wired connection) and drop the address below
@@ -142,7 +150,7 @@ start() {
 ListenAddress $DEVMODE_ADDR
 Port 22
 HostKey $D/ssh_host_ed25519_key
-AuthorizedKeysFile $D/authorized_keys
+AuthorizedKeysFile $RUN/authorized_keys
 PubkeyAuthentication yes
 PasswordAuthentication no
 KbdInteractiveAuthentication no
