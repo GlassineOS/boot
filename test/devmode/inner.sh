@@ -52,13 +52,16 @@ ok "the USB gadget: NCM on the first UDC, the board's identity" "[ \"\$(cat $W/c
 ok "the address on the gadget's interface" "grep -qx 'ifconfig usb0 10.0.9.1 netmask 255.255.255.0 up' $C"
 ok "NetworkManager told to leave the interface alone, before the address" "[ \"\$(grep -n -m1 '^nmcli device set usb0 managed no\$' $C | cut -d: -f1)\" -lt \"\$(grep -n -m1 '^ifconfig usb0' $C | cut -d: -f1)\" ]"
 ok "the address server: the board's range, on that interface only" "grep -qx 'start 10.0.9.2' $R/udhcpd.conf && grep -qx 'end 10.0.9.10' $R/udhcpd.conf && grep -qx 'interface usb0' $R/udhcpd.conf && grep -q '^busybox-extras udhcpd ' $C"
-ok "the SSH server: only on DEVMODE_ADDR, keys only from the developer folder, no passwords" "grep -qx 'ListenAddress 10.0.9.1' $R/sshd_config && [ \$(grep -c '^ListenAddress' $R/sshd_config) = 1 ] && grep -qx 'AuthorizedKeysFile $DM/authorized_keys' $R/sshd_config && grep -qx 'HostKey $DM/ssh_host_ed25519_key' $R/sshd_config && grep -qx 'PasswordAuthentication no' $R/sshd_config && grep -qx 'KbdInteractiveAuthentication no' $R/sshd_config && grep -q '^sshd -f $R/sshd_config' $C"
+ok "the SSH server: only on DEVMODE_ADDR, keys only from the developer folder, no passwords" "grep -qx 'ListenAddress 10.0.9.1' $R/sshd_config && [ \$(grep -c '^ListenAddress' $R/sshd_config) = 1 ] && grep -qx 'AuthorizedKeysFile $R/authorized_keys' $R/sshd_config && grep -qx 'HostKey $DM/ssh_host_ed25519_key' $R/sshd_config && grep -qx 'PasswordAuthentication no' $R/sshd_config && grep -qx 'KbdInteractiveAuthentication no' $R/sshd_config && grep -q '^sshd -f $R/sshd_config' $C"
 ok "status: running" "dm status && grep -q 'running: SSH on 10.0.9.1' $W/out"
 ok "start again: already running, nothing new" ": > $C; dm start && grep -q 'already running' $W/out && [ ! -s $C ]"
 SP=$(cat $R/sshd.pid) UP=$(cat $R/udhcpd.pid)
 ok "stop: both servers gone, the gadget removed" "dm stop && ! kill -0 $SP 2>/dev/null && ! kill -0 $UP 2>/dev/null && gone"
 : > $C
 ok "a second start: the host key kept" "echo mine > $DM/ssh_host_ed25519_key; dm start && [ \"\$(cat $DM/ssh_host_ed25519_key)\" = mine ] && ! grep -q ssh-keygen $C"
+# sshd's StrictModes walks every directory above the keys file: it reads a root-only copy
+ok "the keys: a 0600 copy in the run directory, as in the developer folder" "dm stop; echo 'ssh-ed25519 AAAA dev' > $DM/authorized_keys; dm start && cmp -s $DM/authorized_keys $R/authorized_keys && [ \"\$(stat -c %a $R/authorized_keys)\" = 600 ] && [ \"\$(stat -c %a $R)\" = 700 ]"
+ok "the keys removed from the developer folder: the copy goes at the next start" "dm stop; rm -f $DM/authorized_keys; dm start && [ ! -e $R/authorized_keys ]"
 reset
 printf 'DEVMODE_ADDR=10.0.9.1\n' > $W/board.conf.nodhcp
 ok "no developer range on the board: no address server" "BC=$W/board.conf.nodhcp dm start; [ \$? = 0 ] && ! grep -q udhcpd $C && grep -q '^sshd ' $C"
