@@ -18,7 +18,8 @@ stub busybox-extras 'p=$(sed -n "s/^pidfile //p" "$2"); sleep 300 & echo $! > "$
 stub sshd 'p=$(sed -n "s/^PidFile //p" "$2"); sleep 300 & echo $! > "$p"'
 stub ssh-keygen 'while [ $# -gt 1 ]; do shift; done; echo key > "$1"; echo pub > "$1.pub"'
 printf 'USERDATA_MNT=%s/ud\nRUN_DIR=%s/run/glassine\n' $W $W > $W/deploy.conf
-printf 'DEVMODE_ADDR=10.0.9.1\nDEVMODE_NETMASK=255.255.255.0\nDEVMODE_DHCP_START=10.0.9.2\nDEVMODE_DHCP_END=10.0.9.10\n' > $W/board.conf
+# as a real board.conf: it names the boot image's command line CMDLINE too
+printf 'CMDLINE="panic=5 rdinit=/init"\nDEVMODE_ADDR=10.0.9.1\nDEVMODE_NETMASK=255.255.255.0\nDEVMODE_DHCP_START=10.0.9.2\nDEVMODE_DHCP_END=10.0.9.10\n' > $W/board.conf
 : > $W/cmdline
 DM=$W/ud/media/glassine/devmode R=$W/rundm
 dm() {
