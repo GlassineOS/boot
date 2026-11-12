@@ -20,7 +20,9 @@ This feature adds what keeping many of them needs:
    automatically.
 2. **Removing.** A deployment can be removed by hand, in the running system or in the
    recovery, without touching any deployment the boot can pick.
-3. **Retention.** Unprotected deployments are removed by a policy (a count), and when an
+3. **Retention.** Unprotected deployments are removed by a policy: a count each target
+   sets, or, where it sets none, a count estimated from the size of its system partition.
+   When an
    update or a reset lacks space, the oldest unprotected ones go first. A deployment the
    boot may need is never removed to make room.
 4. **Space.** For each deployment and base, the space its removal would free, which for a
@@ -51,7 +53,8 @@ refuses until it is unpinned.
 
 ### Scenario 3 – Retention after an accept (P2)
 
-**Given** more unprotected deployments than the retention count,
+**Given** more unprotected deployments than the retention count (set by the target, or
+estimated, FR-008),
 **When** a candidate is accepted,
 **Then** the oldest unprotected deployments beyond the count are removed, failed ones
 first, and each removal is logged with its id.
@@ -99,6 +102,9 @@ refusals as the running system.
 - Two writers at once: the second gets exit 6, as for every other writer.
 - A retention count of 0 turns count-based removal off; making room (Scenario 4) still
   works.
+- A target with a small system partition: the estimate can be 1 (only one unprotected
+  deployment is kept), never 0; current, previous and the other protected ones are kept
+  regardless.
 
 ## Requirements
 
@@ -130,8 +136,18 @@ refusals as the running system.
 ### Retention and making room
 
 - **FR-008**: `KEEP_DEPLOYMENTS` in `deploy.conf` is the number of unprotected deployments
-  kept after an accept; default [NEEDS CLARIFICATION: the default count]. 0 turns
-  count-based removal off.
+  kept after an accept. `deploy.conf` belongs to the target's device package, so each
+  target sets its own. 0 turns count-based removal off. Empty or missing means the
+  estimate of FR-008a.
+- **FR-008a**: The estimate is computed at each accept from the system partition:
+  `floor((0.9 × partition size − full) / step)`, at least 1, where `full` is the size of the
+  files of the newest base and `step` is the average space the bases other than the oldest
+  would free on their own (FR-014), or `full` while there is only one base. It is the
+  number of base updates the partition holds next to one full base, with a 10 % margin.
+  Deployments on the same base cost nothing on the system partition, so the estimate
+  errs toward keeping.
+- **FR-008b**: `status` reports the count in use and where it comes from
+  (`keep=<N>`, `keep_source=set|estimate`).
 - **FR-009**: After a successful `accept`, deployments beyond `KEEP_DEPLOYMENTS` among the
   unprotected ones are removed: failed ones first, then ones whose base is gone, then the
   oldest by `created`. The accept succeeds whether or not a removal fails; a failed removal
@@ -163,7 +179,8 @@ refusals as the running system.
 
 - **Deployment** (001): one bootable root; now also pinned or not.
 - **Protected deployment**: one the boot may pick or a running command uses (FR-004).
-- **Retention count**: how many unprotected deployments an accept leaves.
+- **Retention count**: how many unprotected deployments an accept leaves; set per target,
+  or estimated from the system partition's size and the bases on it.
 
 ## Success criteria
 
@@ -175,7 +192,10 @@ refusals as the running system.
   byte-identical.
 - **SC-003**: With ten deployments on three bases, `list` and `bases` report space per
   entry, and removing a base frees the reported amount within 5 %.
-- **SC-004**: The recovery's list shows every deployment on a device with at least ten.
+- **SC-004**: On host-test partitions of 3, 8 and 32 GiB with bases of a real size, the
+  estimated count keeps the bases it protects plus one incoming full base within the
+  partition every time.
+- **SC-005**: The recovery's list shows every deployment on a device with at least ten.
 
 ## Assumptions
 
