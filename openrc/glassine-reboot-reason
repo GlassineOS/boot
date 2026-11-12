@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+# The reboot reason glassine-reboot-clean left in /run: the last service of the
+# shutdown runlevel (rc-update add glassine-reboot-reason shutdown), after
+# OpenRC's mount-ro and glassine-mount-ro, reboots with it (glassine-reboot,
+# reboot(2) with the reason), so the bootloader sees it. Without a reason file it
+# does nothing and init's own reboot or power-off follows.
+# shellcheck disable=SC2034  # read by openrc-run
+description="glassine: reboot with the reason glassine-reboot-clean left"
+
+depend() {
+	after killprocs savecache mount-ro glassine-mount-ro glassine-switch
+}
+
+start() {
+	_f=${GLASSINE_REBOOT_REASON_FILE:-/run/glassine-reboot.reason}
+	[ -s "$_f" ] || return 0
+	_why=$(cat "$_f")
+	case "$_why" in
+	'' | *[!a-z0-9-]*) ewarn "glassine: bad reboot reason in $_f, ignored"; return 0 ;;
+	esac
+	ebegin "glassine: rebooting ($_why)"
+	sync
+	exec "${GLASSINE_REBOOT:-/usr/sbin/glassine-reboot}" "$_why"
+}

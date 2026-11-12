@@ -25,6 +25,8 @@ jobs:
         run: sh test/seed/test.sh
       - name: glassine-devmode with stubs
         run: sh test/devmode/test.sh
+      - name: glassine-reboot-clean and its shutdown service with stubs
+        run: sh test/reboot/test.sh
   build:
     runs-on: ubuntu-24.04-arm
     steps:
@@ -65,4 +67,4 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - run: shellcheck -s sh -S warning -e SC3043 sbin/glassine-bootimg sbin/glassine-reboot-clean sbin/glassine sbin/glassine-deploy sbin/glassine-switch-hook sbin/glassine-deploy-accept sbin/glassine-hibernate lib/glassine-state.sh lib/glassine-root.sh lib/glassine-accounts.sh lib/glassine-kernel.sh lib/glassine-device.sh sbin/glassine-device-seed sbin/glassine-devmode build-initramfs.sh initramfs/init openrc/glassine-bootimg-promote openrc/glassine-switch openrc/glassine-mount-ro openrc/glassine-deploy-accept openrc/glassine-device-seed openrc/glassine-devmode test/*/*.sh
+      - run: shellcheck -s sh -S warning -e SC3043 sbin/glassine-bootimg sbin/glassine-reboot-clean sbin/glassine sbin/glassine-deploy sbin/glassine-switch-hook sbin/glassine-deploy-accept sbin/glassine-hibernate lib/glassine-state.sh lib/glassine-root.sh lib/glassine-accounts.sh lib/glassine-kernel.sh lib/glassine-device.sh sbin/glassine-device-seed sbin/glassine-devmode build-initramfs.sh initramfs/init openrc/glassine-bootimg-promote openrc/glassine-switch openrc/glassine-mount-ro openrc/glassine-deploy-accept openrc/glassine-device-seed openrc/glassine-devmode openrc/glassine-reboot-reason test/*/*.sh
