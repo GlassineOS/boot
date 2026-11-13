@@ -26,8 +26,9 @@ board:
    network and an SSH server on it that accepts only keys the developer put in place.
    Without it, `boot` starts neither.
 
-What a device's files are and where they come from is the device package's business: it
-ships a list and nothing else. The seed tool, its format, its boot steps and its service
+What a device's files are and where they come from is written in the device's
+description ([installer 002](https://github.com/GlassineOS/installer/blob/main/specs/002-device-description/spec.md)
+FR-018); the device package ships the list derived from it and nothing else. The seed tool, its format, its boot steps and its service
 are `boot`'s.
 
 ## User scenarios
@@ -96,7 +97,8 @@ function, no address server and no SSH server.
 
 ### The list
 
-- **FR-001**: A device package ships its list at `/usr/share/glassine/device-data.list`.
+- **FR-001**: A device package ships its list at `/usr/share/glassine/device-data.list`,
+  derived from the device's description when the package is built (installer 002 FR-030).
   The first line is `format=1`. Each following line is `NAME SOURCE [CHECK]`: the name in
   the seed, the source as `PART:/PATH`, and an optional check (`wbf`, a waveform header;
   more may be added). `#` starts a comment. The list never names `DEVICE_PART`; that is
