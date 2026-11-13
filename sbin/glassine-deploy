@@ -15,6 +15,7 @@
 #   glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
 #   glassine-deploy bases [--porcelain]
 #   glassine-deploy bases remove BASE [--yes] [--discard-hibernation]
+#   glassine-deploy remove ID [--yes] [--discard-hibernation]
 #   glassine-deploy packages [ID] [--porcelain]
 #   glassine-deploy switch [--discard-hibernation]
 #   glassine-deploy accept ID
@@ -37,6 +38,15 @@
 # the booted, current, candidate or staged deployment, and asks first when other
 # deployments (the previous one, usually) would lose theirs: those stay on
 # userdata but can no longer be selected.
+# remove ID deletes a deployment's layers from userdata: it refuses the current,
+# candidate, staged and booted deployment and one that is mounted, and asks
+# first for the previous one (its rollback is lost). The clean-up does the same
+# by itself after a switch, after an accept and before a new deployment is
+# staged: every deployment that is not current, previous, candidate, staged,
+# the last failed one or the booted one goes. A removal is moved out of
+# deployments/ first and then deleted, so a cut one never shows as a
+# deployment and the next clean-up finishes it. stage checks the free space on
+# userdata for the replay first (exit 5, nothing staged).
 # packages lists how a deployment's packages differ from its base's (current
 # by default): added and removed world entries, packages installed in another
 # version (raised/lowered, by apk version -t when apk is there, else changed);
@@ -341,6 +351,72 @@ kernel_gate() {
         return 0
     fi
     fail 8 "a kernel candidate ($_kc) is set: run glassine-bootimg cancel first, or let its trial finish"
+}
+
+# dep_mounted ID: a mount of this namespace names deployment ID's directory (a
+# mount point in it, or an overlay with a layer of it). Matched by the path's end
+# (deployments/ID), since an overlay keeps the paths it was mounted with (the
+# initramfs's, before its mounts moved).
+dep_mounted() {
+    while IFS= read -r _l; do
+        case "$_l" in
+        *"/deployments/$1/"*|*"/deployments/$1 "*|*"/deployments/$1,"*|*"/deployments/$1:"*|*"/deployments/$1") return 0 ;;
+        esac
+    done < "${GLASSINE_DEPLOY_MOUNTINFO:-/proc/self/mountinfo}"
+    return 1
+}
+
+# trash_purge: deletes what earlier removals left in deployments.removing/
+# (a cut rm -rf). Needs UD. Never fails.
+trash_purge() {
+    for _x in "$UD/deployments.removing"/*; do
+        [ -e "$_x" ] || continue
+        rm -rf "$_x" || echo "glassine-deploy: cannot delete $_x yet; the next clean-up tries again" >&2
+    done
+    return 0
+}
+
+# dep_remove ID: deployment ID off userdata. Refuses (1) a mounted one. First
+# a rename out of deployments/ (one step: from then on it is no deployment),
+# then the delete; a cut delete is finished by trash_purge. Needs UD and the
+# state lock; the caller makes sure the state names ID nowhere.
+dep_remove() {
+    if dep_mounted "$1"; then
+        echo "glassine-deploy: deployment $1 is mounted; not removed" >&2
+        return 1
+    fi
+    _t=$UD/deployments.removing
+    mkdir -p "$_t" && { [ ! -e "$_t/$1" ] || rm -rf "${_t:?}/$1"; } && mv "$UD/deployments/$1" "$_t/$1" ||
+        { echo "glassine-deploy: cannot move deployment $1 aside; not removed" >&2; return 1; }
+    rm -rf "${_t:?}/$1" ||
+        { echo "glassine-deploy: deployment $1 is gone from the list, but not all of it is deleted; the next clean-up finishes it" >&2; return 1; }
+}
+
+# gc_deployments: the clean-up. Every deployment on userdata that is not current,
+# previous, candidate, staged, the last failed one (state failed=) or the booted
+# one is removed (dep_remove: never a mounted one). Needs state_open_rw + UD.
+# Never fails: it runs after the state write of a switch or an accept, which
+# must not read as failed because of it. Does nothing while the current
+# deployment is not on userdata (an unreadable state or another userdata must
+# not read as "nothing is needed").
+gc_deployments() {
+    _gc_cur=$(gs_kv "$S/deploy" current)
+    if [ -z "$_gc_cur" ] || [ ! -r "$UD/deployments/$_gc_cur/meta" ]; then
+        echo "glassine-deploy: clean-up skipped: the current deployment ${_gc_cur:-(none)} is not on userdata" >&2
+        return 0
+    fi
+    _gc_keep=" $_gc_cur $(gs_kv "$S/deploy" previous) $(gs_kv "$S/deploy" candidate) $(gs_kv "$S/deploy" staged) $(gs_kv "$S/deploy" failed) $(cat "$RUN_DIR/booted" 2>/dev/null) "
+    trash_purge
+    _gc_done=''
+    for _gc_d in "$UD/deployments"/*; do
+        [ -d "$_gc_d" ] || continue
+        _gc_id=${_gc_d##*/}
+        valid_name "$_gc_id" || continue
+        case "$_gc_keep" in *" $_gc_id "*) continue ;; esac
+        dep_remove "$_gc_id" && _gc_done="$_gc_done $_gc_id"
+    done
+    [ -z "$_gc_done" ] || echo "glassine-deploy: clean-up: removed$_gc_done"
+    return 0
 }
 
 # meta_kv META KEY: one key of a deployment's meta (key=value text)
@@ -736,9 +812,26 @@ EOF
     rm -rf "$t"; REPLAY_TMP=''
 }
 
+# replay_space_check: refuses (exit 5, nothing staged) when userdata has less
+# free space than the replay is likely to need: what the user's packages take in
+# the current deployment (its build layer and the package directories of its
+# switch layer), a quarter more for the downloads, and 16 MiB. An estimate, not
+# a promise: a replay that still runs out of space removes what it made.
+replay_space_check() {
+    _rc_d=$UD/deployments/$cur
+    _rc_k=$(du -sk "$_rc_d/build" "$_rc_d/switch/usr" "$_rc_d/switch/lib" "$_rc_d/switch/bin" "$_rc_d/switch/sbin" "$_rc_d/switch/opt" 2>/dev/null |
+        awk '{ s += $1 } END { print s + 0 }')
+    _rc_need=$((_rc_k + _rc_k / 4 + 16384))
+    _rc_avail=$(df -Pk "$UD" | awk 'NR == 2 { print $4 }')
+    [ "${_rc_avail:-0}" -ge "$_rc_need" ] ||
+        fail 5 "not enough space on userdata for the replay: about ${_rc_need} KiB needed, ${_rc_avail:-?} KiB free; nothing staged (glassine-deploy list shows what takes space; remove ID frees a deployment)"
+}
+
 # stage_new: a new deployment on $base (kind, carry set) becomes the staged one;
 # --now switches at once. Needs state_open_rw + UD, cur.
 stage_new() {
+    gc_deployments
+    [ "$kind" = update ] && [ "$NOREPLAY" = 0 ] && replay_space_check
     id=$(new_id)
     NEW_DEP=$UD/deployments/$id
     mkdir -p "$NEW_DEP/build" "$NEW_DEP/switch" "$NEW_DEP/work" || die "cannot create $NEW_DEP"
@@ -749,7 +842,7 @@ stage_new() {
     old=$(gs_kv "$S/deploy" staged)
     gs_update "$S/deploy" "staged=$id" || die "cannot write $S/deploy"
     NEW_DEP=''
-    [ -n "$old" ] && [ "$old" != "$id" ] && rm -rf "$UD/deployments/$old"
+    [ -n "$old" ] && [ "$old" != "$id" ] && { dep_remove "$old" || :; }
     if [ "$NOW" = 1 ]; then
         do_switch
     else
@@ -828,6 +921,7 @@ do_switch() {
     gs_update "$S/deploy" staged= "candidate=$id" tries=2 || die "cannot write $S/deploy"
     rm -f "$SWITCHING"; SWITCHING=''
     echo "glassine-deploy: $id boots next (2 tries, then ${cur:-the current one} again)"
+    gc_deployments
 }
 
 # switch: the shutdown hook's step (after services stop; the hook decides
@@ -1003,6 +1097,37 @@ cmd_accept() {
     [ "$ARG" = "$(gs_kv "$S/deploy" candidate)" ] || die "$ARG is not the candidate"
     gs_update "$S/deploy" "previous=$cur" "current=$ARG" candidate= tries=0 || die "cannot write $S/deploy"
     echo "glassine-deploy: $ARG accepted (previous: ${cur:-none})"
+    # the clean-up only where userdata is mounted already (the running system):
+    # an accept never mounts it for that
+    if ud_mounted; then
+        UD=$USERDATA_MNT/$USERDATA_PREFIX
+        gc_deployments
+    fi
+}
+
+cmd_remove() {
+    valid_name "$ARG" || fail 2 "not a deployment id: $ARG"
+    state_open_rw
+    ud_open_rw
+    [ -d "$UD/deployments/$ARG" ] || die "no deployment $ARG on userdata"
+    for _k in current candidate staged; do
+        [ "$ARG" = "$(gs_kv "$S/deploy" $_k)" ] && die "$ARG is the $_k deployment; nothing removed"
+    done
+    [ "$ARG" = "$(cat "$RUN_DIR/booted" 2>/dev/null)" ] && die "$ARG is the running deployment; nothing removed"
+    dep_mounted "$ARG" && die "$ARG is mounted; nothing removed"
+    keys=''
+    if [ "$ARG" = "$(gs_kv "$S/deploy" previous)" ]; then
+        confirm "Remove the previous deployment $ARG? Rollback to $ARG is lost."
+        keys=previous=
+    fi
+    [ "$ARG" = "$(gs_kv "$S/deploy" failed)" ] && keys="$keys failed="
+    # the state first: a cut removal then leaves a deployment nothing names,
+    # which the next clean-up removes
+    # shellcheck disable=SC2086  # one key per word
+    [ -z "$keys" ] || gs_update "$S/deploy" $keys || die "cannot write $S/deploy"
+    trash_purge
+    dep_remove "$ARG" || exit 1
+    echo "glassine-deploy: deployment $ARG removed"
 }
 
 [ $# -ge 1 ] || usage
@@ -1038,6 +1163,7 @@ stage:1) cmd_stage ;;
 receive:1) cmd_receive ;;
 bases:0) cmd_bases ;;
 bases:2) cmd_bases_remove ;;
+remove:1) cmd_remove ;;
 packages:0|packages:1) cmd_packages ;;
 switch:0) cmd_switch ;;
 accept:1) cmd_accept ;;
