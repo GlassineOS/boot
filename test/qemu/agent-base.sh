@@ -15,7 +15,8 @@
 #      changes, machine id and account, the package replayed; accepted;
 #      rollback selected
 #   2  d1 boots again with its own state; accepted; reset; a user shutdown
-#   3  the reset boots on d1's base with the migrate list only; accepted; a
+#   3  the reset boots on d1's base with the migrate list only; accepted (its
+#      clean-up removes the update, no longer previous); a
 #      reset marked to fail (health check); a user shutdown
 #   4, 5  the failing candidate: not accepted, twice (its two tries)
 #   6  the reset boots as current again, the candidate marked failed; DONE
@@ -195,6 +196,9 @@ case $stage in
     come_up "$R" "$B1"
     [ "$(meta "$R" kind)" = reset ]; res $? "$R is a reset (kind=reset)"
     accepted "$R"
+    # the accept's clean-up: $S (previous until this accept) is neither current nor previous now
+    S=$(cat "$Q/S")
+    [ ! -e "$UD/$P/deployments/$S" ] && [ -e "$UD/$P/deployments/d1/meta" ]; res $? "clean-up after the accept: $S removed, d1 (previous) kept"
     services
     [ "$(cat /etc/hostname)" = qtest-carried ]; res $? "reset kept: /etc/hostname (migrate list)"
     cmp -s /etc/machine-id "$Q/machine-id"; res $? "reset kept: the machine id"

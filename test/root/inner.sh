@@ -159,6 +159,12 @@ ok "gr_pick: no tries left -> failed, current boots" "[ \"\$(gr_pick $S/state)\"
 ok "list: failed" "$G list --porcelain | grep -q \"id=$N	state=failed\""
 ok "accept of a non-candidate: refused" "$G accept $N 2>/dev/null; [ \$? = 1 ] && [ \"\$(st current)\" = d1 ]"
 $G select $N >/dev/null
+# a deployment the clean-up would remove, mounted as a real overlay: it stays
+mkdir -p $U/deployments/dk/build $U/deployments/dk/switch $U/deployments/dk/work; printf 'base=b1\nkind=reset\n' > $U/deployments/dk/meta
+gr_assemble $S $U dk $W/rootk
+ok "accept with a kept deployment mounted (a real overlay): accepted, the clean-up leaves it, says so" "$G accept $N >/dev/null 2>$W/err && [ \"\$(st current)\" = $N ] && [ -e $U/deployments/dk/meta ] && grep -q 'deployment dk is mounted' $W/err && mountpoint -q $W/rootk"
+gr_umount $W/rootk
+ok "remove, on real mounts: the unmounted kept deployment goes, nothing left aside" "$G remove dk </dev/null >/dev/null && [ ! -e $U/deployments/dk ] && [ -z \"\$(ls -A $U/deployments.removing)\" ]"
 ok "accept the candidate: current, previous = d1" "$G accept $N >/dev/null && [ \"\$(st current)\" = $N ] && [ \"\$(st previous)\" = d1 ] && [ -z \"\$(st candidate)\" ]"
 ok "accept of the current one: no-op" "$G accept $N >/dev/null && [ \"\$(st current)\" = $N ]"
 ok "rollback: back to d1 as the candidate" "$G rollback >/dev/null && [ \"\$(st candidate)\" = d1 ]"

@@ -19,6 +19,8 @@ run on hardware**.
 | candidate | A deployment under test: it boots instead of current while it has tries left. |
 | previous | The deployment that was current before the last accept. |
 | staged | A deployment that is prepared but not yet selected: the next switch carries state into it and makes it the candidate. |
+| failed | The last candidate that ran out of tries or did not assemble (`state/deploy` `failed=`). |
+| kept | Any other deployment. Nothing boots it; the next clean-up removes it ([Clean-up](#clean-up)). |
 
 ## On-disk layout
 
@@ -43,6 +45,7 @@ userdata (ext4) under USERDATA_PREFIX (default media/glassine)
 │   ├── switch/                 the switch layer, then the live upper: every write of the
 │   │                           running deployment lands here
 │   └── work/                   overlayfs work directory
+├── deployments.removing/<id>/  a deployment being removed (below); never a deployment
 └── swap/
     ├── hibernate               the hibernate swap file
     └── hibernate.guard         written right before a hibernate (below)
@@ -177,10 +180,11 @@ glassine-deploy select ID [--yes] [--discard-hibernation]
 glassine-deploy rollback [--yes] [--discard-hibernation]
 glassine-deploy hibernate-invalidate [--yes]
 glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation]
-glassine-deploy stage BASE [--now] [--yes] [--discard-hibernation]
+glassine-deploy stage BASE [--no-replay] [--without NAME]… [--accept-downgrades] [--now] [--yes] [--discard-hibernation]
 glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
 glassine-deploy bases [--porcelain]
 glassine-deploy bases remove BASE [--yes] [--discard-hibernation]
+glassine-deploy remove ID [--yes] [--discard-hibernation]
 glassine-deploy packages [ID] [--porcelain]
 glassine-deploy switch [--discard-hibernation]
 glassine-deploy accept ID
@@ -194,14 +198,15 @@ glassine-deploy accept ID
 | `rollback` | `select` previous |
 | `hibernate-invalidate` | turns a hibernate image back into a plain swap file (that session is lost) |
 | `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Neither touches home, Flatpak's data or the developer folder (`home/`, `flatpak/`, `devmode/` above). |
-| `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. |
+| `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. Before the replay it checks the free space on userdata (below); too little is exit 5, nothing staged. |
 | `stage BASE` flags | `--no-replay` the bare base, `--without NAME` (repeatable) leaves NAME's change out (an added package, or the removal of the base's entry when the user changed it), `--accept-downgrades` takes lower versions. Exit 7: the replay needs one of these; nothing staged. |
 | `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. The only verb that needs btrfs-progs (and zstd for `.zst`). |
 | `packages [ID]` | how a deployment's packages (current by default) differ from its base's, derived each time (no bookkeeping): world entries `added` and `removed` (constraints and tags as written), packages installed in another version: `raised`/`lowered` (`apk version -t`; `changed` where apk is missing). A deployment that is not running needs userdata mounted. The replay input of a later base. |
 | `bases` | one record per subvolume under `bases/` and `modules/`, with the deployments whose meta names it |
 | `bases remove BASE` | deletes the subvolume and waits until its space is back. Refuses the base of the booted, current, candidate or staged deployment. Other deployments on it stay on userdata but can no longer be selected (`list` shows `base_present=no`); it asks first (`--yes`), naming them and a lost rollback. Modules are not removed. |
-| `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), merges the accounts (below), syncs, then sets `candidate=<id> tries=2 staged=`. Interrupted = nothing selected, redone in full next time. |
-| `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous. Refuses a non-candidate; accepting current is a no-op. |
+| `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), merges the accounts (below), syncs, then sets `candidate=<id> tries=2 staged=`, then the clean-up. Interrupted = nothing selected, redone in full next time. |
+| `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous, then the clean-up (where userdata is mounted already). Refuses a non-candidate; accepting current is a no-op. |
+| `remove ID` | deletes a deployment's layers from userdata, the way the clean-up does. Refuses the current, candidate, staged and booted deployment and a mounted one. The previous one: asks first (`--yes`), naming the lost rollback, and clears `previous=`; the last failed one: clears `failed=`. |
 
 Where it reads and writes:
 
@@ -212,6 +217,37 @@ Where it reads and writes:
   system partition is mounted `ro,rescue=nologreplay` for reading.
 - No `e2fsck` of userdata in a system booted by the deployments initramfs, because
   userdata is in use behind the overlay there.
+
+### Clean-up
+
+Each deployment's layers take room on userdata, so deployments that nothing will boot
+are removed by themselves:
+
+- **When:** after a `switch` has set the candidate, after an `accept`, and before
+  `reset` or `stage` makes a new deployment. Each point keeps everything the boot can
+  fall back to (candidate, then current, then previous). A clean-up that fails is
+  logged and never fails the command that ran it.
+- **What stays:** current, previous, candidate, staged, the last failed one
+  (`failed=`, for a look at what went wrong; an older failed one goes once a newer
+  candidate fails) and the booted one (`/run/glassine/booted`). Every other
+  deployment (`kept` in `list`) is removed.
+- **Never:** a deployment that is mounted: a mount point in its directory, or an
+  overlay with one of its layers (`/proc/self/mountinfo`). It stays `kept` until a
+  later clean-up finds it unmounted. Nothing at all while the current deployment is
+  not on userdata (an unreadable state or another userdata).
+- **How:** the deployment's directory is renamed to `deployments.removing/<id>` (one
+  step; from then on it is no deployment), then deleted. A cut delete leaves the rest
+  there; the next clean-up or `remove` deletes it first. `remove` writes the state
+  (`previous=`, `failed=`) before the rename, so the state never names a deployment
+  that is gone.
+
+**Free space for a replay.** `stage` with a replay needs the room for the user's
+packages in the new build layer. Before it makes anything (and after the clean-up), it
+compares userdata's free space with an estimate: what the current deployment's build
+layer and the package directories of its switch layer (`/usr`, `/lib`, `/bin`,
+`/sbin`, `/opt`) take, a quarter more for the downloads, and 16 MiB. Less is exit 5,
+nothing staged. It is an estimate: a replay that still runs out of space removes what
+it made.
 
 **Hibernation gate.** A command that writes refuses (exit 4) while userdata holds a
 hibernated session. With `--discard-hibernation` it asks first (`--yes` skips the
@@ -289,7 +325,8 @@ type=package	change=raised	name=musl	version=1.2.5-r11	base_version=1.2.5-r10
 ```
 
 `state` is one of current, candidate, staged, failed, previous, kept (the first that
-applies, so a failed deployment that is also previous shows failed). `base_present` is
+applies, so a failed deployment that is also previous shows failed). A `kept` one is
+there only until the next clean-up (one that was mounted, or left by an older tool). `base_present` is
 `yes` when the deployment's base is a subvolume under the system partition's `bases/`,
 `no` when it is not, empty when the system partition is not readable or the meta names
 no base. `status`'s `failed` is the last deployment that ran out of tries.
@@ -303,7 +340,7 @@ no base. `status`'s `failed` is the last deployment that ran out of tries.
 | 2 | usage |
 | 3 | the state format is newer than this tool (every command refuses; `status` still prints both versions) |
 | 4 | a hibernated session on userdata, refused |
-| 5 | not enough space on userdata (the deployment stays staged) |
+| 5 | not enough space on userdata (`switch`: the deployment stays staged; `stage`: nothing staged) |
 | 6 | busy (another writer holds the lock) |
 | 7 | `stage`: the package replay stops: a package does not install or upgrade on the new base, or a version would go down (see `stage BASE` flags); nothing staged |
 
