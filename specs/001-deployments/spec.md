@@ -96,6 +96,26 @@ the running system.
 2. **Given** any command, **then** `--porcelain` output and exit codes follow
    [docs/deployments.md](../../docs/deployments.md).
 
+### Story 7: the boot finds its own partitions on any machine (P1)
+
+A device has fixed partition names; a PC can have any disks, and the installer made the
+partitions. Neither puts a disk in a base's `/etc/fstab`.
+
+**Acceptance:**
+
+1. **Given** a command line with `glassine.system=PARTUUID=<id>` and
+   `glassine.userdata=PARTUUID=<id>`, **when** the machine boots, **then** the initramfs
+   uses exactly those partitions, whatever `board.conf` names.
+2. **Given** a second disk with a GlassineOS installation (a USB stick, another drive),
+   **when** the machine boots, **then** the partitions of the command line are used and
+   nothing on the other disk is mounted.
+3. **Given** a command line whose partitions don't appear within the wait (a slow disk,
+   a removed drive), **then** the boot never falls back to `board.conf` names or to
+   partition types; it stops with a message that names the missing partition, and the
+   way into the recovery stays open.
+4. **Given** a command line without the keys (a device whose names are fixed), **then**
+   the initramfs finds the partitions by `board.conf`'s names.
+
 ### Edge cases
 
 - A state format newer than the tool: commands refuse (exit 3), `status` still reports,
@@ -153,6 +173,15 @@ the running system.
 - **FR-019** The hibernate step (`glassine-hibernate now`) writes the guard through the
   same helper as the initramfs reads it, and refuses (exit 3) when the state would boot
   another deployment next, so it never makes an image the initramfs would cancel.
+- **FR-020** The initramfs finds the system partition and userdata by, in this order:
+  `glassine.system=` and `glassine.userdata=` on the kernel command line (each
+  `PARTUUID=<id>`), else `ROOT_PART` and `USERDATA_PART` of `board.conf`. A key that is
+  given is never replaced by a name, a type or a guess (Story 7). Partition types are
+  never used to find a boot's partitions; they are for the installer and the recovery.
+- **FR-021** In the booted system, `glassine-deploy` and `glassine-bootimg` use the
+  partitions the initramfs used (`/run/glassine/`), and `deploy.conf`'s `SYSTEM_DEV` and
+  `USERDATA_DEV` only where nothing booted from them (a recovery passes its own
+  `deploy.conf`).
 
 ## Not in this feature (later)
 
