@@ -22,6 +22,7 @@ initramfs.cpio.gz: initramfs/init build-initramfs.sh lib/glassine-state.sh lib/g
 install: glassine-reboot glassine-slot
 	install -Dm755 sbin/glassine-bootimg $(DESTDIR)$(PREFIX)/sbin/glassine-bootimg
 	install -Dm755 sbin/glassine-deploy $(DESTDIR)$(PREFIX)/sbin/glassine-deploy
+	install -Dm644 conf/migrate.d/glassine-deploy.list $(DESTDIR)$(PREFIX)/share/glassine/migrate.d/glassine-deploy.list
 	install -Dm755 sbin/glassine $(DESTDIR)$(PREFIX)/sbin/glassine
 	ln -sf glassine $(DESTDIR)$(PREFIX)/sbin/apk
 	install -Dm755 sbin/glassine-switch-hook $(DESTDIR)$(PREFIX)/sbin/glassine-switch-hook

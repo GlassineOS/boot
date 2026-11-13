@@ -158,7 +158,10 @@ A missing key counts as a mismatch, and a mismatch means no resume. The rules ar
 
 ### Migrate lists
 
-`/usr/share/glassine/migrate.list` (shipped with the base) and
+`/usr/share/glassine/migrate.list` (shipped with the base),
+`/usr/share/glassine/migrate.d/*.list` (each package names its own state there: its
+settings in `/etc`, what it keeps in `/var/lib`; read from the running deployment and
+from the new base, so a package new in the update counts too) and
 `/etc/glassine/migrate.d/*.list` (the user's own). One absolute path per line. A
 trailing `/` means a directory. `#` comments and blank lines are ignored, and so are
 lines that are not absolute or that contain `..`. A switch copies each listed path from
@@ -192,7 +195,7 @@ glassine-deploy accept ID
 | `hibernate-invalidate` | turns a hibernate image back into a plain swap file (that session is lost) |
 | `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Neither touches home, Flatpak's data or the developer folder (`home/`, `flatpak/`, `devmode/` above). |
 | `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. |
-| `stage BASE` flags | `--no-replay` the bare base, `--without NAME` (repeatable) leaves an added package out, `--accept-downgrades` takes lower versions. Exit 7: the replay needs one of these; nothing staged. |
+| `stage BASE` flags | `--no-replay` the bare base, `--without NAME` (repeatable) leaves NAME's change out (an added package, or the removal of the base's entry when the user changed it), `--accept-downgrades` takes lower versions. Exit 7: the replay needs one of these; nothing staged. |
 | `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. The only verb that needs btrfs-progs (and zstd for `.zst`). |
 | `packages [ID]` | how a deployment's packages (current by default) differ from its base's, derived each time (no bookkeeping): world entries `added` and `removed` (constraints and tags as written), packages installed in another version: `raised`/`lowered` (`apk version -t`; `changed` where apk is missing). A deployment that is not running needs userdata mounted. The replay input of a later base. |
 | `bases` | one record per subvolume under `bases/` and `modules/`, with the deployments whose meta names it |
