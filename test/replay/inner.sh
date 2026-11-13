@@ -35,8 +35,12 @@ btrfs -q subvolume create $S/bases/b1; X=$S/bases/b1
 mkdir -p $X/etc/apk/keys; cp -a /etc/apk/keys/. $X/etc/apk/keys/; cp /etc/apk/repositories $X/etc/apk/
 apk --root $X --initdb --no-progress -q add alpine-baselayout busybox busybox-binsh apk-tools alpine-keys musl less >/dev/null 2>&1 || { echo "FAIL the base does not build"; exit 1; }
 printf 'root:*:1::::::\n' > $X/etc/shadow; mkdir -p $X/usr/share/glassine; echo /etc/hostname > $X/usr/share/glassine/migrate.list
+# a package's own list in each base: b1's names state the running system has, b2's
+# names state of a package that comes with the update
+mkdir -p $X/usr/share/glassine/migrate.d; echo /etc/old-pkg-state > $X/usr/share/glassine/migrate.d/old.list
 btrfs property set -ts $X ro true
-btrfs -q subvolume snapshot $X $S/bases/b2; echo two > $S/bases/b2/etc/base-marker; btrfs property set -ts $S/bases/b2 ro true
+btrfs -q subvolume snapshot $X $S/bases/b2; echo two > $S/bases/b2/etc/base-marker
+echo /var/lib/new-pkg-state > $S/bases/b2/usr/share/glassine/migrate.d/new.list; btrfs property set -ts $S/bases/b2 ro true
 echo version=1 > $S/state/format
 printf 'current=c1\nprevious=\ncandidate=\ntries=0\n' > $S/state/deploy
 D=$U/deployments/c1; mkdir -p $D/build $D/switch $D/work; printf 'base=b1\nkind=install\n' > $D/meta
@@ -61,8 +65,10 @@ ok "stage: the package is in the build layer, the live root untouched" "[ -x $B/
 ok "stage: the world of the build layer" "grep -qw tree $B/etc/apk/world && ! grep -qw less $B/etc/apk/world"
 ok "stage: no resolv.conf or empty /run left in the build layer" "[ ! -e $B/run/resolv.conf ] && [ -z \"\$(ls -A $B/run 2>/dev/null)\" ]"
 ok "packages of the staged deployment: derived the same" "$G packages $N --porcelain | grep -q 'change=added	entry=tree' && $G packages $N --porcelain | grep -q 'change=removed	entry=less'"
+echo kept > $R/etc/old-pkg-state; mkdir -p $R/var/lib; echo kept > $R/var/lib/new-pkg-state; echo junk > $R/etc/not-listed
 ok "switch: the candidate's root has the replay on the new base" "$G switch >/dev/null 2>&1 && [ \"\$(st candidate)\" = $N ] && gr_merged_ro $S $U/deployments/$N $W/v && [ -x $W/v/usr/bin/tree ] && ! grep -qx 'P:less' $W/v/lib/apk/db/installed && [ \"\$(cat $W/v/etc/base-marker)\" = two ]"
-umount $W/v 2>/dev/null; clear_staged
+ok "switch: the packages' lists of the old deployment and of the new base are carried, nothing else" "[ \"\$(cat $W/v/etc/old-pkg-state)\" = kept ] && [ \"\$(cat $W/v/var/lib/new-pkg-state)\" = kept ] && [ ! -e $W/v/etc/not-listed ]"
+umount $W/v 2>/dev/null; clear_staged; rm -f $R/etc/old-pkg-state $R/var/lib/new-pkg-state $R/etc/not-listed
 
 ok "--no-replay: the bare base" "$G stage b2 --no-replay --yes >/dev/null 2>&1 && [ -z \"\$(ls -A $U/deployments/\$(st staged)/build)\" ]"
 clear_staged
@@ -74,6 +80,13 @@ cp $R/etc/apk/world $W/world; echo nonesuch-package-x >> $R/etc/apk/world
 ok "a package that no longer resolves: exit 7, nothing staged, nothing left" "$G stage b2 --yes >$W/o 2>&1; [ \$? = 7 ] && [ -z \"\$(st staged)\" ] && [ -z \"\$(newest)\" ] && nomnt && grep -q 'without NAME' $W/o"
 ok "--without NAME: staged without it" "$G stage b2 --without nonesuch-package-x --yes >$W/o 2>&1 && grep -q 'leaving out nonesuch-package-x' $W/o && [ -x $U/deployments/\$(st staged)/build/usr/bin/tree ]"
 clear_staged; cp $W/world $R/etc/apk/world
+
+# an entry the user changed (here a version constraint; on a device, a local file's
+# checksum pin): the plain base entry shows as removed, the changed one as added.
+# --without keeps the base's entry, the package stays
+ua add 'less>=0.1'
+ok "--without NAME of a changed entry: the base's entry stays, the package stays" "$G stage b2 --without less --yes >$W/o 2>&1 && grep -q 'keeping the base.s less' $W/o && ! grep -q 'remove less' $W/o && gr_merged_ro $S $U/deployments/\$(st staged) $W/v && grep -qx less $W/v/etc/apk/world && grep -qx 'P:less' $W/v/lib/apk/db/installed"
+umount $W/v 2>/dev/null; clear_staged; ua del less; cp $W/world $R/etc/apk/world
 
 echo '@mine http://127.0.0.1:9/nothing' >> $R/etc/apk/repositories
 ok "a repository the user added comes along" "$G stage b2 --yes >$W/o 2>&1 && grep -qF '@mine http://127.0.0.1:9/nothing' $U/deployments/\$(st staged)/build/etc/apk/repositories"

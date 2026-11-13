@@ -1,0 +1,3 @@
+# glassine-deploy's state that a switch carries (docs/deployments.md, "Migrate lists")
+# the first-change note of `glassine apk` was acknowledged
+/etc/glassine/apk-acknowledged

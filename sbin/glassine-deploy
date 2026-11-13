@@ -29,7 +29,7 @@
 # apk from the new base in a chroot, scripts on, an empty /run so that OpenRC
 # starts nothing. A package version going down, or a package that no longer
 # resolves, stops the stage with exit 7 and nothing staged: --accept-downgrades
-# takes the lower versions, --without NAME leaves an added package out,
+# takes the lower versions, --without NAME leaves NAME's change out (added, or a changed entry's removal),
 # --no-replay stages the bare base;
 # receive puts a btrfs send stream (full or incremental, .zst by its name) under
 # bases/ (or modules/), read-only; bases lists them with their users. bases
@@ -44,7 +44,7 @@
 # switch runs at shutdown (the hook's job, after services stop) or
 # at once with reset --now (the recovery): it starts the staged deployment's
 # switch layer afresh, carries the migrate list of the current deployment
-# (/usr/share/glassine/migrate.list + /etc/glassine/migrate.d/*.list) into it,
+# (/usr/share/glassine/migrate.list + the packages' migrate.d/*.list + /etc/glassine/migrate.d/*.list) into it,
 # or nothing after reset --full, merges the user accounts into the new base's
 # (lib/glassine-accounts.sh), and only then makes it the candidate; an
 # interrupted switch selects nothing and is redone in full the next time. So
@@ -561,10 +561,13 @@ copy_path() {
     cp -a "$1/$_p" "$2/$_par/" || return 1
 }
 
-# migrate_paths VIEW: the migrate list of a deployment (comments, blank lines
-# and relative paths dropped)
+# migrate_paths VIEW [BASE]: the migrate list of a deployment: the base's list, the
+# packages' lists (usr/share/glassine/migrate.d, of VIEW and of the new BASE, so a
+# package that comes with the update names its state too) and the user's own
+# (comments, blank lines and relative paths dropped)
 migrate_paths() {
-    cat "$1/usr/share/glassine/migrate.list" "$1"/etc/glassine/migrate.d/*.list 2>/dev/null |
+    cat "$1/usr/share/glassine/migrate.list" "$1"/usr/share/glassine/migrate.d/*.list \
+        ${2:+"$2"/usr/share/glassine/migrate.d/*.list} "$1"/etc/glassine/migrate.d/*.list 2>/dev/null |
         sed 's/#.*//; s/[[:space:]]*$//' | grep '^/' | grep -v '\.\.' | sort -u
 }
 
@@ -645,7 +648,16 @@ do_replay() {
         _n=$(echo "$e" | sed 's/[<>=~@].*//')
         case " $WITHOUT " in *" $_n "*) echo "glassine-deploy: leaving out $e" ;; *) echo "$e" >> "$t/add" ;; esac
     done < "$t/add0"
-    awk 'FILENAME == ARGV[1] { v[$0] = 1; next } FILENAME == ARGV[2] { n[$0] = 1; next } !($0 in v) && ($0 in n)' "$t/vw" "$t/nw" "$t/ow" > "$t/del"
+    # removed: in the old base and the new one, not in the running world. --without NAME
+    # leaves out NAME's removal too: an entry the user changed (a pin, a local file)
+    # shows as the plain entry removed plus the changed one added, and the base's
+    # plain entry must stay
+    awk 'FILENAME == ARGV[1] { v[$0] = 1; next } FILENAME == ARGV[2] { n[$0] = 1; next } !($0 in v) && ($0 in n)' "$t/vw" "$t/nw" "$t/ow" > "$t/del0"
+    : > "$t/del"
+    while read -r e; do
+        _n=$(echo "$e" | sed 's/[<>=~@].*//')
+        case " $WITHOUT " in *" $_n "*) echo "glassine-deploy: keeping the base's $e" ;; *) echo "$e" >> "$t/del" ;; esac
+    done < "$t/del0"
     # raised: above the old base and still above the new one (a base that caught up takes over)
     : > "$t/up"
     awk 'FILENAME == ARGV[1] { o[$1] = $2; next } FILENAME == ARGV[2] { n[$1] = $2; next } ($1 in o) && ($1 in n) && o[$1] != $2 { print $1, $2, o[$1], n[$1] }' "$t/oi" "$t/ni" "$t/vi" |
@@ -781,18 +793,19 @@ do_switch() {
             gr_merged_ro "$SYSTEM_MNT" "$UD/deployments/$cur" "$TMP_VIEW" || die "cannot open deployment $cur read-only"
         fi
         view=$TMP_VIEW
+        nb=$(gs_kv "$nd/meta" base)
+        nbv=''; [ -n "$nb" ] && nbv=$SYSTEM_MNT/bases/$nb
         need=1024
-        for p in $(migrate_paths "$view"); do
+        for p in $(migrate_paths "$view" "$nbv"); do
             [ -e "$view$p" ] && need=$((need + $(du -sk "$view$p" | cut -f 1)))
         done
         avail=$(df -Pk "$USERDATA_MNT" | awk 'NR == 2 { print $4 }')
         [ "${avail:-0}" -gt "$need" ] || fail 5 "not enough space on userdata: ${need} KiB needed, ${avail:-?} KiB free; $id stays staged"
-        for p in $(migrate_paths "$view"); do
+        for p in $(migrate_paths "$view" "$nbv"); do
             copy_path "$view" "$nd/switch" "$p" || die "copying $p failed; $id stays staged"
         done
         # the accounts: the new deployment's lower /etc (its build layer over
         # its base) merged with the old one's; carried files follow moved IDs
-        nb=$(gs_kv "$nd/meta" base)
         # (each file by itself: the build layer holds only what the replay changed)
         ne=$RUN_DIR/newetc.$$
         [ -n "$nb" ] && [ -r "$SYSTEM_MNT/bases/$nb/etc/passwd" ] || die "deployment $id: base ${nb:-?} has no /etc/passwd; $id stays staged"
