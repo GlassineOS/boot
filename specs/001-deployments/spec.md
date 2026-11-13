@@ -96,6 +96,24 @@ the running system.
 2. **Given** any command, **then** `--porcelain` output and exit codes follow
    [docs/deployments.md](../../docs/deployments.md).
 
+### Story 7: old deployments do not fill userdata (P1)
+
+**Acceptance:**
+
+1. **Given** a switch that has made a new candidate, or an accept, **then** every
+   deployment other than current, previous, candidate, staged, the last failed one
+   and the booted one is removed from userdata, and the ones kept are exactly those.
+2. **Given** a removal cut off at any point (power loss, a failing delete), **then**
+   the deployment no longer shows in `list`, the state names nothing that is gone, and
+   the next clean-up deletes the rest.
+3. **Given** a deployment that is mounted, **then** no clean-up and no `remove`
+   removes it.
+4. **Given** `remove ID`, **then** it refuses the current, candidate, staged and booted
+   deployment, and asks before it removes the previous one, naming the lost rollback.
+5. **Given** a `stage` with a replay and less free space on userdata than the
+   estimate, **then** it stops before it makes anything (exit 5), saying how much is
+   needed and free.
+
 ### Edge cases
 
 - A state format newer than the tool: commands refuse (exit 3), `status` still reports,
@@ -104,6 +122,7 @@ the running system.
 - Not enough space for a switch: exit 5, still staged.
 - A stale "switching" marker from a crash does not block the next switch.
 - A cut write of `meta` or `state/` leaves the old file whole.
+- A state whose current deployment is not on userdata: the clean-up removes nothing.
 
 ## Requirements
 
@@ -153,6 +172,20 @@ the running system.
 - **FR-019** The hibernate step (`glassine-hibernate now`) writes the guard through the
   same helper as the initramfs reads it, and refuses (exit 3) when the state would boot
   another deployment next, so it never makes an image the initramfs would cancel.
+
+- **FR-020** The clean-up runs after a switch has set the candidate, after an accept,
+  and before a new deployment is staged. It keeps current, previous, candidate,
+  staged, the state's last failed deployment and the booted one, removes every other
+  deployment that is not mounted, and never fails the command that runs it.
+- **FR-021** A deployment is removed by a rename out of `deployments/` followed by the
+  delete; what a cut delete leaves is deleted by the next clean-up or `remove`. State
+  keys that name it are cleared before the rename.
+- **FR-022** `remove ID` follows the hibernation gate and exit codes of the other
+  writing commands, refuses the current, candidate, staged, booted and mounted
+  deployments, and asks before removing the previous one.
+- **FR-023** `stage` with a replay refuses (exit 5, nothing staged) when userdata has
+  less free space than the estimate in
+  [docs/deployments.md § Clean-up](../../docs/deployments.md#clean-up).
 
 ## Not in this feature (later)
 

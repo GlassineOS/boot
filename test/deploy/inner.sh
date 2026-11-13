@@ -349,5 +349,60 @@ ok "packages: an unknown deployment: exit 1; a bad id: exit 2" "$G packages zz 2
 rm -f $W/run/booted
 ok "packages of a deployment that is not running, userdata not mounted: refused" "mv $W/udmnt $W/udmnt.x; $G packages pk 2>$W/err; r=\$?; mv $W/udmnt.x $W/udmnt; [ \$r = 1 ]"
 
+# --- clean-up and remove (fake mounts) -------------------------------------------
+rm -rf $U/deployments $U/deployments.removing; mkdir -p $W/sysmnt/bases/gb
+mkd() { for d in "$@"; do mkdir -p $U/deployments/$d/build $U/deployments/$d/switch/etc $U/deployments/$d/work; printf 'base=gb\nkind=reset\ncarry=none\n' > $U/deployments/$d/meta; echo x > $U/deployments/$d/switch/etc/f; done; }
+mkd c p n s f bt mt k1 k2 oldf
+echo failed=1 >> $U/deployments/oldf/meta
+printf 'current=c\nprevious=p\ncandidate=n\ntries=1\nstaged=s\nfailed=f\n' > $D
+echo bt > $W/run/booted
+# the mounted one as the running system's mountinfo shows an overlay (the paths it
+# was mounted with), and a decoy whose id only starts with k1
+printf '%s\n' '36 25 0:31 / /run/glassine/root rw,relatime shared:9 - overlay overlay rw,lowerdir=/sysroot/media/glassine/deployments/mt/build:/sysroot/bases/gb,upperdir=/sysroot/media/glassine/deployments/mt/switch,workdir=/sysroot/media/glassine/deployments/mt/work' \
+    '37 25 0:32 / /run/x rw - overlay overlay rw,upperdir=/u/deployments/k1x/switch,workdir=/u/deployments/k1x/work' > $W/mi
+export GLASSINE_DEPLOY_MOUNTINFO=$W/mi
+deps() { ls $U/deployments | tr '\n' ' '; }
+ok "accept: the clean-up keeps current, previous, candidate, staged, the last failed one, the booted and the mounted one; the rest goes" "$G accept n >$W/out 2>$W/err && [ \"\$(deps)\" = 'bt c f mt n s ' ] && grep -q 'clean-up: removed k1 k2 oldf p' $W/out && grep -q 'deployment mt is mounted; not removed' $W/err"
+ok "accept: the state is the accept's (previous = the old current), nothing else touched" "[ \"\$(gs_kv \$D current)\" = n ] && [ \"\$(gs_kv \$D previous)\" = c ] && [ \"\$(gs_kv \$D staged)\" = s ] && [ \"\$(gs_kv \$D failed)\" = f ] && [ -z \"\$(gs_kv \$D candidate)\" ]"
+ok "clean-up: nothing left in deployments.removing; list shows the mounted one as kept" "[ -z \"\$(ls -A $U/deployments.removing)\" ] && [ \"\$(lst mt state)\" = kept ] && [ \"\$(lst f state)\" = failed ]"
+# a switch (carry=none) is a clean-up point too; an rm that is cut off leaves the
+# removal out of deployments/, and the next clean-up finishes it
+mkd k3; rm -f $W/run/booted
+mkdir -p $W/shimrm; printf '#!/bin/sh\ncase "$*" in *deployments.removing/*) exit 1 ;; esac\nexec /bin/rm "$@"\n' > $W/shimrm/rm; chmod +x $W/shimrm/rm
+ok "switch: candidate set, then the clean-up; a cut delete: k3 out of the list, its rest in deployments.removing, the switch still exit 0" "PATH=$W/shimrm:\$PATH $G switch >$W/out 2>$W/err && [ \"\$(gs_kv \$D candidate)\" = s ] && [ ! -e $U/deployments/k3 ] && [ -e $U/deployments.removing/k3/meta ] && grep -q 'k3 is gone from the list' $W/err && ! $G list --porcelain | grep -q 'id=k3	'"
+ok "the cut switch's clean-up also removed bt (no longer booted), kept the rest" "[ \"\$(deps)\" = 'c f mt n s ' ]"
+ok "the next clean-up (a reset) finishes the cut removal" "$G reset --full --yes >/dev/null 2>&1 && [ -z \"\$(ls -A $U/deployments.removing)\" ] && R1=\$(gs_kv \$D staged) && [ -n \"\$R1\" ] && [ -e $U/deployments/\$R1/meta ]"
+# shellcheck disable=SC2034  # read in the eval of ok()
+R1=$(gs_kv $D staged)
+ok "a reset that replaces a staged one: the old one goes the same way, s stays as the candidate" "sleep 1; $G reset --full --yes >/dev/null 2>&1 && [ ! -e $U/deployments/\$R1 ] && [ -e $U/deployments/s ] && [ \"\$(gs_kv \$D candidate)\" = s ]"
+ok "no current deployment on userdata: the clean-up does nothing, says so" "mkd k4 && mv $U/deployments/n $W/n.away && $G switch >/dev/null 2>$W/err; mv $W/n.away $U/deployments/n; [ -e $U/deployments/k4 ] && grep -q 'clean-up skipped' $W/err"
+# --- remove ID --------------------------------------------------------------------
+gs_update $D candidate=s tries=2 staged=; R2=''
+for d in "$U"/deployments/*; do case ${d##*/} in c|f|mt|n|s|k4) ;; *) R2=${d##*/} ;; esac; done
+[ -z "$R2" ] || gs_update $D staged="$R2"
+echo k4 > $W/run/booted
+cp $D $W/before
+for x in "n current" "s candidate" "$R2 staged" "k4 running" "mt mounted"; do
+    set -- $x
+    ok "remove: the $2 deployment: refused, nothing changed" "$G remove $1 --yes </dev/null 2>$W/err; [ \$? = 1 ] && grep -q '$2' $W/err && [ -e $U/deployments/$1/meta ] && cmp -s $D $W/before"
+done
+ok "remove: an unknown id: exit 1; a bad id: exit 2" "$G remove zz --yes 2>/dev/null; a=\$?; $G remove ../c --yes 2>/dev/null; [ \$a\$? = 12 ] && cmp -s $D $W/before"
+ok "remove: the previous one without --yes, no terminal: asks, names the lost rollback, nothing removed" "$G remove c </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'Rollback to c is lost' $W/err && [ -e $U/deployments/c/meta ] && cmp -s $D $W/before"
+printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/dev/null
+ok "remove: hibernated: exit 4, nothing removed" "$G remove c --yes </dev/null 2>/dev/null; [ \$? = 4 ] && [ -e $U/deployments/c/meta ] && cmp -s $D $W/before"
+gs_invalidate_file $U/swap/hibernate
+ok "remove --yes: the previous one: gone, previous= cleared, the rest of the state kept" "$G remove c --yes >/dev/null && [ ! -e $U/deployments/c ] && [ -z \"\$(gs_kv \$D previous)\" ] && [ \"\$(gs_kv \$D current)\" = n ] && [ \"\$(gs_kv \$D failed)\" = f ] && [ -z \"\$(ls -A $U/deployments.removing)\" ]"
+ok "remove: the last failed one, without asking: gone, failed= cleared" "$G remove f </dev/null >/dev/null && [ ! -e $U/deployments/f ] && [ -z \"\$(gs_kv \$D failed)\" ]"
+mkd k5
+ok "remove: a cut delete: exit 1, said, out of the list; the next remove finishes it" "PATH=$W/shimrm:\$PATH $G remove k5 </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'k5 is gone from the list' $W/err && [ ! -e $U/deployments/k5 ] && rm -f $W/run/booted && $G remove k4 </dev/null >/dev/null && [ -z \"\$(ls -A $U/deployments.removing)\" ] && [ ! -e $U/deployments/k4 ]"
+# --- stage: the replay's space check ------------------------------------------------
+mkdir -p $W/sysmnt/bases/gb/etc; echo 'root:x:0:0:root:/root:/bin/sh' > $W/sysmnt/bases/gb/etc/passwd
+dd if=/dev/zero of=$U/deployments/n/build/blob bs=1k count=8192 2>/dev/null
+mkdir -p $W/shimdf; printf '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted on"\necho "ud 100000 80000 20000 80%% /x"\n' > $W/shimdf/df; chmod +x $W/shimdf/df
+gs_update $D candidate= tries=0 staged=; rm -rf $U/deployments/s $U/deployments/$R2; cp $D $W/before; ls $U/deployments > $W/dbefore
+ok "stage: less free space than the replay needs: exit 5, said with both numbers, nothing staged" "PATH=$W/shimdf:\$PATH GLASSINE_DEPLOY_APK=$W/apkstub $G stage gb --yes </dev/null 2>$W/err; [ \$? = 5 ] && grep -q 'KiB needed, 20000 KiB free; nothing staged' $W/err && cmp -s $D $W/before && ls $U/deployments | cmp -s - $W/dbefore"
+ok "stage --no-replay: no space check" "PATH=$W/shimdf:\$PATH $G stage gb --no-replay --yes </dev/null >/dev/null 2>&1 && [ -n \"\$(gs_kv \$D staged)\" ]"
+unset GLASSINE_DEPLOY_MOUNTINFO
+
 echo "$fails failed"
 [ $fails = 0 ]
