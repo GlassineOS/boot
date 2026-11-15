@@ -398,7 +398,9 @@ which mounts nothing read-write before the hibernation step), makes the system:
 2. The system partition's btrfs grown to its partition (`btrfs filesystem resize max`).
 3. Userdata formatted: every mount of it unmounted first (the initramfs mounts any
    ext4 it finds; one that doesn't unmount stops the step), then ext4 with 4096-byte
-   blocks (the hibernate step needs them), `USERDATA_RESERVE_KIB` left free at its end.
+   blocks (the hibernate step needs them) and without `orphan_file` (an older e2fsck,
+   like the one of a second system on the machine, refuses it), `USERDATA_RESERVE_KIB`
+   left free at its end.
    Its UUID goes into `state/install` (`userdata=`). A userdata with that UUID is not
    formatted again.
 4. `glassine-deploy stage <the only base> --no-replay --now --yes`: the first
