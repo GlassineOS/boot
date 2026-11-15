@@ -101,7 +101,8 @@ on-disk format has one owner.
   selected, userdata belongs to it and is never formatted.
 - **FR-007** Userdata is formatted only when no file system of it is mounted; it gets
   the file system and block size the rest of `boot` expects (001: ext4; the hibernate
-  step: 4096-byte blocks), and leaves the board's configured room free at its end.
+  step: 4096-byte blocks), readable by the older ext4 tools a second system on the
+  machine may check it with, and leaves the board's configured room free at its end.
 - **FR-008** With no current deployment, staging a base makes a first deployment: only
   without a package replay (refused with one), with nothing carried.
 - **FR-009** The first start's messages go to the kernel log, where the initramfs logs.
