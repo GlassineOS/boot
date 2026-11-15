@@ -146,6 +146,7 @@ ok "garbage userdata: bare boot, nothing mounted from it" "boot && [ \"\$(booted
 ok "first start: formatted, selected, rebooted" "fs && rebooted && [ -n \"\$(st candidate)\" ] && [ ! -e $RG/system/state/install ]"
 # shellcheck disable=SC2034  # read in the eval of ok()
 SZ=$(stat -c %s $W/ud.img)
+ok "userdata has no orphan_file (an older e2fsck refuses it)" "! dumpe2fs -h $UDEV 2>/dev/null | grep '^Filesystem features:' | grep -qw orphan_file"
 ok "USERDATA_RESERVE_KIB=16: the file system ends 16 KiB before the partition" "[ \"\$(dumpe2fs -h $UDEV 2>/dev/null | sed -n 's/^Block count: *//p')\" = \$(( (SZ / 1024 - 16) / 4 )) ]"
 down
 conf

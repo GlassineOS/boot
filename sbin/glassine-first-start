@@ -154,8 +154,11 @@ else
         n=$(( (sz / 1024 - USERDATA_RESERVE_KIB) / 4 ))
     fi
     say "formatting userdata ($USERDATA_DEV, ext4${n:+, $n blocks: $USERDATA_RESERVE_KIB KiB left at the end})"
+    # no orphan_file (e2fsprogs 1.47's default): an older e2fsck refuses a file
+    # system with it, and the other slot's system (stock Android 10: 1.45)
+    # checks userdata before it mounts it
     # shellcheck disable=SC2086  # the optional block count
-    mke2fs -F -q -t ext4 -b 4096 "$USERDATA_DEV" $n || die "mke2fs $USERDATA_DEV failed"
+    mke2fs -F -q -t ext4 -b 4096 -O ^orphan_file "$USERDATA_DEV" $n || die "mke2fs $USERDATA_DEV failed"
     sync
     u=$(ud_uuid)
     [ -n "$u" ] || die "the new userdata has no UUID"
