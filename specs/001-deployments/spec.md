@@ -161,7 +161,9 @@ the running system.
   a version, and readers ignore unknown keys.
 - **FR-015** Everything runs with busybox ash and its applets, e2fsprogs
   (`e2fsck`, `dumpe2fs`, `debugfs`) and the kernel's btrfs and overlayfs; no bash, no
-  util-linux, no btrfs-progs.
+  util-linux. btrfs-progs only where a btrfs-progs operation is the work itself:
+  receiving a send stream, removing a base, and the first start
+  ([009-first-start](../009-first-start/spec.md)), which also needs `mke2fs`.
 - **FR-016** Before `switch_root`, the initramfs moves its mounts to `/run/glassine/`
   and releases the state lock.
 - **FR-017** A base lists `/` with `bind,ro` in `/etc/fstab`, so the init system keeps
