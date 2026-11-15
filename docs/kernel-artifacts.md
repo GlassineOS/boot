@@ -64,6 +64,11 @@ it right whatever the clone has (tags or not):
   configuration, so the release, for all of them. A device whose configuration needs more
   than its own drivers (a different SoC option) gets its own flavor, named after what differs,
   never after the device.
+  The recovery's kernel (`specs/008-recovery`, FR-014) is the one flavor named after a
+  role: `<soc>recovery`, from the same source, with everything built in, no modules and
+  no firmware. It lives only in the recovery image, never on the system partition, so
+  the rules below for `modules/<release>/` and the board drivers as modules don't apply
+  to it.
 - `<cfg6>`: the first 6 hex digits of the sha256 of these bytes, in this order: the final
   `.config` as the build left it, then three lines, each ended by a newline:
   - `builder=<image>@sha256:<64 hex>`: the builder image as the build pins it, by the
