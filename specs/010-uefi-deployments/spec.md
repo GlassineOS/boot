@@ -478,6 +478,8 @@ Each is a test in QEMU with OVMF unless it says otherwise.
 - **SC-015** A request for a deployment that was removed, and one given while a
   resumable hibernate image is there: the ordinary pick, respectively the resume,
   happens, with a message, and `state/deploy` is unchanged.
+- **SC-016** With Secure Boot on in OVMF, the installer's plan refuses the install, names
+  the reason and the way to switch it off, and writes nothing.
 
 ## Assumptions
 
