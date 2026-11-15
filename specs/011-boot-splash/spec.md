@@ -137,18 +137,22 @@ goes on without delay.
 - **FR-013** The earliest stage marks the override used, durably and in one step, before
   it draws it. If it can't, it doesn't draw it and shows the splash.
 - **FR-014** An override carries what it is for. A resume preview carries the hibernation
-  token and where the hibernation image's signature is on storage.
-- **FR-015** The earliest stage shows a resume preview only on an ordinary start: not on
-  a kernel trial, not when the recovery starts, not when the person made a choice at
-  start-up (another kernel, another deployment, the recovery key). On those starts it
-  marks the override used and shows the splash.
+  token, the kernel it was made under, and where the hibernation image's signature is on
+  storage.
+- **FR-015** The earliest stage shows a resume preview only when it starts, by default,
+  the kernel the preview names. Every other start (a kernel trial, a fallback to
+  another kernel, the recovery, a choice the person made at start-up) marks the
+  override used and shows the splash.
 - **FR-016** Where the earliest stage can read the storage that holds the hibernation
   image, it checks that an image is there (the signature, one block) before it shows
   the preview. No image: the override is marked used and the splash is shown.
 - **FR-017** The initramfs learns from the earliest stage whether a preview is on screen
   and which token it carried. It keeps the preview only when the hibernation step
   resumes (001 Story 4) and the guard's token is the same. In every other case it draws
-  the splash over the preview before it does anything else that takes time.
+  the splash over the preview before it does anything else that takes time. It has the
+  splash from the earliest stage, handed over in memory, or else from a read of the
+  store that writes nothing (001 FR-011); with neither, it clears the screen to the
+  splash's background colour.
 - **FR-018** The hibernate guard gains the token as a key. A guard without it resumes
   as before, with no preview kept.
 - **FR-019** The running system removes an override whenever the hibernation it belongs
@@ -162,7 +166,9 @@ goes on without delay.
 
 - **FR-021** The hibernate step writes the preview before it writes the guard and before
   it hibernates. The session supplies the picture: the frame it will draw first after
-  the resume.
+  the resume. The store is synced and no longer mounted when the hibernate begins,
+  because the earliest stage writes it at the resume start and the resumed kernel must
+  hold no older view of it.
 - **FR-022** The preview leaves out what will have changed by the resume (the clock, the
   battery level, the network state), or shows those places empty, so the first real
   frame only adds to it.
@@ -205,8 +211,10 @@ goes on without delay.
 - **FR-031** On a bistable display the hibernate step has the session draw the preview
   on the display itself, completely, as the last screen update before the hibernate.
   No override is written to the store for it.
-- **FR-032** On such a machine no stage drives the display on a start before the
-  initramfs's hibernation step has decided. On a resume nothing drives it until the
+- **FR-032** On such a machine no stage that GlassineOS provides or configures drives
+  the display on a start before the initramfs's hibernation step has decided. A machine
+  whose closed earlier stage draws on the panel says so in its description, and has no
+  resume preview. On a resume nothing drives it until the
   session does. Otherwise the initramfs draws the splash then. No stage clears the panel
   to white or runs a full refresh first.
 - **FR-033** The session's first update after the resume starts from the picture that
@@ -324,7 +332,8 @@ display at the earliest stage and at fixed points after it.
 - **SC-009** With the session set to lock, the picture in the store at hibernate equals
   the lock screen and holds nothing of the unlocked session (compared against a
   session with a known pattern on screen).
-- **SC-010** On a device with a bistable display, with the person's go: after a
+- **SC-010** On a device with a bistable display whose earlier stages leave the panel
+  alone, with the person's go: after a
   hibernate the panel shows the preview while off; at the resume, a camera sees no
   white flash and no full refresh before the session's first update.
 - **SC-011** On a real PC, with the person's go: SC-001 and SC-002 by camera, with at
