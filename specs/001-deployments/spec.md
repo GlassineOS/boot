@@ -137,7 +137,9 @@ the running system.
 - **FR-005** The boot picks the deployment as defined in
   [docs/deployments.md § state/deploy](../../docs/deployments.md#statedeploy): a
   candidate gets two tries, and one that fails or does not assemble falls back to
-  current, then previous, then bare.
+  current, then previous, then bare. A one-shot request from the boot chain starts
+  another deployment for one start, without writing the state
+  ([010](../010-uefi-deployments/spec.md) FR-042 to FR-047).
 - **FR-006** No deployment becomes current without a boot as candidate followed by
   `accept`.
 - **FR-007** `reset` only stages. The carry and the selection happen in `switch`. A
