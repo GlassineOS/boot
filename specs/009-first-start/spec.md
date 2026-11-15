@@ -76,8 +76,10 @@ on-disk format has one owner.
   again.
 - A first deployment that never becomes healthy: after its tries the device boots bare,
   the marker already gone; the recovery takes over.
-- A device whose other system keeps metadata at the end of userdata: the board's
-  configuration leaves that room free.
+- A machine whose description reserves room at the end of userdata (a second system
+  that keeps metadata there, as stock Android's encryption does on the Note Air): the
+  format leaves that room free. With nothing reserved, the file system takes the whole
+  partition.
 
 ## Requirements
 
@@ -102,7 +104,8 @@ on-disk format has one owner.
 - **FR-007** Userdata is formatted only when no file system of it is mounted; it gets
   the file system and block size the rest of `boot` expects (001: ext4; the hibernate
   step: 4096-byte blocks), readable by the older ext4 tools a second system on the
-  machine may check it with, and leaves the board's configured room free at its end.
+  machine may check it with, and leaves free at its end the room the device's
+  description reserves there (`USERDATA_RESERVE_KIB`; default: none).
 - **FR-008** With no current deployment, staging a base makes a first deployment: only
   without a package replay (refused with one), with nothing carried.
 - **FR-009** The first start's messages go to the kernel log, where the initramfs logs.
@@ -117,7 +120,7 @@ on-disk format has one owner.
 | The layout step (`glassine-deploy init POOL_MOUNT [--install-marker]`) | owned; called by the image builder (GlassineOS/images) | porcelain/exit codes of `glassine-deploy` 1 | `docs/deployments.md` |
 | The install marker `state/install` | owned | `format=1` | `docs/deployments.md` |
 | State format | owned (unchanged) | `version=1` | `docs/deployments.md` |
-| `USERDATA_RESERVE_KIB` in `deploy.conf` | owned; set by a device package | — | `conf/deploy.conf.example` |
+| The room reserved at the end of userdata (`USERDATA_RESERVE_KIB` in `deploy.conf`, default 0) | owned; set by a device package from what the device's description reserves | — | `conf/deploy.conf.example` |
 
 ## Device scope and risk
 
@@ -139,7 +142,8 @@ on-disk format has one owner.
 
 - How the image reaches the system partition (the installer's work), and building it
   (the image builder's).
-- Which file systems another system on the device needs (the device's description).
+- Which file systems another system on the machine needs, and what it keeps at the end
+  of userdata (the device's description).
 
 ## Success criteria
 
