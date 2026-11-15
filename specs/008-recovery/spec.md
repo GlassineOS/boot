@@ -117,9 +117,12 @@ of the device ends in a hardware reset.
   confirmation on the client that asked for it.
 - **FR-013**: A watchdog resets the device when the recovery stops answering; it restarts
   into the last good deployment after a time with no client input.
-- **FR-014**: The recovery's kernel is built from the system's kernel source with its own
-  minimal configuration (storage, USB, display, touch, power key, battery, watchdog,
-  crash log, dm-crypt, btrfs) and needs no vendor firmware.
+- **FR-014**: The recovery has its own kernel, built from the system's kernel source with
+  its own minimal configuration (storage, USB, display, touch, power key, battery,
+  watchdog, crash log, dm-crypt, btrfs). Everything it needs is built in: it loads no
+  modules, and its image carries none. The image carries no vendor firmware. The panel's
+  waveform, the one device file the screen needs, is read at run time from the device's
+  own storage, read-only, into memory.
 - **FR-015**: It never holds a secret of the person's beyond the operation that needs it
   (an unlock of encrypted storage ends with that operation).
 
