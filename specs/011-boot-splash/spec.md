@@ -156,7 +156,7 @@ goes on without delay.
   hibernate, and in every command that cancels a hibernate image
   (`glassine-deploy hibernate-invalidate`, `--discard-hibernation`).
 - **FR-020** Every start of the running system that finds an override, used or not,
-  erases it (FR-029), unless it is the session's own, not yet used.
+  erases it (FR-029). A resumed session erases its own after its first frame.
 
 ### The resume preview
 
