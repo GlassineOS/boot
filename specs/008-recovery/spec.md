@@ -3,7 +3,8 @@
 **Feature branch:** `recovery`
 **Status:** spec, for review; nothing built
 **Builds on:** [001-deployments](../001-deployments/spec.md),
-[006-device-data-storage-access](../006-device-data-storage-access/spec.md) · **Interfaces:**
+[006-device-data-storage-access](../006-device-data-storage-access/spec.md) · **On a
+PC:** [010-uefi-deployments](../010-uefi-deployments/spec.md) · **Interfaces:**
 [docs/deployments.md](../../docs/deployments.md) (`glassine-deploy`, resets),
 GlassineOS/images `docs/ramenv.md` (the USB protocol), installer
 [001](https://github.com/GlassineOS/installer/blob/main/specs/001-install-from-stock/spec.md) and
@@ -17,12 +18,13 @@ GlassineOS doesn't start (or the person asks for it), runs from memory, and repa
 GlassineOS with the same tools the running system uses (`glassine-deploy`): pick another
 deployment, roll back, reset, repair the boot, collect what went wrong.
 
-Its core runs without a screen. Three clients reach it: the installer over USB, a
-console, and the touch screen. The USB interface is the RAM environment's protocol, so
-the installer reads a whole device for its backup and writes an installation through the
-recovery the same way it does through the RAM environment. On a device, the recovery is
-what the installer leaves in the recovery partition; an installation is complete only
-with it.
+Its core runs without a screen. Clients reach it: the installer over USB, a console,
+and the machine's own screen with the input it has. A machine offers the clients its
+hardware allows. The USB interface is the RAM environment's protocol, so the installer
+reads a whole device for its backup and writes an installation through the recovery the
+same way it does through the RAM environment. The installer leaves the recovery where
+the machine's boot path starts it from: the recovery partition on a device that has one,
+the boot partition on a PC (010 FR-037). An installation is complete only with it.
 
 A machine that keeps a second system can hand over to that system's own recovery
 (stock Android: TWRP), which then owns that system's work.
@@ -74,8 +76,8 @@ without one, the choice isn't offered.
 
 **Given** the recovery started and nobody uses it,
 **When** a time passes with no input from any client,
-**Then** it restarts into the last good deployment without changing anything; a hang
-of the device ends in a hardware reset.
+**Then** it restarts into the last good deployment without changing anything. On a
+machine with a watchdog, a hang ends in a hardware reset.
 
 ## Requirements
 
@@ -92,44 +94,64 @@ of the device ends in a hardware reset.
 ### Clients
 
 - **FR-004**: The core holds every operation; a client only asks for one and shows the
-  answer. The touch screen, the console and USB offer the same operations, with the same
-  confirmations.
+  answer. The screen, the console and USB, each where the machine has it, offer the same
+  operations, with the same confirmations.
 - **FR-005**: The USB interface is the RAM environment's protocol (read, hash, write in
   armed ranges, restart), plus operations for deployments, resets and diagnostics, so
   one installer client serves both.
-- **FR-006**: The screen is readable on e-ink and reachable without a keyboard: the
-  touch screen and the power key are enough.
+- **FR-006**: The screen client works with the display and the input the machine has,
+  and asks for nothing more. Every operation is reachable with the least input the
+  machine is sure to have, and readable on its display:
+  - a device with an e-ink touch screen and a power key (the Note Air): readable on
+    e-ink, and the touch screen and the power key are enough, with no keyboard;
+  - a PC: its display and a keyboard are enough.
 
 ### Operations
 
 - **FR-007**: Deployments: list (with the last good and the failed one), select, pin,
   roll back, remove; each is `glassine-deploy`'s operation, with its checks.
 - **FR-008**: Resets: both levels `glassine-deploy` defines, each confirmed by name.
-- **FR-009**: Repair the boot: rewrite the boot partition from the selected
-  deployment's kernel record and reset the slot flags the device's description names.
+- **FR-009**: Repair the boot: make again what the boot chain starts by default, from
+  the kernel record on the system partition, in the way of the machine's kernel
+  hand-off ([004](../004-kernel-records/spec.md), "Hand-off kinds"):
+  - where the default slot is a partition (the Note Air): rewrite that partition from
+    the selected deployment's kernel record, and reset the slot flags the device's
+    description names;
+  - on a PC: rebuild the boot partition from the system partition (010 FR-002,
+    FR-030). It writes only
+    the boot partition and, after its own confirmation, GlassineOS's firmware boot entry
+    (010 FR-031, FR-032). There are no slot flags.
 - **FR-010**: Diagnostics as in Scenario 4.
 - **FR-011**: Writes from USB: only after the installer arms ranges for the session;
   outside them, every disk stays read-only; the device's boot areas are never written.
+  A PC's boot partition (010) is not a boot area.
 
 ### Safety
 
 - **FR-012**: An operation that can lose data names what it loses and needs a
   confirmation on the client that asked for it.
-- **FR-013**: A watchdog resets the device when the recovery stops answering; it restarts
-  into the last good deployment after a time with no client input.
-- **FR-014**: The recovery has its own kernel, built from the system's kernel source with
-  its own minimal configuration (storage, USB, display, touch, power key, battery,
-  watchdog, crash log, dm-crypt, btrfs). Everything it needs is built in: it loads no
-  modules, and its image carries none. The image carries no vendor firmware. The panel's
-  waveform, the one device file the screen needs, is read at run time from the device's
-  own storage, read-only, into memory.
+- **FR-013**: The recovery restarts into the last good deployment after a time with no
+  client input, on every machine. Where the machine has a watchdog the kernel can arm,
+  the recovery arms it, and the watchdog resets the machine when the recovery stops
+  answering. Where it has none, a hang waits for the person to switch the machine off
+  and on (010, "Device scope and risk").
+- **FR-014**: The recovery has its own kernel, built from the system's kernel source
+  with its own minimal configuration. On every machine that is storage, USB, the crash
+  log, dm-crypt and btrfs, plus the drivers for what the machine has and the recovery
+  uses: its display, its input, its power source and its watchdog. For the Note Air: the
+  panel, touch, the power key, the battery and the watchdog. For a PC: its display and
+  the keyboard. Everything it needs is built in: it loads no modules, and its image
+  carries none. The image carries no vendor firmware. Where the screen needs a file of
+  the device's own (an e-ink panel's waveform), that file is the only one, and it is
+  read at run time from the device's own storage, read-only, into memory.
 - **FR-015**: It never holds a secret of the person's beyond the operation that needs it
   (an unlock of encrypted storage ends with that operation).
 
 ## Key entities
 
-- **The recovery image**: the kernel and the program, as one image the device's boot
-  path starts; versioned, with its own record.
+- **The recovery image**: the kernel and the program, as one image the machine's boot
+  path starts (from a recovery partition, or from the boot partition on a PC);
+  versioned, with its own record.
 - **A client session**: one client's connection, its armed ranges (USB), its
   confirmations.
 - **The diagnostics file**: logs, crash log, state, identity, with checksums.
@@ -150,5 +172,6 @@ of the device ends in a hardware reset.
 - `glassine-deploy` and its formats stay `boot`'s; the recovery adds no second interface.
 - The RAM environment and the recovery share the USB daemon; the RAM environment is the
   recovery without its screen, deployments and resets.
-- On a device with one recovery partition, the recovery takes it; such a device keeps
-  no second recovery.
+- Where the recovery image lives is the machine's: on a device with one recovery
+  partition, the recovery takes it, and such a device keeps no second recovery; on a PC
+  it is a file on the boot partition (010 FR-037, FR-038), and no partition is taken.

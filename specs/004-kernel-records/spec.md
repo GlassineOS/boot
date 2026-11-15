@@ -13,12 +13,15 @@ hand-off", "Records", "Packing", "Order on the device", "What the user sees"),
 ## Summary
 
 In the deployments layout, a kernel becomes current only after a trial boot. Its
-records live on the system partition, the same on every device. Only the hand-off to the
-bootloader differs per board (`HANDOFF`). This feature builds the records, the commands,
-the trial and the interlocks with `glassine-deploy` and `glassine-hibernate`, with the
-`bootpart-test` hand-off and the empty one ("kernel updates are paused"). The
-`blocklist` hand-off plugs in later (hub#56). The plain layout keeps today's
-`glassine-bootimg` unchanged.
+records live on the system partition, the same on every machine. Only the hand-off to
+the boot chain differs per board (`HANDOFF`): what the image of a record is made of,
+where the boot chain finds the default one, and how a candidate is started once are
+properties of the hand-off kind ("Hand-off kinds" below). This feature builds the
+records, the commands, the trial and the interlocks with `glassine-deploy` and
+`glassine-hibernate`, with the `bootpart-test` hand-off and the empty one ("kernel
+updates are paused"). The `blocklist` hand-off plugs in later (hub#56), and the `uefi`
+hand-off is [010-uefi-deployments](../010-uefi-deployments/spec.md)'s. The plain layout
+keeps today's `glassine-bootimg` unchanged.
 
 Two phases, one pull request each:
 1. The records, the commands, and every guard that has to exist as soon as a candidate
@@ -29,6 +32,25 @@ Two phases, one pull request each:
 2. The trial: the initramfs, promote's verdict, and the finishing boot.
 
 Each story says which phase it belongs to.
+
+## Hand-off kinds
+
+A record, its states, the trial and the verdict are the same for every kind. What
+differs is listed here. The stories and requirements below use these terms; where they
+give bytes, slots or flags, they describe `bootpart-test`, the kind this feature builds.
+
+| | `bootpart-test` | `blocklist` | `uefi` |
+|---|---|---|---|
+| Machines | a board with a spare boot partition | a board whose bootloader reads a kernel file's blocks (the Note Air; [005](../005-blocklist-handoff/spec.md)) | a PC that starts from UEFI ([010](../010-uefi-deployments/spec.md)) |
+| Image of a record | one packed boot image: kernel, device tree, initramfs, command line | one packed boot image | a kernel set: kernel, initramfs, command line (010 "Terms") |
+| Device tree | yes, the board's (`DEVICE`, `--dtb`) | yes | none |
+| Default slot | a boot partition the bootloader starts by default | a boot partition the bootloader starts by default | the default set on the boot partition, named by the loader record (010 FR-006) |
+| A candidate is started once by | a test slot (a second boot partition) and a reboot reason | an image file on userdata whose blocks a record in the default slot names, and a reboot reason (blocklist.md) | a trial set next to the default set and a one-shot request in the loader record (010 FR-009, FR-025) |
+| Size limit of an image | the slot (`PART_SIZE`, `RAMDISK_MAX`) | the slot less the record's room (blocklist.md) | the boot partition's free space (010 FR-028) |
+| Write of the default slot | in place, blocklist.md's "Writing the default slot" (FR-009) | the same | never in place: new files, then the loader record replaced in one step (010 FR-027) |
+
+"Default slot" and "test slot" in this spec mean the row of the board's kind. What a
+row gives as none doesn't apply on that kind.
 
 ## User scenarios and testing
 
@@ -138,22 +160,30 @@ Each story says which phase it belongs to.
   A newer `state/format` is refused (exit 3).
 - **FR-003** `state/bootimg/<id>.manifest`: `format=1`, `id`, `release`, `size`,
   `sha256`, `staged` (UTC), `reason`, and the boot record (`device`, `kernel`, `dtb`,
-  `initramfs`, `cmdline`, `board`). `<id>.img` is kept for `current_img`,
+  `initramfs`, `cmdline`, `board`). `device` and `dtb` are empty on a hand-off kind
+  without a device tree. `<id>.img` is kept for `current_img`,
   `previous_img`, `candidate_img`, `failed_img` and `writing`, and removed otherwise.
-- **FR-004** Packing in this layout takes the kernel from `modules/<release>/Image.gz`,
-  and the device tree and initramfs from `boot/`, through `lib/glassine-bootimg-pack`
-  with `--expect-release`. The board's `KERNEL`, `DTB` and `INITRAMFS` aren't used.
-- **FR-005** The device tree is `--dtb <device>@<id>`, or else the one in `current_img`'s
-  boot record. Board key `DEVICE` is required, and a tree for another device is refused. The
-  initramfs is `--initramfs <commit12>@<id>`, or else the one in `current_img`'s boot
-  record. Neither present: refuse, naming the flag. A name not of its form is refused:
+  On a kind with a packed boot image, `<id>.img` is that image.
+- **FR-004** The image of a record is made from the kernel in `modules/<release>/` and
+  the initramfs in `boot/`, never from the board's `KERNEL`, `DTB` and `INITRAMFS`. On a
+  hand-off kind with a packed boot image, packing takes the kernel from
+  `modules/<release>/Image.gz`, and the device tree and initramfs from `boot/`, through
+  `lib/glassine-bootimg-pack` with `--expect-release`.
+- **FR-005** On a hand-off kind with a device tree, the device tree is `--dtb
+  <device>@<id>`, or else the one in `current_img`'s boot record. Board key `DEVICE` is
+  required there, and a tree for another device is refused. On a kind without one, this
+  doesn't apply. On every kind, the initramfs is `--initramfs <commit12>@<id>`, or else
+  the one in `current_img`'s boot record. Neither present (for the device tree: on a
+  kind that has one): refuse, naming the flag. A name not of its form is refused:
   `<device>@<hex>`, `<hex>@<hex>` (or a bare hex commit, from older records).
 - **FR-006** Before the hand-off, `install` checks rule 1 (`provides` covers the
-  initramfs's `needs`) and rule 2 (the slot size; the packer also checks `PART_SIZE` and
-  `RAMDISK_MAX`) of "Which combinations boot". The deployment coverage checks wait for
+  initramfs's `needs`) and rule 2 (the size limit of the hand-off kind; for a partition
+  slot the slot size, where the packer also checks `PART_SIZE` and `RAMDISK_MAX`) of
+  "Which combinations boot". The deployment coverage checks wait for
   the feature table (not in this feature).
 - **FR-007** `HANDOFF` is read from board.conf: `bootpart-test` (FR-008), empty (refuse),
-  `blocklist` (refuse until hub#56), anything else (refuse).
+  `blocklist` (refuse until hub#56), `uefi` (the hand-off of 010, FR-025 there; refuse
+  until it is built), anything else (refuse).
 - **FR-008** `bootpart-test` needs a spare test slot. `install` refuses when `TEST_DEV`
   is the recovery partition (its partition name is `recovery`): there the recovery
   stays permanently (decision 0010). `conf/board.conf.example`'s development flow uses
@@ -166,10 +196,13 @@ Each story says which phase it belongs to.
     candidate's `sha256` before anything else, and `reboot-test` reboots with
     `TEST_REBOOT_REASON`.
 - **FR-009** Every write of the default slot, for every hand-off (accept, `rollback`,
-  and promote's write again of FR-010), follows blocklist.md's "Writing the default
-  slot":
+  and promote's write again of FR-010), sets `writing` and `writing_op` before the
+  write. They stay set until the write is completed or put back. A boot in the
+  middle is a finishing boot (FR-010, FR-011). How the bytes are written is the
+  hand-off kind's. On `uefi` it is 010 FR-025 and FR-027: nothing is changed in place,
+  and the rest of this requirement doesn't apply. Where the default slot is a
+  partition, the write follows blocklist.md's "Writing the default slot":
   - the default image's own bytes kept in RAM, never the whole partition;
-  - `writing` and `writing_op` set before the write;
   - written and read back with `O_DIRECT`, the first 4 KiB zeroed first and written
     last, with one retry.
 
@@ -189,9 +222,12 @@ Each story says which phase it belongs to.
 - **FR-010** When `writing` is set, promote never trusts `glassine.img=` alone: on
   `bootpart-test`, the test slot can boot the very image `writing` names while the
   default slot is still cut. Before it completes `writing_op` or clears `writing`,
-  promote compares the sha256 of the default slot's first `size` bytes (`O_DIRECT`)
-  with the manifest of `writing`'s image. This applies to every boot, whatever its
-  `glassine.img=`:
+  promote checks that the default slot holds `writing`'s image. Where the default slot
+  is a partition, it compares the sha256 of the slot's first `size` bytes (`O_DIRECT`)
+  with the manifest of `writing`'s image; on `uefi`, that the default set on the boot
+  partition is complete and matches the record's checksums, as the loader checks it
+  (010 FR-007). This applies to every hand-off kind and every boot,
+  whatever its `glassine.img=`:
   - **It matches:** `writing_op` is completed (kernel-artifacts.md, "A kernel trial").
   - **It doesn't:** the write is done again (FR-009, without a RAM copy), and then
     completed. If that fails, see FR-009's last case.
@@ -247,6 +283,8 @@ Each story says which phase it belongs to.
     packer's own `--expect-release` check. Then `previous_img` ← `<id>`.
   - Otherwise nothing is seeded, `previous_img` stays empty, and `rollback` is
     unavailable until the second accept.
+  - The seed reads a packed boot image from a partition slot, so it exists only on the
+    hand-off kinds with one.
 - **FR-016** Busybox ash for everything the initramfs or the recovery runs. Python only
   in the packer, as today.
 - **FR-017** `status` in this layout prints `format=1`, then `state=`, then every key of
@@ -266,10 +304,11 @@ Each story says which phase it belongs to.
 
 | What | Proposed | Where it goes when implemented |
 |---|---|---|
-| board key `DEVICE` | the device name used in `<device>@<id>` | boot.md, `conf/board.conf.example` |
+| board key `DEVICE` | the device name used in `<device>@<id>`, on hand-off kinds with a device tree | boot.md, `conf/board.conf.example` |
+| hand-off kind `uefi` | the value of `HANDOFF` on a PC that starts from UEFI (FR-007; 010) | kernel-artifacts.md, the hand-off table; boot.md, the board keys |
 | `install` flags | `--dtb <device>@<id>`, `--initramfs <commit12>@<id>`, with the defaults of FR-005 | kernel-artifacts.md, "Order on the device" |
 | `status` format 1 | `format=1`, `state=`, the keys, `default_slot=` (FR-017) | kernel-artifacts.md, "What the user sees" |
-| the default-slot write | blocklist.md's procedure for every hand-off (FR-009), checked again by promote (FR-010) | kernel-artifacts.md, beside `writing` (the check is in this pull request) |
+| the default-slot write | `writing` set first for every hand-off, blocklist.md's procedure where the slot is a partition (FR-009), checked again by promote (FR-010) | kernel-artifacts.md, beside `writing` (the check is in this pull request) |
 | failure reasons | `no-boot`, `no-verdict`, `default slot write`, and the health check's own | kernel-artifacts.md, "Records" |
 | `bootpart-test` | needs a spare test slot, not the recovery partition (FR-008) | kernel-artifacts.md, the hand-off table |
 | `seeded=1` | marks the manifest of the first `current_img` (FR-015) | kernel-artifacts.md, "Records" |
@@ -283,7 +322,8 @@ Each story says which phase it belongs to.
 - The `DEVICE_PART` seed.
 - `glassine-hibernate`'s refusal while `DEVICE_PART` is read-write (it comes with the
   seed).
-- The `blocklist` hand-off (hub#56) and `repair`, which the recovery runs.
+- The `blocklist` hand-off (hub#56), the `uefi` hand-off (010) and `repair`, which the
+  recovery runs.
 
 ## Success criteria
 
