@@ -260,8 +260,9 @@ choice, and the paths it reads are FR-021's.
 
 - Which files a given device lists, and its daemons (a device package's work).
 - A recovery menu for device data and resets (the recovery's own work).
-- What makes a deployment after userdata has been formatted: until something does, the
-  device boots bare (`docs/boot.md`).
+- What makes a deployment after userdata has been formatted: the first start of an
+  installed system ([009-first-start](../009-first-start/spec.md)); after any other
+  format, the device boots bare (`docs/boot.md`).
 
 ## Success criteria
 
