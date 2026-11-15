@@ -1,7 +1,8 @@
 #!/bin/sh
 # Build the boot initramfs (initramfs/init + busybox + fsck): the image a
 # device package installs for glassine-bootimg (no options), and what an image
-# builder extends. Runs inside an arm64 Alpine (the caller provides it) with:
+# builder extends. Runs inside an Alpine of the target architecture (the caller
+# provides it: aarch64 for the Note Air, x86_64 for a PC) with:
 #   busybox-static busybox-extras e2fsprogs e2fsprogs-extra cpio gzip
 #   + for --helpers: gcc musl-dev linux-headers
 #
@@ -41,8 +42,12 @@ mknod -m 600 "$I/dev/console" c 5 1
 mknod -m 666 "$I/dev/null" c 1 3
 cp /bin/busybox.static "$I/bin/busybox"
 cp /bin/busybox-extras "$I/bin/"
-cp /lib/ld-musl-aarch64.so.1 "$I/lib/"
-ln -s ld-musl-aarch64.so.1 "$I/lib/libc.musl-aarch64.so.1"
+# musl's loader (busybox-extras and e2fsprogs are dynamic), named after the build's
+# architecture: ld-musl-<arch>.so.1, with libc.musl-<arch>.so.1 a link to it
+ARCH=$(apk --print-arch) || { echo "build-initramfs.sh: no apk (not an Alpine)" >&2; exit 1; }
+[ -f "/lib/ld-musl-$ARCH.so.1" ] || { echo "build-initramfs.sh: no /lib/ld-musl-$ARCH.so.1 (musl)" >&2; exit 1; }
+cp "/lib/ld-musl-$ARCH.so.1" "$I/lib/"
+ln -s "ld-musl-$ARCH.so.1" "$I/lib/libc.musl-$ARCH.so.1"
 install -m 755 "$HERE/initramfs/init" "$I/init"
 # fsck for the default boot (preen the root fs before mounting it read-write):
 # e2fsck as fsck.ext2/3/4; debugfs + dumpe2fs for the hibernation step of the
