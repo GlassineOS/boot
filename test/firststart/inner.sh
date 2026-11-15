@@ -36,7 +36,8 @@ ok "init without the marker: bases/, modules/, state/ (format 1, deploy and kern
 ok "init a second time: refused (not empty)" "! GLASSINE_DEPLOY_CONF=/dev/null $G init $W/pool 2>/dev/null"
 umount $W/pool; mkfs.btrfs -q -f $L0; mount -t btrfs $L0 $W/pool
 ok "init --install-marker: state/install (format=1)" "GLASSINE_DEPLOY_CONF=/dev/null $G init $W/pool --install-marker >/dev/null && [ \"\$(gs_kv $W/pool/state/install format)\" = 1 ] && [ -n \"\$(gs_kv $W/pool/state/install created)\" ]"
-ok "status reads the new pool as migrated, nothing selected" "GLASSINE_DEPLOY_CONF=/dev/null $G status --porcelain 2>/dev/null | grep -q 'format=1' || true; [ \"\$(gs_kv $W/pool/state/format version)\" = 1 ]"
+printf 'SYSTEM_MNT=%s\n' $W/pool > $W/pool.conf
+ok "status reads the new pool: format 1, migrated, nothing selected" "GLASSINE_DEPLOY_CONF=$W/pool.conf GLASSINE_DEPLOY_FAKE_MOUNTS=1 $G status --porcelain 2>/dev/null | sed -n 2p | grep -q '	format=1	supported=1	system_fs=btrfs	migrated=yes	current=	previous=	candidate=	staged=	failed=	tries=0	'"
 umount $W/pool; losetup -d $L0; rm -f $W/p0.img
 
 # --- the installed state: a pool image made as an image builder does ----------
@@ -123,6 +124,22 @@ H0=$(sha $W/ud.img)
 ok "marker on a deployment boot, nothing selected: refused (exit 1), userdata untouched, marker kept" "! fs && grep -q 'refused' $W/fsout && [ \"\$(sha $W/ud.img)\" = $H0 ] && [ -e $RG/system/state/install ] && ! rebooted"
 umount $RG/system; rm -f $RG/booted
 
+# --- userdata that does not unmount: not formatted -------------------------------
+mkpool --install-marker; mkud stock; conf; boot
+U0=$(uuid "$UDEV")
+exec 7<"$RG/userdata/android.txt"
+ok "userdata in use (a file open on it): exit 1, not formatted (same UUID, the stock file there), marker kept, no reboot" "! fs && grep -q 'does not unmount' $W/fsout && [ \"\$(uuid $UDEV)\" = \"$U0\" ] && [ -e $RG/userdata/android.txt ] && [ -e $RG/system/state/install ] && [ -z \"\$(st candidate)\" ] && ! rebooted"
+exec 7<&-
+down
+
+# --- two bases: refused before any write -------------------------------------------
+mkpool --install-marker; mkud stock; conf
+mount -t btrfs "$SD" $W/pool && btrfs -q subvolume snapshot -r $W/pool/bases/b1 $W/pool/bases/b2 >/dev/null && umount $W/pool
+boot
+H0=$(sha $W/ud.img) K0=$(pool_kib)
+ok "two bases: refused (exit 1), the pool not grown, userdata untouched, marker kept" "! fs && grep -q 'more than one base' $W/fsout && [ \$(pool_kib) = $K0 ] && [ -e $RG/userdata/android.txt ] && [ -e $RG/system/state/install ] && ! rebooted"
+down
+
 # --- a garbage userdata, a reserve at its end -----------------------------------
 mkpool --install-marker; mkud garbage; RESERVE=16 conf
 ok "garbage userdata: bare boot, nothing mounted from it" "boot && [ \"\$(booted)\" = bare:b1 ] && ! mountpoint -q $RG/userdata"
@@ -163,6 +180,9 @@ down
 ok "cut after CLEAR (before the reboot)" "cut CLEAR && ! rebooted"
 ok "  next boot: the candidate, no marker; the first start does nothing" "boot && [ \"\$(booted)\" = \"\$(st candidate)\" ] && [ ! -e $RG/system/state/install ] && fs && ! rebooted && [ ! -s $W/fsout ]"
 down
+
+ok "a bare boot while a candidate is selected and the marker is there: the marker removed, a reboot, no format" "cut STAGE >/dev/null 2>&1 && UC=\$(uuid $UDEV) && mount -t btrfs $SD $RG/system && echo bare:b1 > $RG/booted && fs && rebooted && [ ! -e $RG/system/state/install ] && [ \"\$(uuid $UDEV)\" = \"\$UC\" ] && grep -q 'rebooting into it' $W/fsout"
+umount $RG/system; rm -f $RG/booted
 
 # --- a step that fails half way ----------------------------------------------------
 # mke2fs that formats, then fails (cut before the UUID is recorded)
