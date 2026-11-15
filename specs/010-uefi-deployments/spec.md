@@ -274,24 +274,16 @@ the next start without a choice runs the current deployment again.
   that path being used, nor on the boot order being honoured: whichever system the
   firmware starts, it starts whole.
 - **FR-035** The running system and the recovery report when our entry is missing or no
-  longer first, and say what the firmware starts instead. Making it again is a repair
-  (FR-031).
-  [NEEDS CLARIFICATION: when our entry still exists but another system or the firmware
-  moved it from the front, should GlassineOS put it back by itself? Recommendation: no.
-  Recreate only a missing entry, in a confirmed repair, and only report a moved one.
-  Moving it back by itself starts a tug of war with the other system's updates, and the
-  boot order is the person's.]
-- **FR-036** With Secure Boot off, everything in this spec holds, and nothing in it asks
-  the person to change another firmware setting. The installer reads the Secure Boot
-  state before the plan and states it in the plan.
-  [NEEDS CLARIFICATION: what holds with Secure Boot on. The options: (a) the installer
-  refuses, with the reason, and says how to switch it off; (b) GlassineOS signs the
-  loader, the kernels and the recovery with its own key and the person enrols that key
-  once; (c) a first-stage loader signed by the firmware's usual third-party authority
-  starts ours. Each of (b) and (c) adds: a signing key and its custody, signed
-  artifacts in every release, a kernel set whose command line can't be changed outside
-  the signature, a way to revoke, and a rule for kernels built on the machine itself.
-  Recommendation: (a) for the first release, then (b). Not decided here.]
+  longer first, and say what the firmware starts instead. GlassineOS never moves an
+  entry back by itself: the boot order is the person's, and another system's update
+  may set it again. A missing entry is made again only in a repair the person
+  confirmed (FR-031).
+- **FR-036** The installer reads the Secure Boot state before the plan. While Secure Boot
+  is on, it refuses the install, says why (the firmware would not start the loader),
+  and says how to switch Secure Boot off in the firmware's set-up. With Secure Boot off,
+  everything in this spec holds, and nothing in it asks the person to change another
+  firmware setting. A running system that finds Secure Boot switched on reports it and
+  says that the next start may fail.
 
 ### The recovery on a PC
 
@@ -301,13 +293,17 @@ the next start without a choice runs the current deployment again.
 - **FR-038** The recovery is updated like a kernel set: the new image next to the old
   one, checked, then named in the loader record. A cut update leaves the old one in
   use.
-- **FR-039** The loader's wait shows one line that names the recovery key.
-  [NEEDS CLARIFICATION: is there a visible menu? Recommendation: none by default. The
-  loader shows the one line for about two seconds, and the key opens a short list:
-  GlassineOS, the previous deployment (FR-040), the previous kernel, the recovery, the
-  firmware's set-up, and "more" for the other deployments. The other system is not in
-  the list; it is started from the firmware's own boot menu, as the
-  installer's plan says, so its start is never altered by passing through our loader.]
+- **FR-039** The loader shows no menu by default. During its wait, about two seconds,
+  it shows one line that names the recovery key. The key opens a short list:
+  GlassineOS, the previous deployment and "more" for the other deployments (FR-040),
+  the previous kernel, the recovery, the firmware's set-up. The other system is not in
+  the list; it is started from the firmware's own boot menu, so its start is never
+  altered by passing through our loader.
+- **FR-048** The loader is the earliest stage that owns the display on a PC, so it draws
+  the boot splash and the one-time override of
+  [011](../011-boot-splash/spec.md), through the firmware's graphics output, before
+  the kernel starts. The line of FR-039 is drawn over the splash. A splash that can't
+  be drawn never delays or stops a start.
 
 ### A deployment chosen at start-up
 
@@ -497,6 +493,8 @@ Each is a test in QEMU with OVMF unless it says otherwise.
 
 ## Out of scope
 
+- Starting with Secure Boot on. The intended route is a signing key of GlassineOS's own
+  that the person enrols once; it is a later feature with its own spec.
 - Disk encryption and measured boot.
 - Starting another system from the loader.
 - Network boot, and firmware updates.
