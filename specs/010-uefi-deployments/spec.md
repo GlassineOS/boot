@@ -1,0 +1,405 @@
+# Feature Specification: Deployments on UEFI PCs
+
+**Feature branch:** `uefi-deployments`
+**Status:** spec, for review; nothing built
+**Builds on:** [001-deployments](../001-deployments/spec.md),
+[004-kernel-records](../004-kernel-records/spec.md),
+[008-recovery](../008-recovery/spec.md), [009-first-start](../009-first-start/spec.md) ·
+**Interfaces:** [docs/deployments.md](../../docs/deployments.md) (`glassine-deploy`, the
+deployment state), [docs/kernel-artifacts.md](../../docs/kernel-artifacts.md) (kernel
+records, the trial), installer
+[`devices/uefi-pc.toml`](https://github.com/GlassineOS/installer/blob/main/devices/uefi-pc.toml)
+(the partitions and boot settings an install makes) · **Decisions:** docs
+[0007](https://github.com/GlassineOS/docs/blob/main/docs/decisions/0007-recovery-mainline-twrp.md),
+[0010](https://github.com/GlassineOS/docs/blob/main/docs/decisions/0010-root-and-deployments.md),
+[0014](https://github.com/GlassineOS/docs/blob/main/docs/decisions/0014-installation-and-provisioning.md)
+
+## Summary
+
+On a PC (x86-64) that starts from UEFI, the firmware starts one GlassineOS loader from a
+boot partition GlassineOS owns. The loader starts a kernel set: a kernel, its initramfs
+and its command line, tried and replaced together. The initramfs then picks and
+assembles the deployment from the system partition's state, exactly as on every other
+machine.
+
+So a PC adds one thing: its kernel hand-off. Deployments, their tries, acceptance,
+rollback and resets are 001's and don't change. Kernel records, the trial and the verdict
+are 004's and don't change. This spec says what the boot partition holds, what the
+loader does, how the recovery is reached, and what GlassineOS may touch in the firmware
+and on a disk it shares with another system.
+
+Deployments are never firmware boot entries (0014): the firmware knows one GlassineOS
+entry, however many deployments and kernels there are.
+
+## Terms
+
+| Term | Meaning |
+|---|---|
+| boot partition | The partition the installer creates for GlassineOS (`glassine-boot`): a FAT file system the firmware can read. GlassineOS owns all of it. |
+| loader | The program the firmware starts from the boot partition. It starts a kernel set or the recovery. |
+| kernel set | A kernel, its initramfs and its command line. The unit that is tried, accepted and rolled back (one image record of 004). |
+| default set | The kernel set of the current kernel record. It starts when nothing else is asked for. |
+| previous set | The kernel set of the previous kernel record. |
+| trial set | The kernel set of the kernel candidate. |
+| loader record | The small file on the boot partition that tells the loader what to start: the default set, the previous set, a one-shot request, the count of starts not yet marked healthy. |
+| healthy mark | The running system's statement, on the boot partition, that this start reached a healthy system. |
+| our entry | The one firmware boot entry the installer made for GlassineOS. |
+
+## User scenarios
+
+### Scenario 1 – An ordinary start (P1)
+
+**Given** an installed PC with an accepted deployment,
+**When** it is switched on and nobody touches it,
+**Then** the firmware starts the loader, the loader starts the default set, and the
+initramfs picks the deployment from the system partition's state (001 FR-005). No
+firmware variable is written.
+
+### Scenario 2 – A new deployment is tried (P1)
+
+**Given** a deployment candidate with two tries (001 Story 2),
+**When** the PC starts,
+**Then** the default set starts, and the initramfs counts the try and boots the
+candidate. A candidate that is never accepted leaves the current deployment booting
+after its tries, with no step by the person. The loader and the boot partition take no
+part in this.
+
+### Scenario 3 – A new kernel is tried (P1)
+
+**Given** a kernel candidate (004), its trial set complete on the boot partition, and a
+one-shot request for it,
+**When** the PC restarts,
+**Then** the loader removes the request, durably, and only then starts the trial set.
+Whatever happens next (a hang, a panic, a power cut, a healthy boot), the following
+start uses the default set again. The trial set becomes the default set only through
+004's accept.
+
+### Scenario 4 – The recovery, by key (P1)
+
+**Given** a PC that is starting,
+**When** the person holds or presses the recovery key during the loader's wait,
+**Then** the GlassineOS recovery (008) starts from the boot partition, from memory,
+whatever state the system partition is in.
+
+### Scenario 5 – The recovery, by itself (P1)
+
+**Given** starts in a row that no healthy mark followed,
+**When** their count passes the limit,
+**Then** the loader starts the previous set once, and after that the recovery. The
+recovery shows which deployment and which kernel failed (008 Scenario 1). Left alone, it
+restarts into the default set after its idle time (008 Scenario 6).
+
+### Scenario 6 – Another system stays as it is (P1)
+
+**Given** a PC that also holds another operating system,
+**When** GlassineOS is installed, updated, repaired or removed,
+**Then** that system's partitions, its EFI system partition and its firmware boot
+entries are byte for byte as they were, and the firmware's boot order differs only by
+our entry.
+
+### Scenario 7 – The firmware forgets (P2)
+
+**Given** a firmware that lost its variables, or never honoured the boot order,
+**When** the PC starts,
+**Then** it starts either another system that is on the disk, or GlassineOS through the
+boot partition's removable-media path. It never starts a half-written GlassineOS. Once
+GlassineOS runs, it reports that our entry is missing and offers to make it again.
+
+### Scenario 8 – A cut update (P1)
+
+**Given** any write to the boot partition (a trial set, an accept, a rollback, a
+recovery update, a healthy mark),
+**When** the power is cut at any point,
+**Then** the next start uses the default set as it was before the write began, or as it
+is after the write completed, and nothing in between.
+
+## Requirements
+
+### What lives where
+
+- **FR-001** The firmware starts one loader from the boot partition. The boot partition
+  holds the loader, the loader record, the default set, the previous set (when there
+  is one), at most one trial set, and the recovery image. It holds nothing of the
+  person's and no secret.
+- **FR-002** The kernel records, the kernels, initramfs files and command lines they are
+  made from stay on the system partition, the same as on every machine (004). The boot
+  partition is a copy made from them. Every file on it can be made again from the system
+  partition and the recovery's own record, with no network.
+- **FR-003** GlassineOS has exactly one firmware boot entry. A deployment, a base or a
+  kernel never adds, removes or renames a firmware boot entry.
+- **FR-004** The loader finds its files on the partition it was started from. It never
+  searches other disks or partitions for kernel sets, so a second GlassineOS disk, or an
+  install medium, is never mixed in.
+- **FR-005** The command line of every kernel set carries the identity of this
+  installation's system partition and userdata (the machine-identity keys of 001/004),
+  so the initramfs never picks another disk's.
+
+### The loader
+
+- **FR-006** With no request and the count of unmarked starts within the limit, the
+  loader starts the default set.
+- **FR-007** Before it starts a kernel set, the loader checks that the set is complete
+  and matches the checksums the loader record names. A set that fails the check is not
+  started; the loader goes on to the next choice: the default set, then the previous
+  set, then the recovery.
+- **FR-008** A loader record that is missing, cut or fails its own check counts as
+  absent. The loader then starts the last complete default set it can find by the
+  boot partition's fixed names, or else the recovery. It never starts a trial set
+  without a valid record.
+- **FR-009** A one-shot request (the trial set, or the recovery) is removed from the
+  loader record before the loader acts on it, and the removal is durable. If the loader
+  can't write the boot partition, it doesn't start a trial set: it starts the default
+  set and leaves the request for the running system to fail (004: the trial never
+  started).
+- **FR-010** A trial set starts at most once per request. Nothing the loader does makes
+  a trial set the default set.
+- **FR-011** The loader counts every start of the default set and the previous set in
+  the loader record before it starts the set. The count is cleared by the healthy mark.
+  When the count passes the limit, the next start uses the previous set; the start
+  after that, and every one until a healthy mark or a choice in the recovery, uses the
+  recovery. With no previous set, the recovery comes at once.
+- **FR-012** The limit is larger than the deployment tries of 001, so a deployment
+  candidate that fails and falls back to the current deployment never reaches the
+  previous set or the recovery by that alone. Default: three unmarked starts.
+- **FR-013** When neither the default set nor the previous set can be started, the
+  loader starts the recovery. When the recovery can't be started either, it shows a
+  message that names the boot partition and returns to the firmware, so the firmware
+  goes on to its next entry.
+- **FR-014** The loader waits for the recovery key for a short, fixed time at every
+  start, and longer after a start that wasn't marked healthy. The key works without any
+  variable, record or system partition being intact.
+- **FR-015** The loader needs no network, no firmware set-up password and no firmware
+  setting other than the ones FR-027 names. It works with only a keyboard and the
+  firmware's own display, and with no keyboard at all for every path that needs no
+  choice.
+
+### The running system's side
+
+- **FR-016** The initramfs picks and assembles the deployment as 001 and
+  [docs/boot.md](../../docs/boot.md) define, from the system partition's state. The
+  deployment state has no copy on the boot partition and none in firmware variables.
+- **FR-017** Acceptance is the shared one: the boot-success service accepts a deployment
+  candidate (001 FR-018), and the kernel verdict promotes or fails a kernel candidate
+  (004). Neither needs a service manager other than the base's init system, and neither
+  needs the loader to implement any other system's boot counting.
+- **FR-018** The healthy mark is written on every boot that reaches the health
+  conditions of 001 FR-018, also when there was no candidate. A bare boot, a kernel
+  trial before its verdict, and a boot that fails a health check write none. A session
+  resumed from hibernation writes it after the resume.
+- **FR-019** `reboot recovery` writes a one-shot request for the recovery into the
+  loader record and restarts. It doesn't depend on the firmware honouring a one-time
+  boot variable.
+- **FR-020** The kernel hand-off of this platform is one more hand-off kind of 004: a
+  trial set is written to the boot partition next to the default set, never over it,
+  and the request is written last. Accept, rollback and repair change the default set
+  under 004's rules for a default-slot write (the write is named in the kernel state
+  before it starts, and a start in the middle is a finishing boot).
+- **FR-021** The boot partition is mounted only for the time of a write, and unmounted
+  again. No service keeps it mounted, and nothing reads it for the system's ordinary
+  work.
+
+### Writing the boot partition safely
+
+- **FR-022** A file the next start may need is never changed in place. A new file is
+  written under a new name, synced and read back against its checksum; only then does
+  one step (the replacement of the loader record) make the loader use it. Old files are
+  removed after that step is durable.
+- **FR-023** Before any write, the free space is checked against what the write needs
+  plus the loader record's own room. Too little: the command refuses, writes nothing
+  and says how much is needed and free. It never removes the default set, the previous
+  set or the recovery image to make room. A trial set that nothing requests, and files
+  no record names, are removed first.
+- **FR-024** The boot partition is sized by the installer from the release: room for
+  three kernel sets and two recovery images (the one in place and its replacement), with
+  as much again free. An install onto less is refused in the plan.
+- **FR-025** A boot partition whose file system is damaged is rebuilt from the system
+  partition by the recovery's "repair the boot" (008 FR-009), and by the installer's
+  repair from removable media when the recovery itself can't start. The repair writes
+  only the boot partition and, where FR-027 allows, our entry.
+
+### The firmware and other systems
+
+- **FR-026** GlassineOS writes firmware variables only at install, at removal, and in a
+  repair the person confirmed. No start, update, trial, acceptance or rollback writes
+  one.
+- **FR-027** The only firmware settings GlassineOS writes are our entry and the boot
+  order, and the boot order only to add or remove our entry's number. Entries GlassineOS
+  didn't create are never changed, removed, renamed or moved relative to each other.
+  Our entry is recognised by the boot partition's unique identity, not by its label.
+- **FR-028** GlassineOS never writes an EFI system partition it didn't create, and never
+  places or replaces a file another system put on one. The boot partition is its own
+  partition even when the disk already has an EFI system partition.
+- **FR-029** The boot partition also carries the loader at the removable-media path, so
+  a firmware that lost its variables, or ignores the boot order, can still start
+  GlassineOS from its boot menu or its fallback search. Correctness never depends on
+  that path being used, nor on the boot order being honoured: whichever system the
+  firmware starts, it starts whole.
+- **FR-030** The running system and the recovery report when our entry is missing or no
+  longer first, and say what the firmware starts instead. Making it again is a repair
+  (FR-026).
+  [NEEDS CLARIFICATION: when our entry still exists but another system or the firmware
+  moved it from the front, should GlassineOS put it back by itself? Recommendation: no.
+  Recreate only a missing entry, in a confirmed repair, and only report a moved one.
+  Moving it back by itself starts a tug of war with the other system's updates, and the
+  boot order is the person's.]
+- **FR-031** With Secure Boot off, everything in this spec holds, and nothing in it asks
+  the person to change another firmware setting. The installer reads the Secure Boot
+  state before the plan and states it in the plan.
+  [NEEDS CLARIFICATION: what holds with Secure Boot on. The options: (a) the installer
+  refuses, with the reason, and says how to switch it off; (b) GlassineOS signs the
+  loader, the kernels and the recovery with its own key and the person enrols that key
+  once; (c) a first-stage loader signed by the firmware's usual third-party authority
+  starts ours. Each of (b) and (c) adds: a signing key and its custody, signed
+  artifacts in every release, a kernel set whose command line can't be changed outside
+  the signature, a way to revoke, and a rule for kernels built on the machine itself.
+  Recommendation: (a) for the first release, then (b). Not decided here.]
+
+### The recovery on a PC
+
+- **FR-032** The recovery image is one file on the boot partition that the loader starts
+  like a kernel set, with its own record and checksum. It runs from memory (008 FR-001)
+  and needs nothing from the system partition to start.
+- **FR-033** The recovery is updated like a kernel set: the new image next to the old
+  one, checked, then named in the loader record. A cut update leaves the old one in
+  use.
+- **FR-034** The loader's wait shows one line that names the recovery key.
+  [NEEDS CLARIFICATION: is there a visible menu? Recommendation: none by default. The
+  loader shows the one line for about two seconds, and the key opens a short list:
+  GlassineOS, the previous kernel, the recovery, the firmware's set-up. The other
+  system is not in the list; it is started from the firmware's own boot menu, as the
+  installer's plan says, so its start is never altered by passing through our loader.]
+
+## Key entities
+
+- **The boot partition**: `glassine-boot`, FAT, created by the installer, owned whole by
+  GlassineOS. Identified by its unique partition identity.
+- **The loader record**: format version, the default set and the previous set (names and
+  checksums), a one-shot request, the count of unmarked starts, its own check value.
+  Read and written by the loader, `glassine-bootimg`, the boot-success step and the
+  recovery.
+- **A kernel set**: the files of one 004 image record, on the boot partition under names
+  made from the record's id, so a set once written never changes.
+- **Our entry**: label, the boot partition's identity, the loader's path.
+
+## Contracts
+
+| Contract | Owned / consumed | Version | Spec location |
+|---|---|---|---|
+| The loader record | owned (new) | `format=1` | to be added to `docs/kernel-artifacts.md` |
+| The boot partition's layout and fixed names | owned (new); consumed by the installer's `write-boot-files` step and its repair | `format=1` | to be added to `docs/kernel-artifacts.md` |
+| The healthy mark | owned (new); written by the boot-success step on every healthy boot | part of the loader record | `docs/deployments.md` |
+| A hand-off kind for UEFI in `HANDOFF` | owned (added value) | 004's records, unchanged | `docs/kernel-artifacts.md` |
+| `state/deploy`, `state/kernel`, `glassine-deploy` | owned (unchanged) | state `version=1`, porcelain 1 | `docs/deployments.md` |
+| Firmware boot entries and boot order | consumed; written by the installer (`add-boot-entry`) and the repair | UEFI | installer 002 |
+| `glassine-boot`, 1 GiB, role `esp` | consumed; the installer's description | description `format = 4` | installer `devices/uefi-pc.toml` |
+
+## Device scope and risk
+
+- **Writes:** the boot partition, in the running system and the recovery. Our entry and
+  the boot order, at install, removal and confirmed repair only.
+- **Never written:** another system's partitions, any EFI system partition GlassineOS
+  didn't create, firmware boot entries it didn't create, any other firmware setting.
+- **Escape:** a broken boot partition leaves the other system starting (where there is
+  one) and the installer's removable medium, whose repair rebuilds the boot partition
+  from the system partition (FR-025). A broken system partition leaves the recovery,
+  which starts from the boot partition alone.
+- **No watchdog is assumed.** Where the PC has one the kernel can arm, the initramfs arms
+  it as on other machines, and a hang ends in a reset. Where it has none, a hang waits
+  for the person to switch the PC off and on. That start is counted like any other, so
+  the tries and the limit still end the loop.
+
+## Edge cases
+
+- **Power cut while the loader record is replaced:** the old record or the new one is
+  read, whole. A record that is neither is absent (FR-008).
+- **Power cut after the loader counted a start and before the kernel ran:** one start is
+  counted that never ran. The limit absorbs it; it can't select a trial set.
+- **Power cut during a trial:** the request is already gone, so the next start is the
+  default set, and 004 gives the trial its verdict (`no-verdict`).
+- **Boot partition full:** FR-023. Kernel updates stop with a message; every start still
+  works.
+- **Boot partition read-only for the loader** (a firmware whose FAT driver can't write):
+  no trial set ever starts and no start is counted, so the recovery isn't reached by
+  itself. The default set starts and the key works. A request stays in the record, and
+  the running system reports that the loader couldn't take it. The installer's check
+  names such a firmware before the install.
+- **Firmware variables reset:** Scenario 7. Nothing on a disk changed, so a repair
+  restores our entry without touching the boot partition.
+- **Firmware that ignores the boot order or a one-time boot variable:** nothing in this
+  spec uses a one-time boot variable. If our entry is not started first after the
+  install, the installer's last step (the booted, accepted first deployment of 0014) is
+  not reached, and it says so and how to choose GlassineOS in the firmware's boot menu.
+- **The other system writes the boot order or puts itself first:** reported (FR-030);
+  nothing is undone by itself.
+- **The other system, or a person, deletes files on the boot partition:** FR-007 and
+  FR-013 decide the start; the repair rebuilds.
+- **Two GlassineOS installs on one PC:** each has its own boot partition, entry and
+  loader record; FR-004 and FR-005 keep them apart.
+- **The first start (009):** the bare boot writes no healthy mark and restarts once; the
+  first deployment's boots follow. The limit leaves room for that restart.
+- **A hibernated session:** the loader's count rises at the resume start and is cleared
+  after the resume (FR-018). A kernel trial never resumes (004).
+- **A PC that starts from legacy BIOS, or a 32-bit UEFI:** not this platform; the
+  installer refuses with the reason.
+- **Removable or external target disk:** the removable-media path of FR-029 makes it
+  start on another PC; our entry exists only on the PC it was installed from.
+
+## Success criteria
+
+Each is a test in QEMU with OVMF unless it says otherwise.
+
+- **SC-001** From a written install image to an accepted first deployment with no key
+  pressed, through at most two restarts (009 SC-002), with the firmware variables
+  written once, at install.
+- **SC-002** A deployment candidate that fails its health check twice: the third start
+  boots the current deployment, the recovery is not started, and the boot partition is
+  byte for byte unchanged apart from the loader record.
+- **SC-003** A trial set whose kernel panics, one that hangs (ended by a reset), and one
+  whose initramfs is cut short on disk: in each case the next start is the default set
+  with no key pressed, and the kernel candidate is listed as failed with 004's reason.
+- **SC-004** A default set that never reaches a healthy system: within the limit plus
+  two starts the recovery is on the screen, with no key pressed. Left alone, it restarts
+  into the default set after its idle time.
+- **SC-005** The recovery key, sent during the loader's wait, starts the recovery in
+  each of these states: healthy system, system partition wiped, loader record deleted,
+  firmware variables reset.
+- **SC-006** The disk image is snapshotted after every single write of a trial-set
+  install, an accept, a rollback, a recovery update and a healthy mark. Every snapshot
+  starts, and starts either the old default set or the new one.
+- **SC-007** With a second system's EFI system partition and boot entries on the same
+  disk: after install, ten updates, a kernel accept, a rollback, a repair and a removal,
+  that partition's checksum and every variable GlassineOS didn't create are unchanged,
+  and the boot order minus our entry is unchanged.
+- **SC-008** With the firmware's variable store deleted, the PC starts either the other
+  system or GlassineOS from the removable-media path; GlassineOS then reports the
+  missing entry, and a confirmed repair restores it.
+- **SC-009** With the boot partition filled to its last block, an install of a kernel
+  refuses, names the space needed and free, and the next start is unchanged.
+- **SC-010** With the boot partition deleted and made again empty, the installer's
+  repair rebuilds it from the system partition with no network, and the PC starts the
+  same deployment as before.
+- **SC-011** A count of firmware variable writes over a hundred starts, twenty updates
+  and five kernel trials is zero.
+- **SC-012** On at least two real PCs of different firmware makers, with the person's
+  go: SC-001, SC-003 and SC-005.
+
+## Assumptions
+
+- A PC has a system partition and a userdata as 001 defines them, found by their
+  identity on the command line. How the installer makes userdata on a PC is the
+  installer's.
+- The recovery of 008 exists for x86-64 as one image; its screen and keys on a PC are
+  008's.
+- The loader is a program GlassineOS builds or packages for the release. Which one is
+  the plan's choice, measured against FR-006 to FR-015; none is named here.
+- x86-64 only. Other UEFI machines (arm64 PCs) follow this spec once they have a
+  description.
+
+## Out of scope
+
+- Disk encryption and measured boot.
+- Starting another system from the loader.
+- Network boot, and firmware updates.
+- The installer's steps, plan and backup (installer 001, 002).
+- Building the loader, the kernel sets and the recovery image (the plan, and
+  GlassineOS/images).
