@@ -19,6 +19,7 @@
 #   glassine-deploy packages [ID] [--porcelain]
 #   glassine-deploy switch [--discard-hibernation]
 #   glassine-deploy accept ID
+#   glassine-deploy init POOL_MOUNT [--install-marker]
 #
 # select makes ID the candidate for the next boot (2 tries, then the current
 # one again); selecting the current deployment cancels a candidate. rollback
@@ -62,6 +63,12 @@
 # Flatpak's system data are on userdata, outside the deployments, and never
 # touched. accept ID is the
 # boot-success service's: the booted candidate ID becomes current.
+# init lays out an empty btrfs pool, made and mounted by the caller (the image
+# builder): bases/, modules/, state/ with an empty deployment and kernel state,
+# and with --install-marker state/install, which makes the first start
+# (glassine-first-start) format userdata and select the first deployment. stage
+# with no current deployment (that first deployment) needs --no-replay and
+# carries nothing.
 #
 # --porcelain: the first line is "glassine-deploy 1" (the output format
 # version), then one record per line: tab-separated key=value fields, the
@@ -676,14 +683,23 @@ cmd_stage() {
     state_open_rw
     kernel_gate
     cur=$(gs_kv "$S/deploy" current)
-    [ -n "$cur" ] || die "no current deployment to carry from"
+    # no current deployment (the first start, or a recovery after userdata was
+    # formatted): the first deployment, the bare base with nothing carried; there
+    # are no packages to replay
+    [ -n "$cur" ] || [ "$NOREPLAY" = 1 ] ||
+        die "no current deployment to replay packages from; --no-replay stages the bare base as the first deployment"
     [ -d "$SYSTEM_MNT/bases/$ARG" ] || die "no base $ARG on the system partition (receive it first)"
     [ -r "$SYSTEM_MNT/bases/$ARG/etc/passwd" ] || die "base $ARG has no /etc/passwd"
     ud_open_rw
     base=$ARG
     when="at the next shutdown"; [ "$NOW" = 1 ] && when=now
-    confirm "Update: a new deployment on base $base that keeps the migrate list and your accounts (Wi-Fi, Bluetooth, settings; your packages and edits go), prepared $when?"
-    kind=update carry=migrate
+    if [ -n "$cur" ]; then
+        confirm "Update: a new deployment on base $base that keeps the migrate list and your accounts (Wi-Fi, Bluetooth, settings; your packages and edits go), prepared $when?"
+        kind=update carry=migrate
+    else
+        confirm "First deployment: base $base as shipped, nothing carried over, prepared $when?"
+        kind=install carry=none
+    fi
     stage_new
 }
 
@@ -847,7 +863,7 @@ stage_new() {
         do_switch
     else
         if [ "$carry" = none ]; then
-            echo "glassine-deploy: $id ($kind of $cur, base $base) is staged; the next shutdown selects it, with no settings carried over"
+            echo "glassine-deploy: $id ($kind${cur:+ of $cur}, base $base) is staged; the next shutdown selects it, with no settings carried over"
         else
             echo "glassine-deploy: $id ($kind of $cur, base $base) is staged; the next shutdown carries the settings over and selects it"
         fi
@@ -920,7 +936,11 @@ do_switch() {
     sync
     gs_update "$S/deploy" staged= "candidate=$id" tries=2 || die "cannot write $S/deploy"
     rm -f "$SWITCHING"; SWITCHING=''
-    echo "glassine-deploy: $id boots next (2 tries, then ${cur:-the current one} again)"
+    if [ -n "$cur" ]; then
+        echo "glassine-deploy: $id boots next (2 tries, then $cur again)"
+    else
+        echo "glassine-deploy: $id boots next (2 tries, then a bare boot again)"
+    fi
     gc_deployments
 }
 
@@ -1130,10 +1150,48 @@ cmd_remove() {
     echo "glassine-deploy: deployment $ARG removed"
 }
 
+# pool_mount DIR: DIR is the top level of a mounted btrfs (a mount point of this
+# namespace, file system btrfs, mounted from the file system's root, not a
+# subvolume); the last mount on DIR counts
+pool_mount() {
+    _pm=''
+    while read -r _id _par _mm _root _mp _rest; do
+        [ "$(printf '%b' "$_mp")" = "$1" ] || continue
+        _t=${_rest#* - }; _pm="$_root ${_t%% *}"
+    done < "${GLASSINE_DEPLOY_MOUNTINFO:-/proc/self/mountinfo}"
+    [ -n "$_pm" ] || die "$1 is not a mount point; init lays out a mounted btrfs (mkfs and the mount are the caller's)"
+    [ "${_pm#* }" = btrfs ] || die "$1 is ${_pm#* }, not btrfs"
+    [ "${_pm%% *}" = / ] || die "$1 is the subvolume ${_pm%% *}, not the top level of its btrfs"
+}
+
+# init POOL_MOUNT: an empty, mounted btrfs becomes a system partition: bases/,
+# modules/, state/ (deploy and kernel with nothing set, .lock), with
+# --install-marker state/install (format=1, created=): the first start formats
+# userdata and selects the first deployment. state/format goes last, so a cut
+# init reads as "not migrated". No btrfs-progs needed; runs without deploy.conf.
+cmd_init() {
+    d=$ARG
+    [ -d "$d" ] || die "$d is not a directory"
+    d=$(cd "$d" && pwd -P) || die "cannot open $ARG"
+    pool_mount "$d"
+    [ -z "$(ls -A "$d" 2>/dev/null)" ] || die "$d is not empty; init lays out an empty pool only"
+    mkdir "$d/bases" "$d/modules" "$d/state" && : > "$d/state/.lock" || die "cannot write $d"
+    gs_lock "$d/state" || fail 6 "busy: $d/state/.lock is held"
+    printf 'current=\nprevious=\ncandidate=\ntries=0\nstaged=\nfailed=\n' | gs_write "$d/state/deploy" &&
+        printf 'current=\nprevious=\n' | gs_write "$d/state/kernel" || die "cannot write $d/state"
+    if [ "$MARKER" = 1 ]; then
+        printf 'format=1\ncreated=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | gs_write "$d/state/install" ||
+            die "cannot write $d/state/install"
+    fi
+    echo "version=$GS_FORMAT_SUPPORTED" | gs_write "$d/state/format" || die "cannot write $d/state/format"
+    _note=''; [ "$MARKER" = 1 ] && _note=', install marker'
+    echo "glassine-deploy: $d laid out (state format $GS_FORMAT_SUPPORTED$_note)"
+}
+
 [ $# -ge 1 ] || usage
 CMD=$1; shift
 PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 SHA='' ARG='' NARG=0 FIRST='' KGATE=''
-NOREPLAY=0 ACCEPT_DOWN=0 WITHOUT=''
+NOREPLAY=0 ACCEPT_DOWN=0 WITHOUT='' MARKER=0
 while [ $# -gt 0 ]; do
     a=$1; shift
     case "$a" in
@@ -1148,6 +1206,7 @@ while [ $# -gt 0 ]; do
     --discard-hibernation) DISCARD=1 ;;
     --full) FULL=1 ;;
     --now) NOW=1 ;;
+    --install-marker) MARKER=1 ;;
     -*) usage ;;
     *) [ "$NARG" = 0 ] && FIRST=$a; ARG=$a; NARG=$((NARG + 1)) ;;
     esac
@@ -1167,5 +1226,6 @@ remove:1) cmd_remove ;;
 packages:0|packages:1) cmd_packages ;;
 switch:0) cmd_switch ;;
 accept:1) cmd_accept ;;
+init:1) cmd_init ;;
 *) usage ;;
 esac

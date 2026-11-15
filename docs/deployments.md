@@ -32,6 +32,7 @@ system partition (btrfs, top level)
     ├── format                  version=<N>
     ├── deploy                  the deployment state (below)
     ├── kernel                  current=, previous= (kernel releases)
+    ├── install                 the install marker: present until the first start is done
     └── .lock                   flock target; never contains data
 
 userdata (ext4) under USERDATA_PREFIX (default media/glassine)
@@ -127,12 +128,24 @@ How the boot picks (`gr_pick`):
 
 A staged deployment never boots.
 
+### `state/install`
+
+The install marker, `key=value`. `glassine-deploy init --install-marker` writes it into
+a pool an installer will write to a device; [the first start](#the-first-start) acts on
+it and removes it.
+
+| Key | Value |
+|---|---|
+| `format` | `1` |
+| `created` | UTC time of the `init` |
+| `userdata` | the UUID of the userdata the first start formatted; set by the first start once the format is complete |
+
 ### `deployments/<id>/meta`
 
 | Key | Value |
 |---|---|
 | `base` | the base id (required) |
-| `kind` | `install`, `reset`, `reset-full`, `update` (`stage`) |
+| `kind` | `install` (`stage` with no current deployment: the first deployment), `reset`, `reset-full`, `update` (`stage`) |
 | `carry` | `migrate` (the switch carries the migrate list) or `none` |
 | `from` | the deployment it was made from |
 | `created` | UTC time |
@@ -188,6 +201,7 @@ glassine-deploy remove ID [--yes] [--discard-hibernation]
 glassine-deploy packages [ID] [--porcelain]
 glassine-deploy switch [--discard-hibernation]
 glassine-deploy accept ID
+glassine-deploy init POOL_MOUNT [--install-marker]
 ```
 
 | Command | Does |
@@ -198,14 +212,15 @@ glassine-deploy accept ID
 | `rollback` | `select` previous |
 | `hibernate-invalidate` | turns a hibernate image back into a plain swap file (that session is lost) |
 | `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Neither touches home, Flatpak's data or the developer folder (`home/`, `flatpak/`, `devmode/` above). |
-| `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. Before the replay it checks the free space on userdata (below); too little is exit 5, nothing staged. |
+| `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. Before the replay it checks the free space on userdata (below); too little is exit 5, nothing staged. With no current deployment (the first start, or after userdata was formatted) it stages the first deployment: only with `--no-replay` (refused otherwise), `kind=install`, `carry=none`. |
 | `stage BASE` flags | `--no-replay` the bare base, `--without NAME` (repeatable) leaves NAME's change out (an added package, or the removal of the base's entry when the user changed it), `--accept-downgrades` takes lower versions. Exit 7: the replay needs one of these; nothing staged. |
-| `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. The only verb that needs btrfs-progs (and zstd for `.zst`). |
+| `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. Needs btrfs-progs (and zstd for `.zst`), see [Tools](#tools-each-command-needs). |
 | `packages [ID]` | how a deployment's packages (current by default) differ from its base's, derived each time (no bookkeeping): world entries `added` and `removed` (constraints and tags as written), packages installed in another version: `raised`/`lowered` (`apk version -t`; `changed` where apk is missing). A deployment that is not running needs userdata mounted. The replay input of a later base. |
 | `bases` | one record per subvolume under `bases/` and `modules/`, with the deployments whose meta names it |
 | `bases remove BASE` | deletes the subvolume and waits until its space is back. Refuses the base of the booted, current, candidate or staged deployment. Other deployments on it stay on userdata but can no longer be selected (`list` shows `base_present=no`); it asks first (`--yes`), naming them and a lost rollback. Modules are not removed. |
 | `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), merges the accounts (below), syncs, then sets `candidate=<id> tries=2 staged=`, then the clean-up. Interrupted = nothing selected, redone in full next time. |
 | `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous, then the clean-up (where userdata is mounted already). Refuses a non-candidate; accepting current is a no-op. |
+| `init POOL_MOUNT` | lays out an empty btrfs that the caller made and mounted (the image builder, for the pool image an installer writes to the system partition): `bases/`, `modules/`, `state/` with `deploy` and `kernel` naming nothing, `.lock`; `--install-marker` adds `state/install`. `state/format` is written last, so a cut `init` reads as not migrated. Refuses a path that is not a mount point, a file system other than btrfs, a subvolume mount (not the top level) and a pool that is not empty. Needs no `deploy.conf` (`GLASSINE_DEPLOY_CONF=/dev/null` on a build host) and no btrfs-progs. The caller then receives the base and the kernel's modules into it. |
 | `remove ID` | deletes a deployment's layers from userdata, the way the clean-up does. Refuses the current, candidate, staged and booted deployment and a mounted one. The previous one: asks first (`--yes`), naming the lost rollback, and clears `previous=`; the last failed one: clears `failed=`. |
 
 Where it reads and writes:
@@ -369,6 +384,50 @@ system), remounts that mount read-only and unmounts it. A file system that isn't
 (a bare boot never mounted userdata) is left alone. It never stops a shutdown; a file
 system it can't make read-only (still in use) is logged.
 
+## The first start
+
+An installer writes a pool made by `init --install-marker` (one base, the kernel's
+`modules/<release>`, the marker) to the system partition, and leaves userdata as it
+found it (another system's data, or no file system). The initramfs finds no deployment
+there and boots bare. `glassine-first-start`, run by the OpenRC service
+`glassine-first-start` in the `boot` runlevel of that bare boot (never in the initramfs,
+which mounts nothing read-write before the hibernation step), makes the system:
+
+1. `state/kernel` `current=` the running kernel's release, when it is empty and
+   `modules/<release>` is there.
+2. The system partition's btrfs grown to its partition (`btrfs filesystem resize max`).
+3. Userdata formatted: every mount of it unmounted first (the initramfs mounts any
+   ext4 it finds; one that doesn't unmount stops the step), then ext4 with 4096-byte
+   blocks (the hibernate step needs them), `USERDATA_RESERVE_KIB` left free at its end.
+   Its UUID goes into `state/install` (`userdata=`). A userdata with that UUID is not
+   formatted again.
+4. `glassine-deploy stage <the only base> --no-replay --now --yes`: the first
+   deployment (`kind=install`, nothing carried), the candidate with 2 tries.
+5. `state/install` removed, once `state/deploy` names a candidate with 2 tries.
+6. A reboot (the orderly one). The candidate boots and is accepted as any candidate.
+
+- **Only with the marker.** Without `state/install` it does nothing and writes nothing;
+  a userdata is never formatted without it.
+- **Power cuts.** Every step can run again, so a cut anywhere means the next boot runs
+  the first start from the top: it finds the steps done and goes on. A cut after step 4
+  boots the candidate: then userdata is the deployment's, and the first start only
+  removes the marker (and reboots only from a bare boot).
+- **Refusals** (logged, the marker kept, nothing written): the marker on a boot of a
+  deployment while `state/deploy` selects none; no base or more than one under `bases/`;
+  `btrfs`, `mke2fs` or `dumpe2fs` missing; userdata that doesn't unmount. Exit 1 (the
+  next boot tries again), 3 a newer state format, 6 busy.
+- **What it does not handle:** a first candidate that runs out of tries leaves the
+  device booting bare with the marker gone; the recovery is the way on from there.
+- Messages go to the kernel log, where the initramfs logs.
+
+### Tools each command needs
+
+The initramfs and every command except the two below run with busybox and e2fsprogs'
+`e2fsck`, `dumpe2fs` and `debugfs` ([boot.md](boot.md#files-in-the-image)). `receive`
+and `bases remove` need btrfs-progs (and zstd for a `.zst` stream); the first start needs
+btrfs-progs (the resize) and e2fsprogs' `mke2fs`. `init` needs neither. So a base that
+an installer ships must contain btrfs-progs and e2fsprogs.
+
 ## Accepting a candidate
 
 `glassine-deploy-accept`, started by the OpenRC service `glassine-deploy-accept` in the
@@ -403,7 +462,7 @@ mounted or the prefix is not under `media/`).
 
 See [`conf/deploy.conf.example`](../conf/deploy.conf.example): `SYSTEM_DEV`,
 `SYSTEM_MNT`, `USERDATA_DEV`, `USERDATA_MNT`, `USERDATA_PREFIX`, `RUN_DIR`,
-`SWITCH_MIN_CAPACITY`, `ACCEPT_AFTER`, `ACCEPT_HEALTH_DIR`, `ACCEPT_BUSY_S` (default 600: how long the accept retries while the state is busy), `SLOT_TOOL` (default empty: no boot slot marking), `HIBERNATE_SIZE_MB`, `HIBERNATE_RESERVE_MB`. A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
+`USERDATA_RESERVE_KIB` (default 0: the KiB the first start leaves free at the end of userdata), `SWITCH_MIN_CAPACITY`, `ACCEPT_AFTER`, `ACCEPT_HEALTH_DIR`, `ACCEPT_BUSY_S` (default 600: how long the accept retries while the state is busy), `SLOT_TOOL` (default empty: no boot slot marking), `HIBERNATE_SIZE_MB`, `HIBERNATE_RESERVE_MB`. A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
 
 ## Runtime directory: `/run/glassine/`
 

@@ -64,6 +64,8 @@ steps from `lib/glassine-root.sh`:
      - without userdata, or with no deployment that assembles, a bare boot: the base
        read-only with a tmpfs upper (nothing kept, nothing bound from userdata; only
        `/var/tmp` is made shared). The base is current's, or else the last by name.
+       The first boot of an install is one: the first start then makes the first
+       deployment in the booted system ([deployments.md](deployments.md#the-first-start)).
    - A state format newer than the initramfs is read but never written, and the boot is
      neither a trial nor a finishing boot.
 4. The boot's pstore save, the log and the developer hooks run. `/var` is writable.
