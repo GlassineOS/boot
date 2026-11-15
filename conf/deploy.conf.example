@@ -17,6 +17,11 @@ USERDATA_DEV=/dev/disk/by-partlabel/userdata
 USERDATA_MNT=/run/glassine/userdata
 # The directory on userdata that holds deployments/, swap/ and the rest.
 USERDATA_PREFIX=media/glassine
+# The first start (glassine-first-start) formats userdata and leaves this many
+# KiB free at its end. Here: the 16 KiB footer where Android's full-disk
+# encryption keeps its metadata, for Android on the other slot (its encryption
+# refuses a file system that fills the partition).
+USERDATA_RESERVE_KIB=16
 
 # Locks and markers of running operations (a tmpfs).
 RUN_DIR=/run/glassine
