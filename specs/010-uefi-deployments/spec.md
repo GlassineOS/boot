@@ -249,7 +249,8 @@ the next start without a choice runs the current deployment again.
   set or the recovery image to make room. A trial set that nothing requests, and files
   no record names, are removed first.
 - **FR-029** The boot partition is sized by the installer from the release: room for
-  three kernel sets and two recovery images (the one in place and its replacement), with
+  three kernel sets, two recovery images (the one in place and its replacement) and the
+  boot splash and its one-time override at their largest size (011), with
   as much again free. An install onto less is refused in the plan.
 - **FR-030** A boot partition whose file system is damaged is rebuilt from the system
   partition by the recovery's "repair the boot" (008 FR-009), and by the installer's
@@ -278,12 +279,14 @@ the next start without a choice runs the current deployment again.
   entry back by itself: the boot order is the person's, and another system's update
   may set it again. A missing entry is made again only in a repair the person
   confirmed (FR-031).
-- **FR-036** The installer reads the Secure Boot state before the plan. While Secure Boot
-  is on, it refuses the install, says why (the firmware would not start the loader),
-  and says how to switch Secure Boot off in the firmware's set-up. With Secure Boot off,
-  everything in this spec holds, and nothing in it asks the person to change another
-  firmware setting. A running system that finds Secure Boot switched on reports it and
-  says that the next start may fail.
+- **FR-036** GlassineOS starts only with Secure Boot off. With it off, everything in this
+  spec holds, and nothing in it asks the person to change another firmware setting.
+  The installer's check reads the Secure Boot state wherever it runs: from another
+  system on the PC before the install medium is made, and on the install medium where
+  the firmware started it. While Secure Boot is on, the check refuses the install, says
+  why (the firmware would not start the loader), and says how to switch it off in the
+  firmware's set-up. The install medium's instructions say the same, because a firmware
+  that enforces Secure Boot doesn't start the medium at all.
 
 ### The recovery on a PC
 
@@ -478,8 +481,10 @@ Each is a test in QEMU with OVMF unless it says otherwise.
 - **SC-015** A request for a deployment that was removed, and one given while a
   resumable hibernate image is there: the ordinary pick, respectively the resume,
   happens, with a message, and `state/deploy` is unchanged.
-- **SC-016** With Secure Boot on in OVMF, the installer's plan refuses the install, names
-  the reason and the way to switch it off, and writes nothing.
+- **SC-016** The installer's check, run against OVMF's variables with Secure Boot on,
+  refuses the install, names the reason and the way to switch it off, and writes
+  nothing. An OVMF that enforces Secure Boot starts neither the install medium nor the
+  loader, and another system on the disk still starts.
 
 ## Assumptions
 
