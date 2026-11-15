@@ -50,12 +50,14 @@ the running system.
 
 1. **Given** a running system, **when** the user resets it, **then** nothing changes
    until the next shutdown the user starts. Changes made in between are kept.
-2. **Given** a staged reset and a user-started shutdown with enough battery or the
-   charger, **then** the migrate-list paths (modes and owners kept) are carried into a
-   fresh layer, and the new deployment boots next as the candidate. Everything else
-   from the old deployment is gone: packages, other edits, deletions.
+2. **Given** a staged reset and a user-started shutdown, on a machine with a battery
+   with enough charge or the charger, **then** the migrate-list paths (modes and owners
+   kept) are carried into a fresh layer, and the new deployment boots next as the
+   candidate. Everything else from the old deployment is gone: packages, other edits,
+   deletions.
 3. **Given** a staged reset, **when** the shutdown was not started by the user, or the
-   battery is below the threshold without a charger, **then** the reset stays staged.
+   machine has a battery that is below the threshold without a charger, **then** the
+   reset stays staged.
 4. **Given** a switch interrupted at any point (copy failure, power loss), **then**
    nothing is selected, the old deployment boots unchanged, and the next switch
    starts from scratch.
@@ -146,8 +148,9 @@ the running system.
   newer reset replaces a staged one.
 - **FR-008** `switch` starts the switch layer from empty every time, and selects only
   after all copies and a sync succeed.
-- **FR-009** The shutdown hook switches only at a user-started shutdown, with a charger
-  online or the battery at or above `SWITCH_MIN_CAPACITY`, and never fails a shutdown.
+- **FR-009** The shutdown hook switches only at a user-started shutdown, and never fails
+  a shutdown. On a machine with a battery it also needs a charger online or the battery
+  at or above `SWITCH_MIN_CAPACITY`. A machine without a battery has no such condition.
 - **FR-010** In the running deployment, the carry reads a plain bind of `/`, never a
   second overlay on the live upper. In recovery it reads a read-only overlay of the
   layers.
@@ -208,4 +211,5 @@ the running system.
   user-started shutdown, boots as the candidate with the carried settings, is accepted,
   and a rollback returns to the old deployment.
 - **SC-003** On hardware: a hibernate image survives a normal boot only if it was
-  resumed; after a TWRP mount of userdata it is cancelled.
+  resumed; after the recovery ([008](../008-recovery/spec.md)) or another system on the
+  machine, or that system's recovery, mounted userdata, it is cancelled.

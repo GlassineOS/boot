@@ -228,11 +228,13 @@ the next start without a choice runs the current deployment again.
 - **FR-024** `reboot recovery` writes a one-shot request for the recovery into the
   loader record and restarts. It doesn't depend on the firmware honouring a one-time
   boot variable.
-- **FR-025** The kernel hand-off of this platform is one more hand-off kind of 004: a
-  trial set is written to the boot partition next to the default set, never over it,
-  and the request is written last. Accept, rollback and repair change the default set
-  under 004's rules for a default-slot write (the write is named in the kernel state
-  before it starts, and a start in the middle is a finishing boot).
+- **FR-025** The kernel hand-off of this platform is one more hand-off kind of 004
+  (`HANDOFF=uefi`; 004 FR-007 and "Hand-off kinds"): a trial set is written to the boot
+  partition next to the default set, never over it, and the request is written last.
+  Accept, rollback and repair change the default set under 004's rules for a
+  default-slot write that hold for every kind (004 FR-009, FR-010: the write is named in
+  the kernel state before it starts, and a start in the middle is a finishing boot). The
+  bytes are written as FR-027 says, never in place.
 - **FR-026** The boot partition is mounted only for the time of a write, and unmounted
   again. No service keeps it mounted, and nothing reads it for the system's ordinary
   work.
@@ -368,7 +370,7 @@ the next start without a choice runs the current deployment again.
 | The one-shot deployment request to the initramfs | owned (new); device-neutral | a command-line key | `docs/boot.md`, 001 FR-005 |
 | The deployment list in the loader record | owned (new) | part of the loader record | to be added to `docs/kernel-artifacts.md` |
 | The healthy mark | owned (new); written by the boot-success step on every healthy boot | part of the loader record | `docs/deployments.md` |
-| A hand-off kind for UEFI in `HANDOFF` | owned (added value) | 004's records, unchanged | `docs/kernel-artifacts.md` |
+| The hand-off kind `uefi` in `HANDOFF` | owned (added value; 004 FR-007) | 004's records, unchanged | `docs/kernel-artifacts.md` |
 | `state/deploy`, `state/kernel`, `glassine-deploy` | owned (unchanged) | state `version=1`, porcelain 1 | `docs/deployments.md` |
 | Firmware boot entries and boot order | consumed; written by the installer (`add-boot-entry`) and the repair | UEFI | installer 002 |
 | `glassine-boot`, 1 GiB, role `esp` | consumed; the installer's description | description `format = 4` | installer `devices/uefi-pc.toml` |
@@ -383,10 +385,10 @@ the next start without a choice runs the current deployment again.
   one) and the installer's removable medium, whose repair rebuilds the boot partition
   from the system partition (FR-030). A broken system partition leaves the recovery,
   which starts from the boot partition alone.
-- **No watchdog is assumed.** Where the PC has one the kernel can arm, the initramfs arms
-  it as on other machines, and a hang ends in a reset. Where it has none, a hang waits
-  for the person to switch the PC off and on. That start is counted like any other, so
-  the tries and the limit still end the loop.
+- **No watchdog is assumed.** Where the PC has one the kernel can arm, the initramfs and
+  the recovery (008 FR-013) arm it as on other machines, and a hang ends in a reset.
+  Where it has none, a hang waits for the person to switch the PC off and on. That start
+  is counted like any other, so the tries and the limit still end the loop.
 
 ## Edge cases
 
@@ -492,7 +494,7 @@ Each is a test in QEMU with OVMF unless it says otherwise.
   identity on the command line. How the installer makes userdata on a PC is the
   installer's.
 - The recovery of 008 exists for x86-64 as one image; its screen and keys on a PC are
-  008's.
+  008's (008 FR-006).
 - The loader is a program GlassineOS builds or packages for the release. Which one is
   the plan's choice, measured against FR-006 to FR-020; none is named here.
 - x86-64 only. Other UEFI machines (arm64 PCs) follow this spec once they have a
