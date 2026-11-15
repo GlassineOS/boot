@@ -28,6 +28,9 @@ are 004's and don't change. This spec says what the boot partition holds, what t
 loader does, how the recovery is reached, and what GlassineOS may touch in the firmware
 and on a disk it shares with another system.
 
+One addition reaches every machine: a deployment chosen at start-up runs for that one
+start, as a request to the initramfs that changes no state.
+
 Deployments are never firmware boot entries (0014): the firmware knows one GlassineOS
 entry, however many deployments and kernels there are.
 
@@ -113,6 +116,13 @@ recovery update, a healthy mark),
 **When** the power is cut at any point,
 **Then** the next start uses the default set as it was before the write began, or as it
 is after the write completed, and nothing in between.
+
+### Scenario 9 – An earlier deployment, once (P2)
+
+**Given** a current and a previous deployment,
+**When** the person opens the loader's list and picks the previous deployment,
+**Then** that deployment starts, this once. The deployment state is not written, and
+the next start without a choice runs the current deployment again.
 
 ## Requirements
 
@@ -294,16 +304,55 @@ is after the write completed, and nothing in between.
 - **FR-039** The loader's wait shows one line that names the recovery key.
   [NEEDS CLARIFICATION: is there a visible menu? Recommendation: none by default. The
   loader shows the one line for about two seconds, and the key opens a short list:
-  GlassineOS, the previous kernel, the recovery, the firmware's set-up. The other
-  system is not in the list; it is started from the firmware's own boot menu, as the
+  GlassineOS, the previous deployment (FR-040), the previous kernel, the recovery, the
+  firmware's set-up, and "more" for the other deployments. The other system is not in
+  the list; it is started from the firmware's own boot menu, as the
   installer's plan says, so its start is never altered by passing through our loader.]
+
+### A deployment chosen at start-up
+
+- **FR-040** The loader's list offers the previous deployment, named by its base's
+  version and its date as `glassine-deploy list` reports them. One further entry opens
+  the other deployments that can start: the candidate, the last failed one and every
+  kept one. A staged deployment is not offered: it never boots (001), and the switch
+  starts its layer from empty.
+- **FR-041** The loader has the list from the loader record. The running system and the
+  recovery write it there whenever a command changes which deployments exist or what
+  they are (switch, accept, select, rollback, remove), under FR-027. The loader can't
+  read the system partition, so the list may be out of date; FR-043 covers that.
+- **FR-042** A deployment picked in the list is a one-shot request to the initramfs,
+  passed with this start only (on the kernel command line). The loader writes nothing
+  for it: not to the boot partition, not to a firmware variable. A power cut, a reset or
+  the next start without a choice therefore has no request, and the ordinary pick
+  applies. The request is the only thing the loader adds to a kernel set's command line.
+- **FR-043** With a request, the initramfs starts that deployment in place of the pick
+  of 001 FR-005, for this start only. `state/deploy` is not written: current stays
+  current, the requested deployment is no candidate, and no deployment try is used or
+  given back. A request that names a deployment that isn't there, is staged or doesn't
+  assemble is dropped with a message; the ordinary pick then runs, and nothing is
+  marked failed.
+- **FR-044** Such a start is a full start of that deployment: its writes land in its
+  own layer, and the person's storage is bound as always. The boot-success service
+  accepts nothing in it (the booted deployment is no candidate). When it reaches the
+  health conditions, the healthy mark is written as on any start (FR-023), so it never
+  counts towards the loader's limit. It can be combined with the previous kernel set.
+- **FR-045** Making that deployment the current one is a separate step: the rollback or
+  select of `glassine-deploy` in the running system or in the recovery (008 FR-007),
+  with its try and its acceptance.
+- **FR-046** A hibernated session comes first. When a resumable image is there (001
+  Story 4), the initramfs resumes it, drops the request and says so. No session is lost
+  to a choice in the list. A kernel trial and a finishing boot (004) take no request.
+- **FR-047** The request is the initramfs's interface, not the PC's. Any machine whose
+  boot chain can pass it for one start gets the same behaviour from the same
+  initramfs, whatever offers the choice there.
 
 ## Key entities
 
 - **The boot partition**: `glassine-boot`, FAT, created by the installer, owned whole by
   GlassineOS. Identified by its unique partition identity.
 - **The loader record**: format version, the default set and the previous set (ids and
-  checksums), a one-shot request, the count of unmarked starts, its own check value;
+  checksums), a one-shot request, the count of unmarked starts, the list of
+  deployments that can be chosen at start-up, its own check value;
   in one file or another form FR-019 allows.
   Read and written by the loader, `glassine-bootimg`, the boot-success step and the
   recovery.
@@ -317,6 +366,8 @@ is after the write completed, and nothing in between.
 |---|---|---|---|
 | The loader record | owned (new) | `format=1` | to be added to `docs/kernel-artifacts.md` |
 | The boot partition's layout and fixed names | owned (new); consumed by the installer's `write-boot-files` step and its repair | `format=1` | to be added to `docs/kernel-artifacts.md` |
+| The one-shot deployment request to the initramfs | owned (new); device-neutral | a command-line key | `docs/boot.md`, 001 FR-005 |
+| The deployment list in the loader record | owned (new) | part of the loader record | to be added to `docs/kernel-artifacts.md` |
 | The healthy mark | owned (new); written by the boot-success step on every healthy boot | part of the loader record | `docs/deployments.md` |
 | A hand-off kind for UEFI in `HANDOFF` | owned (added value) | 004's records, unchanged | `docs/kernel-artifacts.md` |
 | `state/deploy`, `state/kernel`, `glassine-deploy` | owned (unchanged) | state `version=1`, porcelain 1 | `docs/deployments.md` |
@@ -367,6 +418,9 @@ is after the write completed, and nothing in between.
   loader record; FR-004 and FR-005 keep them apart.
 - **The first start (009):** the bare boot writes no healthy mark and restarts once; the
   first deployment's boots follow. The limit leaves room for that restart.
+- **The loader's list names a deployment that is gone:** FR-043; the ordinary pick runs.
+- **A candidate with tries left, and the person picks the previous deployment:** the
+  candidate keeps its tries and is tried at the next ordinary start.
 - **A hibernated session:** the loader's count rises at the resume start and is cleared
   after the resume (FR-023). A kernel trial never resumes (004).
 - **A PC that starts from legacy BIOS, or a 32-bit UEFI:** not this platform; the
@@ -419,6 +473,15 @@ Each is a test in QEMU with OVMF unless it says otherwise.
   pressed.
 - **SC-012** On at least two real PCs of different firmware makers, with the person's
   go: SC-001, SC-003 and SC-005.
+
+- **SC-014** With a current and a previous deployment: the previous one is picked once
+  in the list and runs. The next start, with no key pressed, runs the current one.
+  `state/deploy` is byte for byte the same before the first and after the second
+  start, and the boot partition holds no trace of the choice. The same after a power
+  cut during the chosen start.
+- **SC-015** A request for a deployment that was removed, and one given while a
+  resumable hibernate image is there: the ordinary pick, respectively the resume,
+  happens, with a message, and `state/deploy` is unchanged.
 
 ## Assumptions
 
