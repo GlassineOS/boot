@@ -147,5 +147,5 @@ of the device ends in a hardware reset.
 - `glassine-deploy` and its formats stay `boot`'s; the recovery adds no second interface.
 - The RAM environment and the recovery share the USB daemon; the RAM environment is the
   recovery without its screen, deployments and resets.
-- On the Onyx Boox Note Air, the recovery takes the recovery partition; that device keeps
+- On a device with one recovery partition, the recovery takes it; such a device keeps
   no second recovery.
