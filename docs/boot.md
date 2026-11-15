@@ -30,6 +30,39 @@ The booted system reads the same keys from `/etc/glassine-bootimg/board.conf`, w
 image builder installs (the seed tool takes `DEVICE_PART` from there, `glassine-devmode`
 the developer mode keys).
 
+## Boot modules
+
+A kernel that builds the drivers of its disks or the file systems of the system
+partition, userdata and the deployment's root as modules (a PC's distribution kernel
+does) can't reach them on the system partition: they are what mounts it. So the modules
+travel with the kernel, not with the initramfs and not on the system partition:
+
+- **The archive.** `build-boot-modules.sh MODDIR OUT.cpio.gz` makes one kernel's
+  boot-modules archive from its `modules/<release>/` tree
+  ([kernel-artifacts.md](kernel-artifacts.md#on-the-system-partition)). It holds the
+  modules `conf/boot-modules` names (NVMe and VMD, SATA, virtio, eMMC behind PCI or ACPI,
+  USB disks; btrfs, ext4, overlay), with their dependencies (`modules.dep`) and soft
+  dependencies (`modules.softdep`: btrfs's checksums), decompressed, under
+  `lib/glassine-boot/modules/<release>/`, and `load`, their names in load order. A name
+  the kernel builds in adds nothing. btrfs, ext4 and overlay are required: a kernel with
+  one of them neither built in nor as a module fails the build. Reproducible: the same
+  tree and list give the same bytes. Needs kmod (`modprobe --show-depends` resolves names
+  and aliases exactly as the kernel's own tools do).
+- **The kernel set.** Where the archive exists, a kernel set's initramfs is the
+  initramfs file followed by that kernel's archive (the kernel unpacks concatenated
+  archives in order). The initramfs file stays the same for every kernel, and each
+  keeps its own identity ([kernel-artifacts.md](kernel-artifacts.md#the-four-artifacts)).
+  A kernel with everything built in (the Note Air's) has no archive, and its boot image
+  is unchanged.
+- **At boot.** First thing after `/proc`, `/sys` and `/dev`, before the watchdog is
+  armed and before any partition is looked for, the init loads `load`'s modules in order
+  from `lib/glassine-boot/modules/<uname -r>/` (`insmod`; one already loaded counts as
+  loaded) and logs `boot modules: N of M loaded`, naming any that failed. The boot goes
+  on either way: a disk whose driver failed shows up as "root partition … not found".
+  An archive for another release loads nothing and says so. No archive: no step, nothing
+  logged. Everything else the booted system needs comes from the modules subvolume,
+  bound on `/lib/modules/<release>` by the boot (below).
+
 ## Plain layout
 
 `ROOT_PART` is checked (`fsck -p`) and mounted read-write. Then `switch_root`.

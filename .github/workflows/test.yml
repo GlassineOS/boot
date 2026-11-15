@@ -11,6 +11,8 @@ jobs:
         run: sh test/bootimg/test.sh
       - name: initramfs USB gate
         run: sh test/initramfs/test.sh
+      - name: boot modules from a real kernel's tree (linux-lts, arm64)
+        run: sh test/modules/test.sh
       - name: glassine-deploy (fake mounts) + the shutdown hook
         run: sh test/deploy/test.sh
       - name: deployments on real btrfs/ext4/overlayfs (privileged)
@@ -50,6 +52,19 @@ jobs:
             make glassine-reboot && cp /tmp/a.cpio.gz initramfs.cpio.gz
             make DESTDIR=/tmp/d install && find /tmp/d -type f | sort
             make clean'
+  build-x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: the initramfs on x86-64, built twice, compared
+        run: |
+          docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh -euc '
+            apk add -q busybox-static busybox-extras e2fsprogs e2fsprogs-extra cpio gzip
+            sh build-initramfs.sh /tmp/a.cpio.gz; sh build-initramfs.sh /tmp/b.cpio.gz
+            cmp /tmp/a.cpio.gz /tmp/b.cpio.gz
+            zcat /tmp/a.cpio.gz | cpio -t --quiet | grep -qx lib/ld-musl-x86_64.so.1'
+      - name: boot modules from a real kernel's tree (linux-lts, x86-64)
+        run: sh test/modules/test.sh
   generic:
     runs-on: ubuntu-24.04
     steps:
@@ -69,4 +84,4 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - run: shellcheck -s sh -S warning -e SC3043 sbin/glassine-bootimg sbin/glassine-reboot-clean sbin/reboot sbin/glassine sbin/glassine-deploy sbin/glassine-switch-hook sbin/glassine-deploy-accept sbin/glassine-hibernate lib/glassine-state.sh lib/glassine-root.sh lib/glassine-accounts.sh lib/glassine-kernel.sh lib/glassine-device.sh sbin/glassine-device-seed sbin/glassine-devmode build-initramfs.sh initramfs/init openrc/glassine-bootimg-promote openrc/glassine-switch openrc/glassine-mount-ro openrc/glassine-deploy-accept openrc/glassine-device-seed openrc/glassine-devmode openrc/glassine-reboot-reason openrc/glassine-hibernate-setup sbin/glassine-first-start openrc/glassine-first-start test/*/*.sh
+      - run: shellcheck -s sh -S warning -e SC3043 sbin/glassine-bootimg build-boot-modules.sh sbin/glassine-reboot-clean sbin/reboot sbin/glassine sbin/glassine-deploy sbin/glassine-switch-hook sbin/glassine-deploy-accept sbin/glassine-hibernate lib/glassine-state.sh lib/glassine-root.sh lib/glassine-accounts.sh lib/glassine-kernel.sh lib/glassine-device.sh sbin/glassine-device-seed sbin/glassine-devmode build-initramfs.sh initramfs/init openrc/glassine-bootimg-promote openrc/glassine-switch openrc/glassine-mount-ro openrc/glassine-deploy-accept openrc/glassine-device-seed openrc/glassine-devmode openrc/glassine-reboot-reason openrc/glassine-hibernate-setup sbin/glassine-first-start openrc/glassine-first-start test/*/*.sh

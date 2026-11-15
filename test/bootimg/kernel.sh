@@ -77,6 +77,9 @@ ok "bootpart-test on the recovery partition (PARTNAME in sysfs): refused" "! $B 
 rm -r $W/sysblock/testslot
 ok "a release without modules/: refused, nothing written" "! $B install 9.9.9 --dtb dev1@aaaa --initramfs c1 2>$W/err && grep -q 'no $SYS/modules/9.9.9' $W/err && cmp -s $K $W/k0"
 ok "Image.gz of another release: refused, no image, no temp file" "! $B install 7.1.0-bad --dtb dev1@aaaa --initramfs c1 2>$W/err && grep -q 'is not kernel release 7.1.0-bad' $W/err && cmp -s $K $W/k0 && [ -z \"\$(ls $BI)\" ] && [ -z \"\$(ls $W/run)\" ]"
+mkdir -p $SYS/modules/7.1.0-efi; printf 'MZ junk 7.1.0-efi (x) junk' > $SYS/modules/7.1.0-efi/vmlinuz
+printf 'format=1\nrelease=7.1.0-efi\nsource=alpine:linux-lts=7.1.0-r0\nimage=vmlinuz\nprovides=btrfs\n' > $SYS/modules/7.1.0-efi/kernel.manifest
+ok "a distribution kernel whose image is an EFI stub (image=vmlinuz): refused by name, nothing written" "! $B install 7.1.0-efi --dtb dev1@aaaa --initramfs c1 2>$W/err && grep -q 'its image is vmlinuz; this hand-off kind (bootpart-test) starts Image.gz only' $W/err && cmp -s $K $W/k0 && [ -z \"\$(ls $BI)\" ] && [ -z \"\$(ls $W/run)\" ]"
 ok "no --initramfs and no current image to take it from: refused, names the flag" "! $B install 7.1.0-a --dtb dev1@aaaa 2>$W/err && grep -q -- '--initramfs COMMIT12@ID' $W/err && cmp -s $K $W/k0"
 ok "rule 1: the initramfs needs what the kernel doesn't provide: refused" "! $B install 7.1.0-a --dtb dev1@aaaa --initramfs c2 2>$W/err && grep -q 'needs: zram-writeback' $W/err && cmp -s $K $W/k0"
 # the device seed holds a name the kernel's firmware provides (FR-013 of specs/006)

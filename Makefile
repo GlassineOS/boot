@@ -59,6 +59,7 @@ install: glassine-reboot glassine-slot
 check:
 	sh test/bootimg/test.sh
 	sh test/initramfs/test.sh
+	sh test/modules/test.sh
 	sh test/deploy/test.sh
 	sh test/root/test.sh
 	sh test/firststart/test.sh

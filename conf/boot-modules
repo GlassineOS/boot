@@ -1,0 +1,32 @@
+# The boot modules (docs/boot.md, "Boot modules"): what the initramfs must load before it
+# can find and mount the system partition and userdata, when the kernel builds it as a
+# module. build-boot-modules.sh takes them, with their dependencies and soft
+# dependencies, from the kernel's modules/<release>/ tree. A name the kernel builds in
+# needs nothing. "required": the build fails when the kernel has it neither built in nor
+# as a module; the others are drivers a kernel may simply not have.
+#
+# NAME            [required]
+# file systems: the system partition (btrfs), userdata (ext4), the deployment's root (overlay)
+btrfs           required
+ext4            required
+overlay         required
+# disks: NVMe (and Intel's VMD in front of it), SATA, virtual machines
+vmd
+nvme
+ahci
+ata_piix
+sd_mod
+virtio_pci
+virtio_blk
+virtio_scsi
+# eMMC and SD cards behind PCI or ACPI
+sdhci_pci
+sdhci_acpi
+mmc_block
+# USB disks (an install medium, an external disk)
+xhci_pci
+ehci_pci
+ohci_pci
+uhci_hcd
+usb_storage
+uas

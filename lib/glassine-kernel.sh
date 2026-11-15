@@ -570,7 +570,11 @@ gk_install() {
     [ -z "$(k writing)" ] || die "install $_rel: a write of the default slot is unfinished (image $(k writing)); nothing installed"
     _md=$SYS/modules/$_rel
     [ -d "$_md" ] || die "install $_rel: no $_md (receive the kernel's modules first)"
-    [ -r "$_md/kernel.manifest" ] && [ -r "$_md/Image.gz" ] || die "install $_rel: $_md has no kernel.manifest or Image.gz"
+    [ -r "$_md/kernel.manifest" ] || die "install $_rel: $_md has no kernel.manifest"
+    # the record's image (absent: Image.gz); this hand-off kind packs Image.gz only (FR-018)
+    _kim=$(gs_kv "$_md/kernel.manifest" image)
+    [ -z "$_kim" ] || [ "$_kim" = Image.gz ] || die "install $_rel: its image is $_kim; this hand-off kind ($HANDOFF) starts Image.gz only"
+    [ -r "$_md/Image.gz" ] || die "install $_rel: $_md has no Image.gz"
     gk_record_ok "$_md/kernel.manifest"
     _clash=$(gk_seed_clash "$_md/kernel.manifest")
     [ -z "$_clash" ] || die "install $_rel: the kernel's firmware provides files the device seed holds:$_clash (the seed's copy would win; the device package must drop them from its list)"
