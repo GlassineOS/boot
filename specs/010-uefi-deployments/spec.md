@@ -1,7 +1,7 @@
 # Feature Specification: Deployments on UEFI PCs
 
 **Feature branch:** `uefi-deployments`
-**Status:** spec, for review; nothing built
+**Status:** spec, for review; built: the boot modules (FR-049, SC-017), nothing else
 **Builds on:** [001-deployments](../001-deployments/spec.md),
 [004-kernel-records](../004-kernel-records/spec.md),
 [008-recovery](../008-recovery/spec.md), [009-first-start](../009-first-start/spec.md) ·
@@ -238,6 +238,22 @@ the next start without a choice runs the current deployment again.
 - **FR-026** The boot partition is mounted only for the time of a write, and unmounted
   again. No service keeps it mounted, and nothing reads it for the system's ordinary
   work.
+- **FR-049** A PC's kernel may build the drivers of its disks and the file systems the
+  start needs as modules, which live on the system partition they are needed to reach.
+  So every kernel set carries, after its initramfs, that kernel's boot modules: its own
+  modules for NVMe disks (and the controller in front of them), SATA, eMMC, USB disks
+  and virtual disks, for the btrfs, ext4 and overlay file systems, and every module
+  these depend on, hard or soft (btrfs's checksums), taken from that kernel's modules
+  on the system partition. What the kernel builds in needs nothing, and a kernel with
+  everything built in carries none.
+  - The initramfs loads them as its first step, in dependency order: before it arms a
+    watchdog, before it looks for any partition and before the hibernation step.
+  - A module that fails to load is logged by name and the start goes on; boot modules
+    made for another kernel load nothing, and that is logged.
+  - A kernel that has btrfs, ext4 or overlay neither built in nor as a module gets no
+    kernel set.
+  - The initramfs itself is the same file for every kernel (004): only the boot modules
+    are the kernel's.
 
 ### Writing the boot partition safely
 
@@ -370,6 +386,7 @@ the next start without a choice runs the current deployment again.
 | The one-shot deployment request to the initramfs | owned (new); device-neutral | a command-line key | `docs/boot.md`, 001 FR-005 |
 | The deployment list in the loader record | owned (new) | part of the loader record | to be added to `docs/kernel-artifacts.md` |
 | The healthy mark | owned (new); written by the boot-success step on every healthy boot | part of the loader record | `docs/deployments.md` |
+| The boot modules of a kernel set (FR-049) | owned (new); consumed by whatever makes kernel sets (images, the boot partition's writer) | the archive's layout, unversioned (the initramfs reads the load list of its release) | `docs/boot.md` ("Boot modules"), `docs/kernel-artifacts.md` ("Packing") |
 | The hand-off kind `uefi` in `HANDOFF` | owned (added value; 004 FR-007) | 004's records, unchanged | `docs/kernel-artifacts.md` |
 | `state/deploy`, `state/kernel`, `glassine-deploy` | owned (unchanged) | state `version=1`, porcelain 1 | `docs/deployments.md` |
 | Firmware boot entries and boot order | consumed; written by the installer (`add-boot-entry`) and the repair | UEFI | installer 002 |
@@ -487,6 +504,12 @@ Each is a test in QEMU with OVMF unless it says otherwise.
   refuses the install, names the reason and the way to switch it off, and writes
   nothing. An OVMF that enforces Secure Boot starts neither the install medium nor the
   loader, and another system on the disk still starts.
+
+- **SC-017** A distribution kernel whose disk and file system drivers are all modules
+  starts its kernel set under OVMF, from a virtio disk and from an NVMe disk: the
+  deployment is assembled from the btrfs system partition and the ext4 userdata, and no
+  boot module failed. The same initramfs without the boot modules does not find the
+  system partition.
 
 ## Assumptions
 

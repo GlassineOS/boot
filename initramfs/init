@@ -71,6 +71,30 @@ GLASSINE_EXTRA=/lib/glassine-boot/extra
 NEWROOT=/newroot
 log "init start $(cat /proc/uptime)"
 
+# Boot modules (docs/boot.md, "Boot modules"): a kernel that builds its storage or file
+# system drivers as modules has its boot-modules archive appended to this initramfs
+# (build-boot-modules.sh): load them in its order, before anything looks for a
+# partition. No archive (a kernel with them built in): no step, nothing logged. An
+# archive for another release loads nothing and says so.
+boot_modules() {
+    _md=$LIBDIR/modules
+    [ -d "$_md" ] || return 0
+    _kr=$(uname -r)
+    if [ ! -r "$_md/$_kr/load" ]; then
+        log "boot modules: the archive is for $(ls "$_md" | tr '\n' ' ')and this kernel is $_kr: none loaded"
+        return 0
+    fi
+    _n=0 _t=0 _f=''
+    while read -r _m; do
+        [ -n "$_m" ] || continue
+        _t=$((_t + 1))
+        if insmod "$_md/$_kr/$_m.ko" 2>/tmp/insmod.err || grep -q 'File exists' /tmp/insmod.err; then _n=$((_n + 1))
+        else _f="$_f $_m"; fi
+    done < "$_md/$_kr/load"
+    log "boot modules: $_n of $_t loaded${_f:+, failed:$_f}"
+}
+boot_modules
+
 ROOT_PART='' ROOT_FSTYPE=ext4 ROOT_LAYOUT=plain USERDATA_PART='' USERDATA_PREFIX=media/glassine DEVICE_PART='' DEFAULT_ROLE_MATCH='' DEVMODE_ADDR='' DEVMODE_NETMASK=255.255.255.0
 DEVMODE_DHCP_START='' DEVMODE_DHCP_END='' USB_VENDOR=0x1d6b USB_PRODUCT=0x0104 USB_MANUFACTURER=GlassineOS
 if [ -r "$BOARD" ]; then

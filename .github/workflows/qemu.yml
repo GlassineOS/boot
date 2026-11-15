@@ -1,12 +1,13 @@
 name: qemu
-# The end-to-end boot test (test/qemu): four emulated boots, about half an hour.
+# The end-to-end boot test (test/qemu): twelve emulated arm64 boots, and the x86-64
+# initramfs under OVMF (test/qemu/x86_64.sh).
 # Runs when the boot path changes, weekly, and by hand.
 on:
   pull_request:
-    paths: [initramfs/**, lib/**, sbin/**, openrc/**, build-initramfs.sh, test/qemu/**, .github/workflows/qemu.yml]
+    paths: [initramfs/**, lib/**, sbin/**, openrc/**, build-initramfs.sh, build-boot-modules.sh, conf/boot-modules, test/qemu/**, .github/workflows/qemu.yml]
   push:
     branches: [main]
-    paths: [initramfs/**, lib/**, sbin/**, openrc/**, build-initramfs.sh, test/qemu/**, .github/workflows/qemu.yml]
+    paths: [initramfs/**, lib/**, sbin/**, openrc/**, build-initramfs.sh, build-boot-modules.sh, conf/boot-modules, test/qemu/**, .github/workflows/qemu.yml]
   schedule:
     - cron: '17 3 * * 1'
   workflow_dispatch:
@@ -29,4 +30,22 @@ jobs:
         with:
           name: qemu-logs
           path: ${{ runner.temp }}/qemu/boot*.log
+          if-no-files-found: ignore
+  qemu-x86_64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: KVM for the runner's user (QEMU emulates the CPU without it)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm || true
+      - name: x86-64 under OVMF, the boot modules, virtio and NVMe disks
+        run: sh test/qemu/x86_64.sh "$RUNNER_TEMP/qemu-x86_64"
+      - name: boot logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qemu-x86_64-logs
+          path: ${{ runner.temp }}/qemu-x86_64/boot*.log
           if-no-files-found: ignore

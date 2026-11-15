@@ -164,6 +164,7 @@ In developer mode, image builders can extend the initramfs with hooks
 ```
 make && make DESTDIR=… install    # tools (needs a C compiler + linux-headers)
 make initramfs                    # inside an Alpine of the target architecture, see build-initramfs.sh
+sh build-boot-modules.sh MODDIR OUT.cpio.gz   # a kernel's boot modules, appended to the initramfs (docs/boot.md)
 make check                        # host tests (Docker)
 ```
 
