@@ -143,6 +143,11 @@ refuses there (exit 3). The watchdog is restarted directly, not through the init
 system: a watchdog service's pidfile goes stale (the initramfs starts it, so
 nothing reads that pidfile today).
 
+The swap file is made by the `glassine-hibernate-setup` service (default runlevel) on a
+deployments boot: `setup` in the background at the lowest CPU and I/O priority, so the
+boot doesn't wait for the write. A ready file is kept. `HIBERNATE_SIZE_MB=0` in
+`deploy.conf` turns hibernation off: the service does nothing.
+
 Device steps belong to the board, not to this tool: executables in
 `HIBERNATE_HOOKS` (default `/etc/glassine/hibernate.d`) run in name order with `pre`
 before anything is written (a failure cancels the hibernate, exit 1), and in reverse

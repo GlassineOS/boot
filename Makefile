@@ -27,6 +27,7 @@ install: glassine-reboot glassine-slot
 	ln -sf glassine $(DESTDIR)$(PREFIX)/sbin/apk
 	install -Dm755 sbin/glassine-switch-hook $(DESTDIR)$(PREFIX)/sbin/glassine-switch-hook
 	install -Dm755 sbin/glassine-hibernate $(DESTDIR)$(PREFIX)/sbin/glassine-hibernate
+	install -Dm755 openrc/glassine-hibernate-setup $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-hibernate-setup
 	install -Dm755 openrc/glassine-switch $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-switch
 	install -Dm755 openrc/glassine-mount-ro $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-mount-ro
 	install -Dm755 sbin/glassine-deploy-accept $(DESTDIR)$(PREFIX)/sbin/glassine-deploy-accept

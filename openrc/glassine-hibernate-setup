@@ -1,0 +1,30 @@
+#!/sbin/openrc-run
+# The hibernate swap file (glassine-hibernate setup): created once on a deployments
+# boot, in the background at the lowest priorities (writing it takes a while),
+# so the power menu and the power daemon can hibernate. HIBERNATE_SIZE_MB=0 in
+# deploy.conf: no hibernation on this device, nothing runs. A ready file is
+# kept (setup only checks its signature).
+# shellcheck disable=SC2034  # read by openrc-run
+description="glassine: the hibernate swap file"
+
+CONF=/etc/glassine/deploy.conf
+
+depend() {
+	after localmount glassine-deploy-accept
+	keyword -docker -lxc -podman
+}
+
+start() {
+	HIBERNATE_SIZE_MB='' RUN_DIR=/run/glassine
+	# shellcheck source=/dev/null
+	[ -r "$CONF" ] && . "$CONF"
+	[ "$HIBERNATE_SIZE_MB" = 0 ] && return 0
+	case $(cat "$RUN_DIR/booted" 2>/dev/null) in ''|bare:*) return 0 ;; esac
+	ebegin "glassine-hibernate-setup: preparing the hibernate swap file"
+	# not waited for: the boot goes on, the result goes to the kernel log
+	io=''
+	command -v ionice >/dev/null && io='ionice -c 3'
+	# shellcheck disable=SC2086  # the optional ionice words
+	( exec nice -n 19 $io /usr/sbin/glassine-hibernate setup ) </dev/null >/dev/null 2>&1 &
+	eend 0
+}
