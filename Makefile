@@ -30,6 +30,8 @@ install: glassine-reboot glassine-slot
 	install -Dm755 openrc/glassine-hibernate-setup $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-hibernate-setup
 	install -Dm755 openrc/glassine-switch $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-switch
 	install -Dm755 openrc/glassine-mount-ro $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-mount-ro
+	install -Dm755 sbin/glassine-first-start $(DESTDIR)$(PREFIX)/sbin/glassine-first-start
+	install -Dm755 openrc/glassine-first-start $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-first-start
 	install -Dm755 sbin/glassine-deploy-accept $(DESTDIR)$(PREFIX)/sbin/glassine-deploy-accept
 	install -Dm755 openrc/glassine-deploy-accept $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-deploy-accept
 	install -Dm644 lib/glassine-state.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-state.sh
@@ -59,6 +61,7 @@ check:
 	sh test/initramfs/test.sh
 	sh test/deploy/test.sh
 	sh test/root/test.sh
+	sh test/firststart/test.sh
 	sh test/replay/test.sh
 	sh test/slot/test.sh
 	sh test/blocklist/test.sh

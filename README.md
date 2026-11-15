@@ -18,7 +18,8 @@ the deployment's layers on userdata) and manages them with `glassine-deploy`:
 - [docs/testing.md](docs/testing.md): what the host tests prove and what is proven on
   hardware
 - [specs/001-deployments/spec.md](specs/001-deployments/spec.md): requirements and
-  acceptance scenarios
+  acceptance scenarios; [specs/009-first-start/spec.md](specs/009-first-start/spec.md):
+  the first start of an installed system
 
 ## Contents
 
@@ -32,10 +33,11 @@ the deployment's layers on userdata) and manages them with `glassine-deploy`:
 | `sbin/reboot` | `reboot <reason>` (`reboot bootloader`, `reboot recovery`): busybox reboot drops the reason, this one hands it to glassine-reboot-clean; without a reason it is busybox reboot |
 | `src/glassine-slot.c` | the bootloader slot (A/B) state: status, set-active, mark-successful ([boot.md](docs/boot.md#slots)) |
 | `conf/board.conf.example` | every board key, documented |
-| `sbin/glassine-deploy`, `lib/glassine-state.sh` | root deployments and their recovery interface (`status`, `list`, `select`, `rollback`, `hibernate-invalidate`, `reset`, `stage`, `receive`, `bases`, `packages`, `switch`, `accept`); the shared state and hibernate-guard helpers |
+| `sbin/glassine-deploy`, `lib/glassine-state.sh` | root deployments and their recovery interface (`status`, `list`, `select`, `rollback`, `hibernate-invalidate`, `reset`, `stage`, `receive`, `bases`, `packages`, `switch`, `accept`), and `init`, which lays out an empty btrfs pool for an image builder; the shared state and hibernate-guard helpers |
 | `sbin/glassine` | the root lock (`status`, `unlock`, `lock`) and the apk wrapper (`glassine apk`, installed as `/usr/sbin/apk`): a package change gets `/` writable for its run only |
 | `lib/glassine-accounts.sh` | the account merge of a switch (busybox awk): users, groups, passwords, memberships carried by name onto a new base; carried files follow renumbered IDs |
 | `lib/glassine-root.sh` | assembling a deployment's root: btrfs base + build layer + live upper (overlayfs), `/` read-only with writable `/etc`, `/var`, `/usr/local`, `/opt`; the interim try counter; the initramfs boot steps for `ROOT_LAYOUT=deployments` (hibernation resume or invalidate, pick + assemble with fallbacks, mounts carried to `/run/glassine/`) |
+| `sbin/glassine-first-start`, `openrc/glassine-first-start` | the first start of an installed system: with the install marker that `glassine-deploy init --install-marker` puts in the pool image, a bare boot grows the system partition, formats userdata, selects the first deployment and reboots into it; nothing without the marker ([deployments.md](docs/deployments.md#the-first-start)) |
 | `sbin/glassine-switch-hook`, `openrc/glassine-switch` | the shutdown switch: a staged deployment is carried and selected at a shutdown the user started (`--user-shutdown` from the power menu) with the charger or enough battery; a service of the OpenRC shutdown runlevel |
 | `openrc/glassine-mount-ro` | userdata and the system partition read-only at power-off, after OpenRC's `mount-ro` (which no longer sees them): no journal replay at the next boot; a service of the OpenRC shutdown runlevel |
 | `conf/deploy.conf.example` | where the system partition and userdata are |
@@ -102,6 +104,17 @@ and arguments, which is how a kernel package cleans up old modules safely.
 reason, image header fields and kernel command line. `glassine-bootimg-pack` copies
 it into every boot image (`/etc/glassine-boot/board.conf`), so the initramfs and the
 tools always agree. The initramfs package itself stays board-independent.
+
+## Installing
+
+An installer writes three things: the kernel's boot image, and to the system partition
+a pool image that an image builder made with `glassine-deploy init --install-marker`
+(then the base and the kernel's modules received into it). Userdata is not the
+installer's: the first boot finds no deployment and boots bare, and the first start
+(`glassine-first-start`, a service of the booted system's `boot` runlevel) grows the
+system partition, formats userdata, selects the first deployment and reboots into it.
+The base needs btrfs-progs and e2fsprogs for that. See
+[docs/deployments.md](docs/deployments.md#the-first-start).
 
 ## Developer mode
 

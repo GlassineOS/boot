@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# The first start of an installed system (glassine-first-start): only when the
+# system partition holds the install marker (state/install) and the boot is a
+# bare one, it grows the system partition, formats userdata, selects the first
+# deployment and reboots into it. A service of the boot runlevel
+# (rc-update add glassine-first-start boot), after the local mounts, so it runs
+# before the default runlevel's services (the desktop, the accept); the boot
+# waits for it. Without the marker it does nothing and writes nothing.
+# shellcheck disable=SC2034  # read by openrc-run
+description="glassine: the first start of an installed system"
+
+depend() {
+	need localmount
+	after udev-settle mdev hwdrivers glassine-device-seed
+	keyword -docker -lxc -podman
+}
+
+CONF=/etc/glassine/deploy.conf
+
+start() {
+	SYSTEM_MNT=/run/glassine/system
+	# shellcheck source=/dev/null
+	[ -r "$CONF" ] && . "$CONF"
+	[ -e "$SYSTEM_MNT/state/install" ] || return 0
+	ebegin "glassine-first-start: preparing the installed system"
+	/usr/sbin/glassine-first-start
+	eend $? "the first start did not finish; the next boot tries again (kernel log)"
+}

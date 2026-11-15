@@ -15,6 +15,8 @@ jobs:
         run: sh test/deploy/test.sh
       - name: deployments on real btrfs/ext4/overlayfs (privileged)
         run: sh test/root/test.sh
+      - name: glassine-deploy init and the first start on real btrfs/ext4 (privileged)
+        run: sh test/firststart/test.sh
       - name: package replay with real apk (privileged, needs network)
         run: sh test/replay/test.sh
       - name: glassine-slot on a GPT disk image
@@ -67,4 +69,4 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - run: shellcheck -s sh -S warning -e SC3043 sbin/glassine-bootimg sbin/glassine-reboot-clean sbin/reboot sbin/glassine sbin/glassine-deploy sbin/glassine-switch-hook sbin/glassine-deploy-accept sbin/glassine-hibernate lib/glassine-state.sh lib/glassine-root.sh lib/glassine-accounts.sh lib/glassine-kernel.sh lib/glassine-device.sh sbin/glassine-device-seed sbin/glassine-devmode build-initramfs.sh initramfs/init openrc/glassine-bootimg-promote openrc/glassine-switch openrc/glassine-mount-ro openrc/glassine-deploy-accept openrc/glassine-device-seed openrc/glassine-devmode openrc/glassine-reboot-reason openrc/glassine-hibernate-setup test/*/*.sh
+      - run: shellcheck -s sh -S warning -e SC3043 sbin/glassine-bootimg sbin/glassine-reboot-clean sbin/reboot sbin/glassine sbin/glassine-deploy sbin/glassine-switch-hook sbin/glassine-deploy-accept sbin/glassine-hibernate lib/glassine-state.sh lib/glassine-root.sh lib/glassine-accounts.sh lib/glassine-kernel.sh lib/glassine-device.sh sbin/glassine-device-seed sbin/glassine-devmode build-initramfs.sh initramfs/init openrc/glassine-bootimg-promote openrc/glassine-switch openrc/glassine-mount-ro openrc/glassine-deploy-accept openrc/glassine-device-seed openrc/glassine-devmode openrc/glassine-reboot-reason openrc/glassine-hibernate-setup sbin/glassine-first-start openrc/glassine-first-start test/*/*.sh

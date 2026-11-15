@@ -1,0 +1,178 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-first-start: the first start of an installed system. An installer
+# writes a system partition made by `glassine-deploy init --install-marker` (a
+# base, its kernel's modules, state/install) and nothing else: no deployment, an
+# unknown userdata. The initramfs boots that bare (docs/boot.md). This step, in
+# the bare-booted system (never in the initramfs: spec 001 FR-011), turns it into
+# a normal system, then reboots into it:
+#
+#   1  state/kernel current= the running kernel's release (when empty and its
+#      modules are on the system partition)
+#   2  the system partition's btrfs grown to its partition (btrfs filesystem
+#      resize max)
+#   3  userdata formatted: ext4, 4096-byte blocks (USERDATA_RESERVE_KIB left
+#      free at the end); its UUID recorded as userdata= in state/install
+#   4  the only base staged as the first deployment, without a replay, and
+#      switched (glassine-deploy stage BASE --no-replay --now): candidate, 2 tries
+#   5  state/install removed, only once state/deploy names that candidate
+#   6  reboot (an orderly one); the candidate boots and is accepted as usual
+#
+#   glassine-first-start           run by the OpenRC service glassine-first-start
+#
+# Only with state/install. Without it nothing runs and nothing is written, so a
+# userdata is never formatted unless an install asked for it. Every step can run
+# again: a power cut anywhere means the next boot runs it from the top. A
+# userdata whose UUID is the recorded one is not formatted again. Once
+# state/deploy names a candidate or a current deployment, userdata belongs to
+# it: the marker is only removed (and a bare boot reboots into the candidate).
+# The marker on a boot of a deployment with nothing selected is refused.
+#
+# Exit: 0 done or nothing to do, 1 error (logged), 3 the state format is newer
+# than this tool, 6 busy (state/.lock held). Messages go to the kernel log, as
+# the initramfs's do, and to stdout.
+#
+# Needs btrfs-progs (step 2) and e2fsprogs (mke2fs, dumpe2fs; step 3).
+# Configuration: /etc/glassine/deploy.conf (SYSTEM_MNT, USERDATA_DEV, RUN_DIR,
+# USERDATA_RESERVE_KIB; glassine-deploy reads the rest), or GLASSINE_DEPLOY_CONF.
+set -u
+CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+LIB=${GLASSINE_DEPLOY_LIB:-/usr/lib/glassine-boot/glassine-state.sh}
+DEPLOY=${GLASSINE_DEPLOY:-/usr/sbin/glassine-deploy}
+REBOOT=${GLASSINE_FIRST_START_REBOOT:-reboot}
+KREL=${GLASSINE_FIRST_START_KREL:-$(uname -r)}
+SYSTEM_MNT=/run/glassine/system USERDATA_DEV='' RUN_DIR=/run/glassine
+USERDATA_RESERVE_KIB=0
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+# shellcheck source=../lib/glassine-state.sh
+. "$LIB" || { echo "glassine-first-start: cannot read $LIB" >&2; exit 1; }
+# tests: GLASSINE_FIRST_START_AFTER_<STEP> (KERNEL, GROW, FORMAT, STAGE, CLEAR)
+# is shell code run right after that step (a power cut), only with
+# GLASSINE_FIRST_START_TEST=1
+hook() {
+    [ "${GLASSINE_FIRST_START_TEST:-}" = 1 ] || return 0
+    _h=''
+    eval "_h=\${GLASSINE_FIRST_START_AFTER_$1:-}"
+    eval "$_h"
+}
+
+say() {
+    echo "glassine-first-start: $*"
+    { [ -w /dev/kmsg ] && echo "<5>glassine-first-start: $*" > /dev/kmsg; } 2>/dev/null
+    return 0
+}
+die() { say "$*; the next boot tries again"; exit 1; }
+
+S=$SYSTEM_MNT/state M=$SYSTEM_MNT/state/install
+lock() { gs_lock "$S" || { say "busy: $S/.lock is held"; exit 6; }; }
+unlock() { exec 9>&-; }
+
+booted=$(cat "$RUN_DIR/booted" 2>/dev/null)
+# not a deployments boot, or no marker: nothing to do, nothing written
+[ -n "$booted" ] && [ -e "$M" ] || exit 0
+fmt=$(gs_format_version "$SYSTEM_MNT")
+gs_format_ok "$fmt" || { say "state format $fmt is newer than this tool ($GS_FORMAT_SUPPORTED): nothing done"; exit 3; }
+
+# Already selected (a cut after step 4): userdata is the selected deployment's
+# now, so only the marker goes.
+selected() { [ -n "$(gs_kv "$S/deploy" candidate)$(gs_kv "$S/deploy" current)" ]; }
+clear_marker() {
+    lock
+    rm -f "$M" && sync || die "cannot remove $M"
+    unlock
+    hook CLEAR
+}
+if selected; then
+    clear_marker
+    case $booted in
+    bare:*)
+        say "the first deployment is selected already; marker removed, rebooting into it"
+        "$REBOOT"
+        ;;
+    *) say "the first deployment is selected already ($booted booted); marker removed" ;;
+    esac
+    exit 0
+fi
+case $booted in
+bare:*) ;;
+*) say "install marker on a boot of deployment $booted with nothing selected: refused (userdata is in use); remove $M by hand"; exit 1 ;;
+esac
+
+# --- preflight: everything checked before the first write ---------------------
+command -v btrfs >/dev/null || die "btrfs (btrfs-progs) is missing"
+command -v mke2fs >/dev/null && command -v dumpe2fs >/dev/null || die "mke2fs or dumpe2fs (e2fsprogs) is missing"
+[ -n "$USERDATA_DEV" ] && [ -b "$(readlink -f "$USERDATA_DEV")" ] || die "no userdata device ($USERDATA_DEV)"
+mountpoint -q "$SYSTEM_MNT" || die "the system partition is not mounted at $SYSTEM_MNT"
+base=''
+for b in "$SYSTEM_MNT/bases"/*; do
+    [ -d "$b" ] || continue
+    [ -z "$base" ] || die "more than one base under bases/: the first start stages the only one"
+    base=${b##*/}
+done
+[ -n "$base" ] || die "no base under bases/"
+case $USERDATA_RESERVE_KIB in ''|*[!0-9]*) die "USERDATA_RESERVE_KIB=$USERDATA_RESERVE_KIB is not a number" ;; esac
+say "first start: base $base, kernel $KREL"
+
+# --- 1: the running kernel's release ------------------------------------------
+if [ -z "$(gs_kv "$S/kernel" current)" ] && [ -d "$SYSTEM_MNT/modules/$KREL" ]; then
+    lock
+    gs_update "$S/kernel" "current=$KREL" || die "cannot write $S/kernel"
+    unlock
+    say "kernel $KREL recorded as the current one"
+fi
+hook KERNEL
+
+# --- 2: the pool fills its partition --------------------------------------------
+btrfs filesystem resize max "$SYSTEM_MNT" >/dev/null || die "btrfs filesystem resize max $SYSTEM_MNT failed"
+say "system partition grown to its partition ($(df -Pk "$SYSTEM_MNT" | awk 'NR == 2 { print $2 }') KiB)"
+hook GROW
+
+# --- 3: userdata --------------------------------------------------------------
+ud_uuid() { dumpe2fs -h "$USERDATA_DEV" 2>/dev/null | sed -n 's/^Filesystem UUID: *//p' | head -n 1; }
+# ud_mounts: every mount point of userdata's device (by maj:min, binds too),
+# the last one first
+ud_mounts() {
+    _mm=$(stat -L -c '%t %T' "$USERDATA_DEV") || return 1
+    _mm=$(printf '%d:%d' "0x${_mm% *}" "0x${_mm#* }")
+    awk -v mm="$_mm" '$3 == mm { print $5 }' /proc/self/mountinfo | sed '1!G;h;$!d'
+}
+rec=$(gs_kv "$M" userdata)
+if [ -n "$rec" ] && [ "$(ud_uuid)" = "$rec" ]; then
+    say "userdata is formatted already ($rec)"
+else
+    # the initramfs mounts any userdata it can (a stock one, a cut earlier
+    # run's): never a mkfs under a mounted file system (spec 001 FR-013)
+    for m in $(ud_mounts); do
+        m=$(printf '%b' "$m")
+        umount "$m" || die "userdata is mounted at $m and does not unmount; not formatted"
+    done
+    [ -z "$(ud_mounts)" ] || die "userdata is still mounted; not formatted"
+    n=''
+    if [ "$USERDATA_RESERVE_KIB" -gt 0 ]; then
+        sz=$(blockdev --getsize64 "$USERDATA_DEV") || die "cannot read the size of $USERDATA_DEV"
+        n=$(( (sz / 1024 - USERDATA_RESERVE_KIB) / 4 ))
+    fi
+    say "formatting userdata ($USERDATA_DEV, ext4${n:+, $n blocks: $USERDATA_RESERVE_KIB KiB left at the end})"
+    # shellcheck disable=SC2086  # the optional block count
+    mke2fs -F -q -t ext4 -b 4096 "$USERDATA_DEV" $n || die "mke2fs $USERDATA_DEV failed"
+    sync
+    u=$(ud_uuid)
+    [ -n "$u" ] || die "the new userdata has no UUID"
+    lock
+    gs_update "$M" "userdata=$u" || die "cannot write $M"
+    unlock
+    say "userdata formatted ($u)"
+fi
+hook FORMAT
+
+# --- 4: the first deployment ------------------------------------------------------
+"$DEPLOY" stage "$base" --no-replay --now --yes || die "glassine-deploy stage $base --no-replay --now failed (exit $?)"
+hook STAGE
+cand=$(gs_kv "$S/deploy" candidate)
+[ -n "$cand" ] && [ "$(gs_kv "$S/deploy" tries)" = 2 ] || die "state/deploy names no candidate with 2 tries after the stage"
+
+# --- 5, 6 -------------------------------------------------------------------------
+clear_marker
+say "first deployment $cand selected (base $base); rebooting into it"
+"$REBOOT"
