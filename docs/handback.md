@@ -94,6 +94,13 @@ of its QueryMode, SetMode and Blt. With neither, the loader runs headless, as ab
   says nothing (the panel does).
 - It draws only before it hands back, never after `ExitBootServices`, and never calls
   `SetMode`, `Blt` or any power protocol of the display.
+- The order is normative, against a refresh that never returns: the loader decides and
+  writes the record first (the count raised, durably), then draws, then answers. It
+  draws only on a start that write counted (`default`, written), and only when
+  `unmarked` was 0 when it read the record. So a hang inside the refresh is a failed,
+  counted start (the parent's watchdog or a power cycle ends it), the next start doesn't
+  draw, and the limit leads on to the previous set or the recovery as without a display.
+  A start marked healthy (`unmarked` back to 0) makes the next one draw again.
 - The key line and the list stay off: which key the person would press at power-on is
   not defined for such a machine, and each change of the picture is one more full
   refresh.
