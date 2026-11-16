@@ -39,7 +39,7 @@ entry, however many deployments and kernels there are.
 
 | Term | Meaning |
 |---|---|
-| boot partition | The partition the installer creates for GlassineOS (`glassine-boot`): a FAT file system the firmware can read. GlassineOS owns all of it. |
+| boot partition | The partition the installer creates for GlassineOS (`glassine-boot`): a FAT file system with long names that the firmware can read. GlassineOS owns all of it. |
 | loader | The program the firmware starts from the boot partition. It starts a kernel set or the recovery. |
 | kernel set | A kernel, its initramfs and its command line. The unit that is tried, accepted and rolled back (one image record of 004). |
 | default set | The kernel set of the current kernel record. It starts when nothing else is asked for. |
@@ -149,7 +149,8 @@ the next start without a choice runs the current deployment again.
   installation's system partition and userdata (`glassine.system=`,
   `glassine.userdata=`; [boot.md](../../docs/boot.md#command-line-keys)), so the
   initramfs never picks another disk's. A kernel set without them is not written to the
-  boot partition.
+  boot partition. The rest of a set's command line has one source, the board's
+  configuration, the same one at install and at every kernel update.
 
 ### The loader
 
@@ -333,6 +334,8 @@ the next start without a choice runs the current deployment again.
   in a place of its own, and the loader starts it like one. Its record carries its own
   check value, so the loader can find and check the recovery with no loader record. It
   runs from memory (008 FR-001) and needs nothing from the system partition to start.
+  Its files are the release's, written whole: nothing is assembled into them at install
+  or at an update.
 - **FR-038** The recovery is updated like a kernel set: the new image next to the old
   one, checked, then named in the loader record. A cut update leaves the old one in
   use.
