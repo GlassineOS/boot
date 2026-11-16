@@ -62,6 +62,27 @@ boot $OLDID
 ok "status, nothing set: format=1, state=none, the keys" "[ \"\$($B status | head -n 2 | tr '\n' ' ')\" = 'format=1 state=none ' ] && [ \"\$(st current)\" = 6.0.0-old ]"
 ok "promote with nothing set: nothing written, exit 0" "cp $K $W/k0; $B promote 2>/dev/null && cmp -s $K $W/k0"
 
+# --- a fresh installation (FR-015): the pool's boot/ holds the default slot's device
+# tree and initramfs, content-named as a build names them; nothing names an image yet
+fresh() {   # in $W/c: boot/ files named by content, the default slot packed from them
+    cpy
+    echo fresh-dtb > $W/fd; FD=dev1@$(sha256sum $W/fd | cut -c1-16); mv $W/fd $W/c/sys/boot/dtb/$FD.dtb
+    printf 'format=1\ndevice=dev1\nsha256=%s\n' "$(sha256sum $W/c/sys/boot/dtb/$FD.dtb | cut -c1-64)" > $W/c/sys/boot/dtb/$FD.manifest
+    echo fresh-initramfs > $W/fi; FI=0123456789ab@$(sha256sum $W/fi | cut -c1-16); mv $W/fi $W/c/sys/boot/initramfs/$FI.cpio.gz
+    printf 'format=1\ncommit=0123456789ab0000000000000000000000000000\nsha256=%s\nneeds=btrfs\n' "$(sha256sum $W/c/sys/boot/initramfs/$FI.cpio.gz | cut -c1-64)" > $W/c/sys/boot/initramfs/$FI.manifest
+    FID=$(python3 /p/lib/glassine-bootimg-pack $W/board.conf $SYS/modules/6.0.0-old/Image.gz $W/c/sys/boot/dtb/$FD.dtb \
+        $W/c/sys/boot/initramfs/$FI.cpio.gz $W/c/fresh.img | sed -n 's/.*ID=\([0-9a-f]*\).*/\1/p')
+    cp $W/c/fresh.img $W/c/defslot; truncate -s $SLOT $W/c/defslot
+}
+rm -rf $W/run.save; cp -a $W/run $W/run.save     # the copy's runs share GLASSINE_BI_TMP
+fresh
+ok "fresh installation: install without --dtb/--initramfs takes the default slot's device tree and initramfs (by their bytes), writes no current_img" "inc $B install 7.1.0-a >/dev/null 2>$W/c/err && [ -z \"\$(ck current_img)\" ] && [ \"\$(gs_kv $W/c/sys/state/bootimg/\$(ck candidate_img).manifest dtb)\" = $FD ] && [ \"\$(gs_kv $W/c/sys/state/bootimg/\$(ck candidate_img).manifest initramfs)\" = $FI ]"
+echo "panic=5 rdinit=/init glassine.img=$(ck candidate_img)" > $W/c/cmdline
+ok "fresh installation, the first accept: the seed record names the pool's device tree and initramfs, the device and the kernel" "GLASSINE_BI_CMDLINE=$W/c/cmdline inc $B accept 2>$W/c/err && M=$W/c/sys/state/bootimg/$FID.manifest && [ \"\$(ck previous_img)\" = $FID ] && [ \"\$(gs_kv \$M seeded)\" = 1 ] && [ \"\$(gs_kv \$M dtb)\" = $FD ] && [ \"\$(gs_kv \$M initramfs)\" = $FI ] && [ \"\$(gs_kv \$M device)\" = dev1 ] && [ \"\$(gs_kv \$M kernel)\" = 6.0.0-old ]"
+fresh; echo other > $W/c/sys/boot/initramfs/$FI.cpio.gz; cp $W/c/sys/state/kernel $W/c/k0
+ok "fresh installation, boot/ without the default slot's initramfs bytes: refused, names the flag, nothing written" "! inc $B install 7.1.0-a >/dev/null 2>$W/c/err && grep -q 'names no initramfs' $W/c/err && cmp -s $W/c/sys/state/kernel $W/c/k0"
+rm -rf $W/c $W/run; mv $W/run.save $W/run
+
 # --- install refusals: nothing written ------------------------------------------
 cp $K $W/k0
 bset HANDOFF ''

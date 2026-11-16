@@ -171,10 +171,11 @@ row gives as none doesn't apply on that kind.
   `modules/<release>/Image.gz`, and the device tree and initramfs from `boot/`, through
   `lib/glassine-bootimg-pack` with `--expect-release`.
 - **FR-005** On a hand-off kind with a device tree, the device tree is `--dtb
-  <device>@<id>`, or else the one in `current_img`'s boot record. Board key `DEVICE` is
+  <device>@<id>`, or else the one in `current_img`'s boot record (with no `current_img`,
+  the one the seed would record: FR-015). Board key `DEVICE` is
   required there, and a tree for another device is refused. On a kind without one, this
   doesn't apply. On every kind, the initramfs is `--initramfs <commit12>@<id>`, or else
-  the one in `current_img`'s boot record. Neither present (for the device tree: on a
+  the one in `current_img`'s boot record (with no `current_img`, the seed's). Neither present (for the device tree: on a
   kind that has one): refuse, naming the flag. A name not of its form is refused:
   `<device>@<hex>`, `<hex>@<hex>` (or a bare hex commit, from older records).
 - **FR-006** Before the hand-off, `install` checks rule 1 (`provides` covers the
@@ -277,7 +278,10 @@ row gives as none doesn't apply on that kind.
   running image.
   - The first accept (or `rollback`) whose `current_img` is empty saves FR-009's RAM copy
     as `state/bootimg/<id>.img`, with a manifest. `<id>` is the `glassine.img=` in that
-    copy's header, the release is `current`, the boot-record fields are empty, and
+    copy's header, the release is `current`, `device` and `kernel` are `DEVICE` and
+    `current`, `dtb` and `initramfs` name the `boot/` files the copy was packed from
+    (found by their bytes, each with its manifest; else empty), the other boot-record
+    fields are empty, and
     `seeded=1` marks it.
   - It does so only if the copy is a valid boot image whose command line has a
     `glassine.img=`, and whose kernel carries the `current` release string. That is the
