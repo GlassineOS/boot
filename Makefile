@@ -38,6 +38,9 @@ install: glassine-reboot glassine-slot
 	install -Dm644 lib/glassine-root.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-root.sh
 	install -Dm644 lib/glassine-accounts.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-accounts.sh
 	install -Dm644 lib/glassine-kernel.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-kernel.sh
+	install -Dm644 lib/glassine-bootpart.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-bootpart.sh
+	install -Dm755 build-boot-modules.sh $(DESTDIR)$(PREFIX)/lib/glassine-bootimg/build-boot-modules.sh
+	install -Dm644 conf/boot-modules $(DESTDIR)$(PREFIX)/lib/glassine-bootimg/conf/boot-modules
 	install -Dm644 lib/glassine-device.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-device.sh
 	install -Dm755 sbin/glassine-device-seed $(DESTDIR)$(PREFIX)/sbin/glassine-device-seed
 	install -Dm755 openrc/glassine-device-seed $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-device-seed
@@ -66,6 +69,7 @@ check:
 	sh test/replay/test.sh
 	sh test/slot/test.sh
 	sh test/blocklist/test.sh
+	sh test/bootpart/test.sh
 	sh test/seed/test.sh
 	sh test/devmode/test.sh
 	sh test/reboot/test.sh
