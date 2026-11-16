@@ -197,9 +197,10 @@ the loader (on the Note Air, the cover at power-on) still work.
 When the record in use has `probe=1`, the loader writes, before it answers, a report of
 what the firmware offers it: the file `\glassine\probe.txt` in the FAT form, the region
 `probe` in the raw form. It writes nothing else for the probe, and it makes no firmware
-call for it beyond listing handles and their protocols, reading the graphics output's
-modes (`QueryMode`) and reading the console's mode fields. It never sets a mode, draws,
-or touches hardware.
+call for it beyond listing handles and their protocols, reading the memory map, the
+loaded images and a few variables (`GetVariable`), reading the graphics outputs raw
+(below: `QueryMode`, and `GetFrameBuffer` on an extended one) and reading the console's
+mode fields. It never sets a mode, draws, refreshes a panel, or touches hardware.
 
 The report is a text record of the same form as the loader record, its last line
 `check=<sha256>` over the bytes before it, at most 65536 bytes. In the raw form it is
@@ -217,8 +218,19 @@ which a reader treats as no report.
 | `protocols` | the number of distinct protocol GUIDs on them |
 | `proto<n>` | `<guid> <handles> <name>`: one protocol GUID, on how many handles, and its name when the loader knows it (else `-`); in byte order of the GUID text |
 | `gops` | the number of handles with the graphics output protocol |
-| `gop<n>` | `handle=<index> modes=<max> current=<mode> fb=0x<base> size=<bytes>` |
-| `gop<n>.mode<m>` | `<width>x<height> <format> stride=<pixels>`, the format one of `rgb`, `bgr`, `bitmask`, `blt-only` |
+| `ram_ranges` | `<n> images=<n>`: RAM ranges of the memory map (neighbours merged) and loaded images |
+| `gop<n>` | `handle=<index> modes=<max> current=<mode> fb=0x<base> size=<bytes>`, from the Mode that passed its checks; `-` for each value when none did |
+| `gop<n>.iface` | `0x<address>` of the interface |
+| `gop<n>.words` | the interface's first six 64-bit words, `0x<hex>` each, or `not-ram` |
+| `gop<n>.in` | for each word: `image<k>` (the loaded image it points into), `0`, or `-` (none) |
+| `gop<n>.mode_at_0x18`, `gop<n>.mode_at_0x28` | the word there read as a Mode: `ok <width>x<height> <format> stride=<pixels>`, or the first check it failed (`null`, `unaligned`, `not-ram`, `size_of_info=0x<n>`, `max_mode=0x<n>`, `info=0x<address>`) |
+| `gop<n>.layout` | `standard`, `extended`, `extended-no-slots` or `unknown` (below) |
+| `gop<n>.path` | the handle's device path, node by node (`VenHw(<guid>)`, `Pci(<dev>,<fn>)`, `FvFile(<guid>)`, `<type>.<subtype>:<length>` …), or `none` |
+| `gop<n>.guids` | the protocol GUIDs on the handle |
+| `gop<n>.framebuffer` | `status=<status> fb=0x<address> w=<width> h=<height>` from `GetFrameBuffer`, on an `extended` GOP only |
+| `gop<n>.mode<m>` | `<width>x<height> <format> stride=<pixels>`, the format one of `rgb`, `bgr`, `bitmask`, `blt-only` (else `format<n>`), or `unread`; for a GOP with a Mode only |
+| `image<k>` | `base=0x<address> size=0x<bytes> path=<the image's file path>`, for each image a `gop<n>.in` names |
+| `var.<name>` | `DisplaySplashBufferInfo`, `UEFIDisplayInfo`: `present size=<n> attr=0x<n> hex=<at most 64 bytes>`; `DISABLEDISPLAY`, `DisplayPanelOverride`: `present size=<n>`; or `absent`, or `error <status>`. Under `gQcomTokenSpaceGuid` `882f8c2b-9646-435f-8de5-f208ff80c1bd`; read only |
 | `conin`, `conout`, `stderr` | `handle=<index or none> <guid> …`: the console handles of the system table and their protocols |
 | `conout.modes` | `max=<max> current=<mode>` of the text output, when there is one |
 | `boot_fs` | `1` when the firmware offers a file system (`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`) on the boot partition, so the loader uses the FAT form; `0` when not |
@@ -237,6 +249,36 @@ protocol GUIDs Qualcomm's public bootloader source declares (`QcomModulePkg.dec`
 ABL tree: chip and platform info, PMIC version and power-on, the charger, display
 utilities, verified boot, reset reason, RNG, SCM, QSEECOM, USB, RAM partitions, erase
 block, limits, MDTP).
+
+### Graphics outputs read raw
+
+The standard graphics output (GOP) interface is four words: QueryMode, SetMode, Blt and
+the Mode pointer at +0x18. Some firmware extends it to six words:
+
+| Offset | Extended GOP |
+|---|---|
+| +0x00, +0x08, +0x10 | QueryMode, SetMode, Blt |
+| +0x18 | a panel refresh: `Refresh(This, Fb, X, Y, W, H, Stride, 0)` |
+| +0x20 | `GetFrameBuffer(This, &Fb, &W, &H)` |
+| +0x28 | the Mode pointer |
+
+A console splitter built for such firmware has the same six words with +0x18 and +0x20
+NULL. Code that reads the Mode at +0x18 reads code or NULL there and fails. So the
+loader reads every GOP as raw words, never through a standard GOP type: a word only when
+the memory map says its bytes are RAM, and a Mode pointer (+0x18 first, then +0x28) only
+when it is non-zero, 8-byte aligned, its 40 bytes RAM, `SizeOfInfo` is 0x24, `MaxMode`
+is at most 256 and its `Info`'s 0x24 bytes are RAM. The layout is:
+
+- `standard`: the Mode at +0x18 passes;
+- `extended`: only the Mode at +0x28 passes, and +0x18 and +0x20 point into the loaded
+  image that holds QueryMode, SetMode and Blt;
+- `extended-no-slots`: only the Mode at +0x28 passes, without those two words;
+- `unknown`: no Mode passes.
+
+`QueryMode` is called only through a word at +0x00 that points into a loaded image, for a
+GOP with a Mode, up to its `MaxMode`, and the firmware's buffer is freed. `GetFrameBuffer`
+is called only on an `extended` GOP. The probe never calls the refresh, `SetMode` or
+`Blt`.
 
 ## What a power cut leaves
 
