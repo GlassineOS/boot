@@ -90,8 +90,18 @@ is at +0x28 and whose refresh (+0x18) and `GetFrameBuffer` (+0x20) point into th
 of its QueryMode, SetMode and Blt. With neither, the loader runs headless, as above.
 
 - `GetFrameBuffer(This, &Fb, &W, &H)` gives the panel's framebuffer and its native size.
-  The picture there is packed RGB565 from `Fb`, rows `W` pixels apart, `W` a multiple of
-  8, and must lie inside the framebuffer the Mode names; else the loader runs headless.
+  The picture there is packed RGB565 from `Fb`, rows `W` pixels apart. The loader runs
+  headless unless the status is success, `Fb`, `W` and `H` are not zero, `W` is a
+  multiple of 8, and the `W`×`H`×2 bytes from `Fb` lie inside one of two regions:
+  - the framebuffer the Mode names (`FrameBufferBase`, `FrameBufferSize`); or
+  - the region the firmware variable `DisplaySplashBufferInfo` names (under
+    `gQcomTokenSpaceGuid`, read with `GetVariable`): exactly 12 bytes, three
+    little-endian u32 words, version 1, then the region's base and its size in bytes.
+    A variable of another size or version, or none, names no region.
+
+  The Mode of such a GOP may describe a smaller picture than the panel (a Note Air's
+  reports 325×1423 with a 1,849,900-byte framebuffer while the panel is 1872×1404), so
+  the variable is the bound there. The loader logs which region accepted the picture.
 - The loader draws in portrait: the mode it picks the picture for is `H`×`W`, and a
   portrait pixel (u, v) goes to native (x, y) = (W − 1 − v, u). (The mapping is to be
   confirmed on a device.)
