@@ -32,6 +32,14 @@
 # RUN_DIR/limit-start) then runs glassine-bootimg rollback --limit (FR-013): that
 # set becomes the default kernel, the one that failed is listed as failed.
 #
+# The loader update (BOOT_FORM=raw; LOADER_UPDATE = glassine-loader-update, specs/012
+# FR-026): only after this start wrote the healthy mark itself (so the deployment
+# that arms the loader is one that marks its starts healthy on the raw form), and on
+# a candidate only once it is accepted (a candidate that is never accepted can't
+# leave an armed loader to an older deployment that can't mark). It writes the
+# package's loader and default splash where the boot partition holds other ones; a
+# failure is logged and changes nothing here.
+#
 # Not on a kernel trial or finishing boot (/run/glassine/kernel-boot, from the
 # initramfs): that boot runs the current deployment, and glassine-bootimg-promote
 # judges it; a finishing boot still writes the healthy mark. Nothing is accepted
@@ -44,6 +52,7 @@ DEPLOY=${GLASSINE_DEPLOY:-/usr/sbin/glassine-deploy}
 UPTIME=${GLASSINE_ACCEPT_UPTIME:-/proc/uptime}
 MARK_TOOL=${GLASSINE_LOADER_MARK:-/usr/sbin/glassine-loader-mark}
 BOOTIMG=${GLASSINE_BOOTIMG:-/usr/sbin/glassine-bootimg}
+LOADER_UPDATE=${GLASSINE_LOADER_UPDATE:-/usr/sbin/glassine-loader-update}
 RUN_DIR=/run/glassine ACCEPT_AFTER=120 ACCEPT_HEALTH_DIR=/etc/glassine-bootimg/health.d SLOT_TOOL=
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
@@ -52,6 +61,11 @@ say() {
     echo "glassine-deploy-accept: $*"
     { [ -w /dev/kmsg ] && echo "<5>glassine-deploy-accept: $*" > /dev/kmsg; } 2>/dev/null
     return 0
+}
+# the loader update, once this start's healthy mark is written (marked=1)
+loader_update() {
+    [ "$marked" = 1 ] && [ -x "$LOADER_UPDATE" ] || return 0
+    "$LOADER_UPDATE" || say "the loader update failed (exit $?)"
 }
 field() { "$DEPLOY" status --porcelain 2>/dev/null | sed -n 2p | tr '\t' '\n' | sed -n "s/^$1=//p"; }
 
@@ -69,7 +83,7 @@ case $booted in ''|bare:*) exit 0 ;; esac
 # is the kernel's to judge (glassine-bootimg-promote), not the deployment's
 kboot=$(cat "$RUN_DIR/kernel-boot" 2>/dev/null)
 case $kboot in trial) say "a kernel trial boot: no deployment accept"; exit 0 ;; esac
-cand=0 slot=0 mark=0
+cand=0 slot=0 mark=0 marked=0
 # the healthy mark, when this board's hand-off keeps a loader record
 [ -x "$MARK_TOOL" ] && "$MARK_TOOL" has-record && mark=1
 if [ "$kboot" = finishing ]; then
@@ -117,7 +131,7 @@ if [ $slot = 1 ]; then
 fi
 # in its own process: its state lock is gone before glassine-deploy accept takes it
 if [ $mark = 1 ]; then
-    "$MARK_TOOL" healthy || say "the healthy mark failed (exit $?)"
+    if "$MARK_TOOL" healthy; then marked=1; else say "the healthy mark failed (exit $?)"; fi
     # a healthy start the limit caused (the loader started the previous set):
     # that set becomes the default by the kernel rollback (010 FR-013)
     if [ -e "$RUN_DIR/limit-start" ]; then
@@ -130,7 +144,7 @@ if [ $mark = 1 ]; then
         done
     fi
 fi
-[ $cand = 1 ] || exit 0
+[ $cand = 1 ] || { loader_update; exit 0; }
 # busy (exit 6: another writer, or a hibernate holding the state lock across
 # the sleep): try again for up to ACCEPT_BUSY_S seconds
 n=0
@@ -141,4 +155,5 @@ while :; do
     sleep 5; n=$((n + 5))
 done
 say "$booted accepted after ${ACCEPT_AFTER}s healthy"
+loader_update
 exit 0

@@ -1,0 +1,106 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-loader-update: the running system's loader update on a board whose parent
+# bootloader starts the loader from the raw boot partition (BOOT_FORM=raw; specs/012
+# FR-026, docs/boot-partition.md "The running system's writer"). It puts the loader
+# and the default splash a package ships into the regions `loader` and
+# `splash-default`, with glassine-boot-raw, when they hold something else or nothing.
+#
+#   glassine-loader-update     run by glassine-deploy-accept after a healthy mark it
+#                              wrote in this start (and by hand)
+#
+# What it installs: LOADER_DIR (default /usr/share/glassine/loader; a package such as
+# a device's loader package fills it): loader.efi for the region loader and
+# splash-default.gspl (a format-2 image) for the region splash-default, each only
+# when the file is there. The splash goes first, the loader last: the loader is what
+# arms the parent's hand-back.
+#
+# Only on a board with BOOT_FORM=raw (board.conf) and never with HANDOFF=uefi (a PC's
+# boot partition is FAT, and its installer owns it). The partition is the one
+# named BOOT_PART (default glassine-boot), found as glassine-loader-mark finds it. A
+# partition with no valid region table is only reported: this tool never makes a
+# table (the installer or glassine-boot-raw init does).
+#
+# For each region: the item it holds is read as its reader takes it; the same bytes
+# as the file: nothing written. Else the file is written by "Writing a region"
+# (glassine-boot-raw), then read back and compared. A write that fails or doesn't
+# read back leaves the region emptied (its first 4096 bytes zero: for loader the
+# parent then boots its baseline), never a part of an item, and nothing more is
+# written.
+#
+# Exit: 0 written, or nothing to do (another board, no files, the regions hold the
+# files); 1 a write or its read-back failed (said; that region emptied, or, when even
+# that failed, holding no valid item or the old one); 3 nothing written: no partition,
+# none of that name or two, no valid region table, a region missing, or a file
+# glassine-boot-raw refuses; 6 busy (the device's lock stayed held).
+# Test hooks: GLASSINE_LOADER_DIR, GLASSINE_BOOT_RAW (the writer), GLASSINE_BI_BOARD,
+# GLASSINE_BI_CMDLINE, GLASSINE_BI_LIB, GLASSINE_BI_TMP, and the library's
+# (GLASSINE_BI_BOOTPART_DEV, GLASSINE_BI_SYSBLOCK, GLASSINE_BI_DEVDIR).
+set -u
+BOARD=${GLASSINE_BI_BOARD:-/etc/glassine-bootimg/board.conf}
+GBLIB=${GLASSINE_BI_LIB:-/usr/lib/glassine-boot}
+DIR=${GLASSINE_LOADER_DIR:-/usr/share/glassine/loader}
+RAW=${GLASSINE_BOOT_RAW:-/usr/sbin/glassine-boot-raw}
+HANDOFF='' BOOT_FORM='' BOOT_PART=glassine-boot
+# shellcheck source=/dev/null
+[ -r "$BOARD" ] && . "$BOARD"
+CMDLINE=${GLASSINE_BI_CMDLINE:-/proc/cmdline}
+TMP=${GLASSINE_BI_TMP:-/run}/glassine-loader-update.$$
+
+say() {
+    echo "glassine-loader-update: $*" >&2
+    { [ -w /dev/kmsg ] && echo "<5>glassine-loader-update: $*" > /dev/kmsg; } 2>/dev/null
+    return 0
+}
+[ $# = 0 ] || { echo "usage: glassine-loader-update" >&2; exit 2; }
+# shellcheck source=../lib/glassine-bootpart.sh
+. "$GBLIB/glassine-bootpart.sh"
+
+# the board: the raw form only, never a PC's FAT
+[ "$HANDOFF" != uefi ] || exit 0
+[ "$BOOT_FORM" = raw ] || exit 0
+todo=''
+for r in splash-default loader; do
+    f=$DIR/loader.efi; [ $r = loader ] || f=$DIR/splash-default.gspl
+    [ -f "$f" ] && todo="$todo $r"
+done
+[ -n "$todo" ] || exit 0
+
+dev=$(gp_raw_dev "$CMDLINE" "$BOOT_PART") || { say "the boot partition: $dev: nothing written"; exit 3; }
+"$RAW" table "$dev" > "$TMP.table" 2>"$TMP.err"; rc=$?
+if [ $rc != 0 ]; then
+    say "$dev: $(tail -n 1 "$TMP.err" | sed 's/^glassine-boot-raw: //'): nothing written (a table is made by the installer or glassine-boot-raw init)"
+    rm -f "$TMP".*
+    exit 3
+fi
+trap 'rm -f "$TMP".*' EXIT
+for r in $todo; do
+    grep -q "^region $r " "$TMP.table" || { say "$dev: the region table has no region $r: nothing written"; exit 3; }
+done
+
+for r in $todo; do
+    f=$DIR/loader.efi; [ $r = loader ] || f=$DIR/splash-default.gspl
+    if "$RAW" read "$dev" $r > "$TMP.item" 2>/dev/null && cmp -s "$TMP.item" "$f"; then
+        say "$dev: $r holds $f already ($(gp_sha "$f" | cut -c 1-16)): nothing written"
+        continue
+    fi
+    "$RAW" $r "$dev" "$f" 2>"$TMP.err"; rc=$?
+    case $rc in
+    0)  "$RAW" read "$dev" $r > "$TMP.item" 2>/dev/null && cmp -s "$TMP.item" "$f" && {
+            say "$dev: $r written and read back ($f, $(wc -c < "$f") bytes, sha256 $(gp_sha "$f" | cut -c 1-16))"
+            continue
+        }
+        why="it doesn't read back as written" ;;
+    3)  say "$dev: $r: $(tail -n 1 "$TMP.err" | sed 's/^glassine-boot-raw: //'); the region as it was, nothing more written"; exit 3 ;;
+    6)  say "$dev: $r: the device is locked by another writer; nothing written"; exit 6 ;;
+    *)  why=$(tail -n 1 "$TMP.err" | sed 's/^glassine-boot-raw: //') ;;
+    esac
+    # never a part of an item: the region emptied, then nothing more
+    if "$RAW" clear "$dev" $r 2>/dev/null; then
+        say "$dev: $r not written ($why): the region emptied, nothing more written"
+    else
+        say "$dev: $r not written ($why), and emptying it failed: it holds no valid item or the old one; nothing more written"
+    fi
+    exit 1
+done
+exit 0

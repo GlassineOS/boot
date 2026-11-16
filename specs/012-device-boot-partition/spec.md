@@ -2,8 +2,8 @@
 
 **Feature branch:** `boot-partition-forms`
 **Created:** 2026-11-16 · **Status:** spec, for review; the running system's writer of the
-raw form built and host-tested (FR-020, FR-022 to FR-025: `glassine-boot-raw`, the raw
-backend of `lib/glassine-bootpart.sh`, `test/bootraw`); not built: FR-021 (`reboot
+raw form built and host-tested (FR-020, FR-022 to FR-026: `glassine-boot-raw`, the raw
+backend of `lib/glassine-bootpart.sh`, `glassine-loader-update`, `test/bootraw`); not built: FR-021 (`reboot
 recovery` on a raw board), the installer's raw writer and the running system's writer
 of `request=menu`; nothing has run on a device
 **Builds on:** [010-uefi-deployments](../010-uefi-deployments/spec.md),
@@ -230,6 +230,18 @@ systems to the boot partition, reading only, and then answers as it would have w
   A cut at any byte leaves the old item, no item or the new one.
 - **FR-025** Every write of a region or a record slot holds an exclusive lock on the
   device, and the record's writers also the system partition's state lock.
+- **FR-026** The running system installs and updates the loader (`glassine-loader-update`):
+  the loader and default splash a package ships, pinned to a loader release, go into
+  the regions `loader` and `splash-default` when they hold other bytes or nothing, the
+  splash first, the loader last. Only with `BOOT_FORM=raw`, never with `HANDOFF=uefi`;
+  only after the boot-success step wrote the healthy mark in that start, and on a
+  candidate only once it is accepted, so a loader is armed only by a system that marks
+  its starts healthy on the raw form. A region whose item has the same bytes is not
+  written. Each write is read back; one that fails or doesn't read back leaves its
+  region empty (the parent's baseline for `loader`), never part of an item, and nothing
+  more is written. A partition without a valid table is reported and left as it is (no
+  table is made); the tool that installs the loader ships in the same package as the
+  record's raw writers, and the package with the loader depends on it.
 
 ## Key entities
 
@@ -310,6 +322,13 @@ systems to the boot partition, reading only, and then answers as it would have w
   the new one; the healthy mark, `display-retry` and the shutdown step on a raw board
   write what the loader reads, also on a baseline start under a parent (`default` and
   `started` empty).
+- **SC-004c** A host test runs the loader update on a partition with no table (nothing
+  written), with an empty loader region (the loader and the splash written and read
+  back by the loader's reader), with the same loader (no block written), with a
+  different loader (the new one), and with a write that doesn't read back in the writer
+  or after it (exit 1, no loader for the parent); `HANDOFF=uefi`, no `BOOT_FORM` and no
+  files write nothing; from the accept step it runs only after a healthy mark it wrote
+  and after a candidate's accept.
 - **SC-005** On the device, with the person's go and a gate written: a parent build with
   no `glassine-boot` partition on the table boots exactly as before (the floor), and with one,
   Scenarios 1, 3 and 5.
