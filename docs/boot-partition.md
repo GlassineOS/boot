@@ -691,8 +691,8 @@ default splash a package ships (`/usr/share/glassine/loader/loader.efi` and
 `splash-default.gspl`; a board's loader package fills the directory, pinned to a loader
 release) into the regions `loader` and `splash-default`. It runs on a board with
 `BOOT_FORM=raw` only, never with `HANDOFF=uefi` (a PC's installer owns its FAT), and the
-accept step (`glassine-deploy-accept`) runs it only after it wrote the healthy mark in
-that start, and on a candidate only once the candidate is accepted: the system that arms
+accept step (`glassine-deploy-accept`) runs it only after its healthy mark succeeded in
+that start (written, or the count was 0 already), and on a candidate only once the candidate is accepted: the system that arms
 the loader is one that marks its starts healthy on the raw form, so `unmarked` can't
 climb to the limit under it. For each region, the splash first and the loader last: the
 item it holds, read as its reader takes it, is compared with the file; the same bytes:
