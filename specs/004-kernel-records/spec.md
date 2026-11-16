@@ -42,13 +42,13 @@ give bytes, slots or flags, they describe `bootpart-test`, the kind this feature
 | | `bootpart-test` | `blocklist` | `uefi` |
 |---|---|---|---|
 | Machines | a board with a spare boot partition | a board whose bootloader reads a kernel file's blocks (the Note Air; [005](../005-blocklist-handoff/spec.md)) | a PC that starts from UEFI ([010](../010-uefi-deployments/spec.md)) |
-| Image of a record | one packed boot image: kernel, device tree, initramfs, command line | one packed boot image | a kernel set: kernel, initramfs, command line (010 "Terms"); the initramfs followed by the kernel's boot modules (010 FR-049) |
+| Image of a record | one packed boot image: kernel, device tree, initramfs, command line | one packed boot image | a kernel set: kernel, initramfs, command line (010 "Terms"); its initramfs is the kernel's microcode, the initramfs file, the board's configuration and the kernel's boot modules, in that order (boot-partition.md) |
 | Kernel image it starts | `Image.gz` | `Image.gz` | an EFI stub (`vmlinuz`) |
 | Device tree | yes, the board's (`DEVICE`, `--dtb`) | yes | none |
 | Default slot | a boot partition the bootloader starts by default | a boot partition the bootloader starts by default | the default set on the boot partition, named by the loader record (010 FR-006) |
 | A candidate is started once by | a test slot (a second boot partition) and a reboot reason | an image file on userdata whose blocks a record in the default slot names, and a reboot reason (blocklist.md) | a trial set next to the default set and a one-shot request in the loader record (010 FR-009, FR-025) |
 | Size limit of an image | the slot (`PART_SIZE`, `RAMDISK_MAX`) | the slot less the record's room (blocklist.md) | the boot partition's free space (010 FR-028) |
-| Write of the default slot | in place, blocklist.md's "Writing the default slot" (FR-009) | the same | never in place: new files, then the loader record replaced in one step (010 FR-027) |
+| Write of the default slot | in place, blocklist.md's "Writing the default slot" (FR-009) | the same | never in place: new files, then one write of the loader record (010 FR-019, FR-027) |
 
 "Default slot" and "test slot" in this spec mean the row of the board's kind. What a
 row gives as none doesn't apply on that kind.
@@ -284,8 +284,12 @@ row gives as none doesn't apply on that kind.
     packer's own `--expect-release` check. Then `previous_img` ← `<id>`.
   - Otherwise nothing is seeded, `previous_img` stays empty, and `rollback` is
     unavailable until the second accept.
-  - The seed reads a packed boot image from a partition slot, so it exists only on the
-    hand-off kinds with one.
+  - The seed reads a packed boot image from a partition slot, so it exists in this form
+    only on the hand-off kinds with one.
+  - On `uefi`, the first start of an installation seeds `current_img` from the default
+    set the installer wrote: the set is checked as the loader checks it, its initramfs
+    is kept as `state/bootimg/<id>.img`, and its record becomes the image record, marked
+    `seeded=1`, with `current` its release (boot-partition.md, "Who assembles a set").
 - **FR-016** Busybox ash for everything the initramfs or the recovery runs. Python only
   in the packer, as today.
 - **FR-017** `status` in this layout prints `format=1`, then `state=`, then every key of
@@ -308,13 +312,21 @@ row gives as none doesn't apply on that kind.
   kind takes only the kernel image it can start (the table above) and refuses the
   others, naming the image it found. A kernel record with no image name means
   `Image.gz`.
+- **FR-019** On `uefi`, the image of a record is its kernel set. `install` assembles the
+  set's initramfs, keeps it with the record on the system partition
+  (`state/bootimg/<id>.img`), writes the set to the boot partition next to the sets in
+  use, and names it in the loader record as the trial set. `reboot-test` writes the
+  one-shot request; accept, `rollback`, `cancel` and a failed trial each change the
+  loader record in one write, and a set nothing names any more is removed after it.
+  The set's files, record and id, and the loader record's keys, are in
+  [boot-partition.md](../../docs/boot-partition.md).
 
 ## Decisions this spec adds to the contract (for review)
 
 | What | Proposed | Where it goes when implemented |
 |---|---|---|
 | board key `DEVICE` | the device name used in `<device>@<id>`, on hand-off kinds with a device tree | boot.md, `conf/board.conf.example` |
-| hand-off kind `uefi` | the value of `HANDOFF` on a PC that starts from UEFI (FR-007; 010) | kernel-artifacts.md, the hand-off table; boot.md, the board keys |
+| hand-off kind `uefi` | the value of `HANDOFF` on a PC that starts from UEFI (FR-007, FR-019; 010) | kernel-artifacts.md, the hand-off table; boot.md, the board keys; boot-partition.md |
 | `install` flags | `--dtb <device>@<id>`, `--initramfs <commit12>@<id>`, with the defaults of FR-005 | kernel-artifacts.md, "Order on the device" |
 | a distribution's kernel | release the package's own, `source=<distribution>:<package>=<version>`, `image=` the image's file name (absent = `Image.gz`), no `builder`/`layout`/`config_sha256` (FR-018) | kernel-artifacts.md, "A distribution's kernel", "Records" |
 | `status` format 1 | `format=1`, `state=`, the keys, `default_slot=` (FR-017) | kernel-artifacts.md, "What the user sees" |

@@ -20,7 +20,7 @@ image):
 | `ROOT_LAYOUT` | `plain` | `plain` or `deployments` |
 | `USERDATA_PART` | — | GPT name of userdata (deployments) |
 | `USERDATA_PREFIX` | `media/glassine` | the directory on userdata, the same value as deploy.conf's |
-| `HANDOFF` | empty | how a new kernel reaches the bootloader in the deployments layout: `bootpart-test`, `blocklist` (no board sets it yet: [blocklist.md](blocklist.md#board-keys)), empty = kernel updates paused ([kernel-artifacts.md](kernel-artifacts.md)) |
+| `HANDOFF` | empty | how a new kernel reaches the bootloader in the deployments layout: `bootpart-test`, `blocklist` (no board sets it yet: [blocklist.md](blocklist.md#board-keys)), `uefi` (a PC: [boot-partition.md](boot-partition.md)), empty = kernel updates paused ([kernel-artifacts.md](kernel-artifacts.md)) |
 | `BLOCKLIST_RECORD_PART`, `BLOCKLIST_REBOOT_REASON`, `BLOCKLIST_ABL_PART`, `BLOCKLIST_ABL_SHA256` | — | the `blocklist` hand-off ([blocklist.md](blocklist.md#board-keys)) |
 | `DEVICE` | — | the device name of the board's device trees (`<device>@<id>`), for `glassine-bootimg install` |
 | `DEVMODE_ADDR`, `DEVMODE_NETMASK`, `DEVMODE_DHCP_START`, `DEVMODE_DHCP_END`, `USB_VENDOR`, `USB_PRODUCT`, `USB_MANUFACTURER` | — | developer mode (`glassine.devmode=usb` only): the USB network's address and developer range, in the initramfs (telnet, HTTP) and in the booted system (`glassine-devmode`: SSH with the developer folder's keys; README, "Developer mode") |
@@ -29,6 +29,22 @@ image):
 The booted system reads the same keys from `/etc/glassine-bootimg/board.conf`, which the
 image builder installs (the seed tool takes `DEVICE_PART` from there, `glassine-devmode`
 the developer mode keys).
+
+## Command-line keys
+
+Keys the boot chain passes to the initramfs on the kernel command line. `glassine.img=`
+is read today; the other three are agreed and not built.
+
+| Key | Meaning |
+|---|---|
+| `glassine.img=<id>` | the image this boot runs, 16 hex digits: the id of its image record ([kernel-artifacts.md](kernel-artifacts.md#kernel-records-trials-and-hand-off)) |
+| `glassine.system=PARTUUID=<uuid>` | the system partition (deployments layout), by its GPT unique partition identity, lower case. When given, it is used in place of `ROOT_PART`, and a partition of that name with another identity is never taken |
+| `glassine.userdata=PARTUUID=<uuid>` | userdata, the same way, in place of `USERDATA_PART` |
+| `glassine.deploy.once=<deployment id>` | the one-shot deployment request ([010](../specs/010-uefi-deployments/spec.md) FR-042 to FR-047): start this deployment for this boot only, in place of the pick, with no state written. Only the boot chain adds it, for one start; it is never part of a stored command line |
+
+A machine whose partition names are unique to it by construction (a device with one
+disk) passes no identities. A PC's kernel sets always carry both
+([boot-partition.md](boot-partition.md#the-command-line)).
 
 ## Boot modules
 
@@ -48,9 +64,11 @@ travel with the kernel, not with the initramfs and not on the system partition:
   one of them neither built in nor as a module fails the build. Reproducible: the same
   tree and list give the same bytes. Needs kmod (`modprobe --show-depends` resolves names
   and aliases exactly as the kernel's own tools do).
-- **The kernel set.** Where the archive exists, a kernel set's initramfs is the
-  initramfs file followed by that kernel's archive (the kernel unpacks concatenated
-  archives in order). The initramfs file stays the same for every kernel, and each
+- **The kernel set.** Where the archive exists, it is the last part of a kernel set's
+  initramfs: the kernel's microcode, the initramfs file, the board's configuration,
+  then that kernel's archive ([boot-partition.md](boot-partition.md#files); the kernel
+  unpacks concatenated archives in order). The initramfs file stays the same for every
+  kernel, and each
   keeps its own identity ([kernel-artifacts.md](kernel-artifacts.md#the-four-artifacts)).
   A kernel with everything built in (the Note Air's) has no archive, and its boot image
   is unchanged.
