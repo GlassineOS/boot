@@ -117,7 +117,45 @@ run dep "panic=5 rdinit=/init glassine.return=3 _kip_initramfs" /dep.conf
 ok "deployments layout: library sourced, looks for its root partition" "! grep -q 'glassine-root.sh' /kmsg.dep && grep -q 'root partition rootfs not found' /kmsg.dep"
 run dep-img "panic=5 rdinit=/init glassine.return=3 glassine.test glassine.img=0123456789abcdef" /dep.conf
 ok "deployments layout, glassine.img= with no root partition found: no kernel trial, no plain-layout peek" "grep -q 'image 0123456789abcdef: no kernel trial' /kmsg.dep-img && ! grep -q 'staged by glassine-bootimg\\|not staged' /kmsg.dep-img"
-unset GLASSINE_INIT_LIB
+# the partitions by their identity (glassine.system=, glassine.userdata=: a PC) or by
+# their GPT name (no key: the Note Air), in a sysfs stand-in
+SB=/sysblock; mkdir -p $SB/vda1 $SB/vda2 $SB/vda3 $SB/vdb1
+printf 'MAJOR=254\nDEVNAME=vda1\nPARTN=1\nPARTNAME=rootfs\nPARTUUID=11111111-1111-4111-8111-111111111111\n' > $SB/vda1/uevent
+printf 'MAJOR=254\nDEVNAME=vda2\nPARTN=2\nPARTNAME=pc-system\nPARTUUID=0f3e26a1-5c7b-4a55-9b8d-2c4f6e8a1b3d\n' > $SB/vda2/uevent
+printf 'MAJOR=254\nDEVNAME=vda3\nPARTN=3\nPARTNAME=pc-data\nPARTUUID=6d1a5e2b-8c4f-4b3a-a9e7-1f2d3c4b5a69\n' > $SB/vda3/uevent
+printf 'MAJOR=254\nDEVNAME=vdb1\nPARTN=1\nPARTNAME=other\nPARTUUID=22222222-2222-4222-8222-222222222222\n' > $SB/vdb1/uevent
+export GLASSINE_INIT_SYSBLOCK=$SB
+SU=0f3e26a1-5c7b-4a55-9b8d-2c4f6e8a1b3d UU=6d1a5e2b-8c4f-4b3a-a9e7-1f2d3c4b5a69
+run key-ok "panic=5 rdinit=/init glassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=$UU" /dep.conf
+ok "glassine.system=PARTUUID=: the partition with that identity, whatever its name" "grep -q \"root partition glassine.system=PARTUUID=$SU is /dev/vda2\" /kmsg.key-ok"
+ok "glassine.userdata=PARTUUID=: found too (not reported missing)" "! grep -q 'userdata .* not found' /kmsg.key-ok"
+run key-upper "panic=5 rdinit=/init glassine.system=PARTUUID=$(echo $SU | tr a-f A-F)" /dep.conf
+ok "an identity in upper case: compared in lower case" "grep -q 'is /dev/vda2' /kmsg.key-upper"
+run key-none "panic=5 rdinit=/init glassine.system=PARTUUID=33333333-3333-4333-8333-333333333333" /dep.conf
+ok "an identity no partition has: not found, the partition with the board's name (rootfs) not taken" "grep -q 'root partition glassine.system=PARTUUID=33333333-3333-4333-8333-333333333333 not found' /kmsg.key-none && ! grep -q 'is /dev/vda1' /kmsg.key-none"
+run key-bad "panic=5 rdinit=/init glassine.system=LABEL=rootfs" /dep.conf
+ok "a key that isn't PARTUUID=<uuid>: no partition taken, no fallback to the name" "grep -q 'glassine.system=LABEL=rootfs is not PARTUUID=<uuid>: no partition taken' /kmsg.key-bad && ! grep -q 'is /dev/vda1' /kmsg.key-bad"
+run key-short "panic=5 rdinit=/init glassine.system=PARTUUID=0f3e26a1" /dep.conf
+ok "a PARTUUID that isn't a whole identity (a prefix): refused" "grep -q 'is not PARTUUID=<uuid>' /kmsg.key-short && ! grep -q 'is /dev/vda2' /kmsg.key-short"
+run key-twice "panic=5 rdinit=/init glassine.system=PARTUUID=$SU glassine.system=PARTUUID=$SU" /dep.conf
+ok "a key given twice: no partition taken" "grep -q 'glassine.system= is given more than once' /kmsg.key-twice && ! grep -q 'is /dev/' /kmsg.key-twice"
+run key-word "panic=5 rdinit=/init xglassine.system=PARTUUID=$SU" /dep.conf
+ok "a key matched as a whole word only: xglassine.system= is no key, the board's name is taken" "grep -q 'root partition rootfs is /dev/vda1' /kmsg.key-word"
+run key-noud "panic=5 rdinit=/init glassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=44444444-4444-4444-8444-444444444444" /dep.conf
+ok "a userdata identity no partition has: userdata not found (no fallback to the name)" "grep -q 'userdata glassine.userdata=PARTUUID=44444444-4444-4444-8444-444444444444 not found' /kmsg.key-noud"
+cp $SB/vda2/uevent $SB/vdb1/uevent; sed -i 's/vda2/vdb1/' $SB/vdb1/uevent
+run key-clone "panic=5 rdinit=/init glassine.system=PARTUUID=$SU" /dep.conf
+ok "two partitions carry the identity (a cloned disk): none taken" "grep -q 'PARTUUID=$SU: 2 partitions carry it: none taken' /kmsg.key-clone && ! grep -q 'is /dev/' /kmsg.key-clone"
+run name "panic=5 rdinit=/init" /dep.conf
+ok "no key: the partition by the board's name (the Note Air)" "grep -q 'root partition rootfs is /dev/vda1' /kmsg.name"
+printf 'ROOT_PART=pc-system\nROOT_FSTYPE=btrfs\nUSERDATA_PART=pc-data\n' > /plain.conf
+run key-plain "panic=5 rdinit=/init glassine.system=PARTUUID=22222222-2222-4222-8222-222222222222" /plain.conf
+ok "the plain layout: the keys are not read, the board's name is" "grep -q 'root partition pc-system is /dev/vda2' /kmsg.key-plain"
+run once-bad "panic=5 rdinit=/init glassine.deploy.once=../d1" /dep.conf
+ok "glassine.deploy.once= that isn't a deployment id: dropped, said" "grep -q 'glassine.deploy.once=../d1 is not a deployment id: no deployment request' /kmsg.once-bad"
+run once-twice "panic=5 rdinit=/init glassine.deploy.once=d1 glassine.deploy.once=d2" /dep.conf
+ok "glassine.deploy.once= given twice: no request" "grep -q 'glassine.deploy.once= is given more than once' /kmsg.once-twice"
+unset GLASSINE_INIT_SYSBLOCK GLASSINE_INIT_LIB
 
 # --- boot modules (an archive appended for this kernel, for another, none) ---
 cat > $S/uname <<'EOF2'
@@ -151,6 +189,6 @@ rm -f $S/uname $S/insmod
 run noboard "panic=5 rdinit=/init glassine.return=3 glassine.devmode=usb" /does-not-exist
 ok "no board config: said, no listeners, no root to boot: powers off" "grep -q 'no board config' /kmsg.noboard && ! listens noboard && grep -q 'none configured' /kmsg.noboard && grep -q '^poweroff -f' /calls.noboard"
 
-ok "the test overrides are dropped when the init is PID 1" "[ \"\$(grep -n 'unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS' /m/initramfs/init | cut -d: -f1)\" -lt \"\$(grep -n '^CMDF=' /m/initramfs/init | cut -d: -f1)\" ]"
+ok "the test overrides are dropped when the init is PID 1" "[ \"\$(grep -n 'unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS GLASSINE_INIT_LIB GLASSINE_INIT_SYSBLOCK' /m/initramfs/init | cut -d: -f1)\" -lt \"\$(grep -n '^CMDF=' /m/initramfs/init | cut -d: -f1)\" ]"
 
 [ $fails = 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; for f in /kmsg.*; do echo "--- $f"; cat $f; done; exit 1; }

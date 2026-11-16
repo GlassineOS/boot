@@ -22,7 +22,8 @@
 #
 # Not on a kernel trial or finishing boot (/run/glassine/kernel-boot, from the
 # initramfs): that boot runs the current deployment, and glassine-bootimg-promote
-# judges it.
+# judges it. Nothing is accepted on a start of a deployment by request
+# (/run/glassine/deploy-once, 010 FR-044).
 #
 # Exit: 0 accepted or nothing to accept, 1 not accepted (logged).
 set -u
@@ -55,7 +56,11 @@ case $booted in ''|bare:*) exit 0 ;; esac
 kboot=$(cat "$RUN_DIR/kernel-boot" 2>/dev/null)
 case $kboot in trial|finishing) say "a kernel $kboot boot: no deployment accept"; exit 0 ;; esac
 cand=0 slot=0
-[ "$booted" = "$(field candidate)" ] && cand=1
+# a deployment started by request for this start only (glassine.deploy.once=,
+# /run/glassine/deploy-once): it is no candidate here, whatever state/deploy says
+if [ -n "$(cat "$RUN_DIR/deploy-once" 2>/dev/null)" ]; then
+    say "$booted runs by request for this start only: no deployment accept"
+elif [ "$booted" = "$(field candidate)" ]; then cand=1; fi
 slot_todo && slot=1
 [ $cand = 1 ] || [ $slot = 1 ] || exit 0
 

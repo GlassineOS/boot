@@ -32,15 +32,20 @@ the developer mode keys).
 
 ## Command-line keys
 
-Keys the boot chain passes to the initramfs on the kernel command line. `glassine.img=`
-is read today; the other three are agreed and not built.
+Keys the boot chain passes to the initramfs on the kernel command line. The initramfs
+reads all four (built and host-tested, and on x86-64 under OVMF in QEMU; not yet run on a
+real PC). Each is one word of the command line, matched whole; a key given twice is
+refused (no partition taken, no request).
 
 | Key | Meaning |
 |---|---|
 | `glassine.img=<id>` | the image this boot runs, 16 hex digits: the id of its image record ([kernel-artifacts.md](kernel-artifacts.md#kernel-records-trials-and-hand-off)) |
-| `glassine.system=PARTUUID=<uuid>` | the system partition (deployments layout), by its GPT unique partition identity, lower case. When given, it is used in place of `ROOT_PART`, and a partition of that name with another identity is never taken |
+| `glassine.system=PARTUUID=<uuid>` | the system partition (deployments layout), by its GPT unique partition identity, lower case (compared in lower case). When given, it is used in place of `ROOT_PART`, and a partition of that name with another identity is never taken: a value that isn't `PARTUUID=` and a whole identity, or an identity no partition has, finds no partition, and so does one that two partitions carry (a cloned disk). The initramfs reads the identity from the kernel's partition uevent (`PARTUUID=`) and waits for it as long as for a name (15 s) |
 | `glassine.userdata=PARTUUID=<uuid>` | userdata, the same way, in place of `USERDATA_PART` |
-| `glassine.deploy.once=<deployment id>` | the one-shot deployment request ([010](../specs/010-uefi-deployments/spec.md) FR-042 to FR-047): start this deployment for this boot only, in place of the pick, with no state written. Only the boot chain adds it, for one start; it is never part of a stored command line |
+| `glassine.deploy.once=<deployment id>` | the one-shot deployment request ([010](../specs/010-uefi-deployments/spec.md) FR-042 to FR-047): start this deployment for this boot only, in place of the pick, with no state written. Only the boot chain adds it, for one start; it is never part of a stored command line. What the initramfs does with it is in "Deployments layout", step 3 |
+
+In the plain layout the identities are not read: `ROOT_PART` is found by its name.
+`DEVICE_PART` is always found by its name.
 
 A machine whose partition names are unique to it by construction (a device with one
 disk) passes no identities. A PC's kernel sets always carry both
@@ -104,6 +109,14 @@ steps from `lib/glassine-root.sh`:
    - The deployment is picked (one try used) and assembled with its modules
      subvolume for `uname -r`. On a trial or a finishing boot, current is assembled
      instead, with no pick and no deployment try.
+   - With `glassine.deploy.once=<id>`, that deployment is assembled in place of the
+     pick, for this start only: no try used or given back, `state/deploy` not written
+     (also not when it names the candidate). It is dropped with a message, and the
+     ordinary pick runs with nothing marked failed, when it names a deployment that
+     isn't there, is staged or doesn't assemble, and on a trial or finishing boot or a
+     boot without userdata. A hibernated session comes first: a resume drops it (said
+     before the resume write). An id that isn't a deployment id
+     (`[A-Za-z0-9._-]+`, no leading dot) is dropped before anything is read.
    - The person's storage is bound into it: `home/` and `flatpak/` under the userdata
      prefix on `/home` and `/var/lib/flatpak`, and `/var/tmp` made a shared bind of
      itself (`gr_storage`; [deployments.md](deployments.md#the-persons-storage)). A
@@ -127,7 +140,10 @@ steps from `lib/glassine-root.sh`:
      `/run/glassine/{system,userdata,root}`.
    - The booted id is written to `/run/glassine/booted`, and `trial`, `finishing` or
      nothing to `/run/glassine/kernel-boot` (`glassine-deploy-accept` skips the first
-     two). What the storage step did goes to `/run/glassine/storage`.
+     two). The id of a deployment started by request goes to
+     `/run/glassine/deploy-once` (empty otherwise; `glassine-deploy-accept` accepts
+     nothing then, 010 FR-044). What the storage step did goes to
+     `/run/glassine/storage`.
    - The lock is released.
 6. **Device data** (`gd_boot`, `lib/glassine-device.sh`), only when the root's
    `/usr/share/glassine/device-data.list` names files and the board has `DEVICE_PART`:
