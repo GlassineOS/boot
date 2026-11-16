@@ -240,8 +240,12 @@ the next start without a choice runs the current deployment again.
 - **FR-025** The kernel hand-off of this platform is one more hand-off kind of 004
   (`HANDOFF=uefi`; 004 FR-007 and "Hand-off kinds"): a trial set is written to the boot
   partition next to the default set, never over it, and the request is written last.
-  What `install` and the other commands do on this kind is in
-  [boot-partition.md](../../docs/boot-partition.md#who-assembles-a-set).
+  `install` assembles the set's initramfs, keeps it with the record on the system
+  partition, writes the set to the boot partition and names it in the loader record as
+  the trial set; `reboot-test` writes the request. Accept, rollback, cancel and a failed
+  trial each change the loader record in one write, and a set nothing names any more is
+  removed after it
+  ([boot-partition.md](../../docs/boot-partition.md#who-assembles-a-set)).
   Accept, rollback and repair change the default set under 004's rules for a
   default-slot write that hold for every kind (004 FR-009, FR-010: the write is named in
   the kernel state before it starts, and a start in the middle is a finishing boot). The
@@ -353,7 +357,7 @@ the next start without a choice runs the current deployment again.
   starts its layer from empty.
 - **FR-041** The loader has the list from the loader record. The running system and the
   recovery write it there whenever a command changes which deployments exist or what
-  they are (switch, accept, select, rollback, remove), under FR-027. The loader can't
+  they are (switch, accept, select, rollback, remove), under FR-019. The loader can't
   read the system partition, so the list may be out of date; FR-043 covers that.
 - **FR-042** A deployment picked in the list is a one-shot request to the initramfs,
   passed with this start only (on the kernel command line). The loader writes nothing
@@ -542,8 +546,8 @@ Each is a test in QEMU with OVMF unless it says otherwise.
   installer's.
 - The recovery of 008 exists for x86-64 as one image; its screen and keys on a PC are
   008's (008 FR-006).
-- The loader is a program GlassineOS builds or packages for the release. Which one is
-  the plan's choice, measured against FR-006 to FR-020; none is named here.
+- The loader is a program GlassineOS builds for the release. It reads and writes the
+  loader record of FR-019, so it is no other system's loader, packaged.
 - x86-64 only. Other UEFI machines (arm64 PCs) follow this spec once they have a
   description.
 
@@ -555,5 +559,5 @@ Each is a test in QEMU with OVMF unless it says otherwise.
 - Starting another system from the loader.
 - Network boot, and firmware updates.
 - The installer's steps, plan and backup (installer 001, 002).
-- Building the loader, the kernel sets and the recovery image (the plan, and
-  GlassineOS/images).
+- Building the loader and the recovery image, and the parts a release's first kernel set
+  is assembled from (the plan, and GlassineOS/images).
