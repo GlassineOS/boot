@@ -5,7 +5,8 @@ device ([specs/004](../specs/004-kernel-records/spec.md), phases 1 and 2): the k
 records, `glassine-bootimg` `install` (the `bootpart-test` hand-off), `status`, `cancel`,
 `retry`, `accept`, `rollback`, the default-slot write, the interlocks with
 `glassine-deploy` and `glassine-hibernate`, the trial in the initramfs, and `promote`
-(finishing a cut write, `requested`, the verdict, a deferred install). Not built: the
+(finishing a cut write, `requested`, the verdict, a deferred install), and the `uefi`
+hand-off ([boot-partition.md](boot-partition.md), `test/bootpart`). Not built: the
 `blocklist` hand-off, the feature table (`conf/kernel-features`; until it exists,
 `provides`, `features` and `needs` are empty, so rule 1 passes), and everything under
 "Not covered here". It builds on
@@ -362,6 +363,14 @@ failed and the old image went back), or the health check's own. `seeded=1` marks
 record of the first `current_img`: after the migration nothing names the running image,
 so the first accept or `rollback` records the default slot's image, if it is a boot
 image with a `glassine.img=` whose kernel is release `current`.
+
+On `uefi` the image is the set's assembled `initrd`, and the record also has
+`kernel_sha256`, `kernel_size` (of `modules/<release>/vmlinuz`) and `set_rec` (the
+sha256 of the set's `set.rec`, which is made again from the record byte for byte);
+`cmdline` is the set's whole command line. The record of the first `current_img` is the
+installer's default set, recorded at the first install, accept or rollback when the
+loader record's default set checks: its `initrd` copied, the rest from its `set.rec`,
+`seeded=1`, and `current` its release when it was empty.
 
 `glassine-bootimg` exits 0 done, 1 error, 2 usage, 3 the state format (or a record) is
 newer than the tool, 6 busy (`state/.lock` held).

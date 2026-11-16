@@ -39,7 +39,10 @@ RAMDISK_MAX=
 # (docs/kernel-artifacts.md, "Hand-off"): bootpart-test writes it to TEST_DEV
 # for a one-shot trial, and needs a spare slot there, never the recovery
 # partition; blocklist (docs/blocklist.md; no board sets it until its "Board
-# keys" conditions hold); empty: kernel updates are paused.
+# keys" conditions hold); uefi: a PC (docs/boot-partition.md): a kernel set on
+# the boot partition, the partition named BOOT_PART (default glassine-boot) on
+# the disk of the system partition this boot names by glassine.system=PARTUUID=;
+# the set's base command line is CMDLINE; empty: kernel updates are paused.
 # This board's TEST_DEV is its recovery partition, so it stays empty.
 HANDOFF=
 # The blocklist hand-off (docs/blocklist.md, "Board keys"), read only with

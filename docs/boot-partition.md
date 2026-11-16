@@ -1,7 +1,13 @@
 # The boot partition of a UEFI PC
 
-Status: **agreed design; not built in this repository.** Nothing here has run on a real
-PC. This page is the contract between the three programs that read or write a PC's boot
+Status: **agreed design; the running system's kernel side built.** `glassine-bootimg`
+with `HANDOFF=uefi` (install, reboot-test, accept, rollback, cancel, a failed trial,
+retry, promote's finishing step, the first start's record of the installer's set) and
+its library `lib/glassine-bootpart.sh` are built and host-tested against the installer's
+golden bytes and a port of the loader's reader (`test/bootpart`); nothing has run on a
+real PC. Not built here: the healthy mark and the shutdown step (`unmarked`), the
+`reboot recovery` request, the deployment list (`deploys`), the recovery's update, the
+repair, the splash store. This page is the contract between the three programs that read or write a PC's boot
 partition: the loader, the installer, and the running system's tools (`glassine-bootimg`,
 `glassine-deploy`, the boot-success step, the recovery). What they do and why is
 [specs/010](../specs/010-uefi-deployments/spec.md) and
@@ -309,6 +315,16 @@ and not started.
   3. writes the set's directory: each file written, synced and read back against its
      checksum. A directory of that id whose files already match is kept as it is;
   4. writes the loader record with `trial` and `trial_rec`, and leaves `request` alone.
+
+  It finds the boot partition as the partition named `BOOT_PART` (board key, default
+  `glassine-boot`) on the disk of the system partition that this boot's
+  `glassine.system=PARTUUID=` names, and refuses with none or two; it mounts it (vfat)
+  for the time of the command and unmounts it again (010 FR-026). The identities in the
+  new set's command line are the ones this boot was started with, and its base is
+  `board.conf`'s `CMDLINE`, read by the installer's rules. "Removes what a cut write
+  left" is the sets no slot names and the `.new` files; the recovery's directories are
+  left to the recovery's update. A slot holding a NUL byte, which this shell code can't
+  carry, makes it refuse before it writes anything.
 
   `reboot-test` writes `request=trial`. Accept makes the trial set the default set and
   the default set the previous one; rollback swaps the default and the previous set;
