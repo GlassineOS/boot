@@ -456,7 +456,7 @@ On a PC the splash store of 011 is `\glassine\splash\`:
 - **Time.** Reading and checking one image takes at most one second; past that it is
   skipped.
 
-### The image format (`format=1`)
+### The image format (`format=2`)
 
 The format is the same on every machine. One file holds one picture, or the instruction
 to leave the screen. All numbers are little endian. The header is 64 bytes:
@@ -464,15 +464,16 @@ to leave the screen. All numbers are little endian. The header is 64 bytes:
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 8 | the bytes `GLSPLASH` |
-| 8 | 2 | format version: 1 |
+| 8 | 2 | format version: 2 (1 is [format 1](#format-1), which readers still read) |
 | 10 | 2 | kind: 0 a picture, 1 leave the screen as it is |
 | 12 | 4 | width of the picture, in pixels |
 | 16 | 4 | height of the picture |
 | 20 | 4 | width of the display mode the picture was made for |
 | 24 | 4 | height of that mode |
-| 28 | 4 | pixel layout: 1 = four bytes a pixel: blue, green, red, one unused |
+| 28 | 4 | pixel layout (below): 1 BGRx, 2 RGB888, 3 grey8 |
 | 32 | 4 | background colour, `0x00RRGGBB` |
-| 36 | 4 | encoding of the payload: 0 raw, 1 run-length |
+| 36 | 2 | compression of the payload (below): 0 none, 1 run-length, 2 LZ4 |
+| 38 | 2 | filter (below): 0 none, 1 up |
 | 40 | 8 | length of the payload in bytes |
 | 48 | 4 | CRC-32 of the payload |
 | 52 | 4 | CRC-32 of the header's bytes 0 to 51 |
@@ -480,21 +481,47 @@ to leave the screen. All numbers are little endian. The header is 64 bytes:
 
 - **CRC-32** is the one of zlib and Ethernet: polynomial `0xEDB88320` (reflected),
   start value and final XOR `0xFFFFFFFF`.
-- **The payload** follows the header and runs to the end of the file. Pixels go row by
-  row from the top, left to right, as the panel scans them (011 FR-009). A pixel's
-  unused byte is ignored.
-  - Raw: width × height pixels.
-  - Run-length: a sequence of runs. A control byte `c` below 128 is followed by `c`+1
-    pixels as they are; a control byte of 128 or more is followed by one pixel that
-    repeats `c`−126 times (2 to 129). The runs give exactly width × height pixels.
-- **Limits.** Width and height are 1 to 16384, the decoded picture (width × height × 4)
-  is at most 32 MiB, and the file at most 32 MiB plus the header.
+- **Pixel layouts.** The stored pixels go row by row from the top, left to right, as the
+  panel scans them (011 FR-009), with no padding between rows.
+  - 1, BGRx: four bytes a pixel: blue, green, red, one unused byte (ignored).
+  - 2, RGB888: three bytes a pixel: red, green, blue.
+  - 3, grey8: one byte a pixel, 0 black to 255 white; drawn as red = green = blue =
+    that byte. A writer that converts colour to grey takes the integer luma
+    `(77 × red + 150 × green + 29 × blue + 128) / 256`.
+- **The payload** follows the header and runs to the end of the file. Undone in this
+  order, it gives the stored pixels: first the compression, then the filter.
+  - Compression 0, none: the stored bytes as they are, width × height × the layout's
+    bytes a pixel.
+  - Compression 1, run-length: a sequence of runs over pixels of the layout (1, 3 or 4
+    bytes). A control byte `c` below 128 is followed by `c`+1 pixels as they are; a
+    control byte of 128 or more is followed by one pixel that repeats `c`−126 times (2
+    to 129). The runs give exactly width × height pixels.
+  - Compression 2, LZ4: one LZ4 block ([the block format](https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md)
+    of LZ4 1.x), no frame and no size before it, whose output is exactly width ×
+    height × the layout's bytes a pixel. Any LZ4 encoder's block is valid, a fast one
+    or a high-compression one.
+  - Filter 0, none: the decompressed bytes are the stored pixels.
+  - Filter 1, up: each decompressed byte is the stored byte less the byte one row above
+    it (row length = width × bytes a pixel), modulo 256; the first row is stored as
+    it is. A reader adds the byte above, row by row from the top.
+- **Limits.** Width and height are 1 to 16384, a picture has at most 8,388,608 pixels
+  (width × height, in every layout: 32 MiB at four bytes a pixel), and the file is at
+  most 32 MiB plus the header. A reader computes the decoded size from the header and
+  checks these limits before it reserves memory for the picture.
 - **Leave the screen** (kind 1) is valid only as the override. The header's other
   picture fields are zero and no payload follows. A splash of kind 1 is skipped.
 - **A reader checks, in this order:** the length (64 bytes at least), the first 8 bytes,
-  the header's CRC, the version, the kind, that the payload length is the file's length
-  less 64, the limits, the pixel layout, the payload's CRC, and that the payload decodes
-  to exactly the picture. An image that fails any of them is skipped (011 FR-005).
+  the header's CRC, the version (1 or 2), the kind, that the payload length is the
+  file's length less 64, the limits, the pixel layout, that it knows the compression
+  and the filter, the payload's CRC, and that the payload decodes to exactly the
+  picture: a stream that ends early, runs past the picture or holds anything left over
+  fails. An image that fails any of them is skipped (011 FR-005). A reader supports
+  every layout with every compression and filter.
+- **Writers** choose per picture: the layout for the display (grey8 for a grey panel,
+  RGB888 or BGRx for a colour one), then the smallest payload among the compressions
+  with and without the filter, and none when nothing is smaller. A writer that must be
+  fast takes LZ4 without the filter: the hibernate preview (011 FR-022) does. Every
+  writer writes format 2.
 - **Drawing.** A picture made for the mode the loader is in is drawn pixel for pixel,
   centred on its background colour when it is smaller than the mode. A splash made for
   another mode is scaled to fit with its aspect ratio kept and centred on its background
@@ -502,6 +529,43 @@ to leave the screen. All numbers are little endian. The header is 64 bytes:
 - **Several displays.** A file holds one picture, so an override is made for one
   display. When the loader owns more than one, it draws the splash on each and shows no
   override; the override is still used up (011 FR-010, FR-013).
+
+#### Format 1
+
+Format 1 is format 2 with these differences, and readers read it as before:
+
+- the version at offset 8 is 1;
+- the pixel layout is 1 (BGRx) only;
+- offsets 36 to 39 are one field of four bytes, the encoding: 0 raw (compression none),
+  1 run-length; there is no filter. Read as format 2's two fields, that is the same
+  compression and the filter 0;
+- an image of another layout or encoding is skipped.
+
+#### Sizes and speed
+
+Measured on 21 test pictures (e-ink desktop and settings screenshots of a 1404×1872
+panel, a 1920×1080 colour desktop, two CC0 photographs, gradients and noise), on a
+desktop x86-64 core with the loader's build settings (size-optimised). An estimate for an
+in-order Arm Cortex-A53-class core at about 1.6 GHz is ten times these times; it is not
+measured. Size is the file's, as a share of the raw picture in that layout:
+
+| Picture, layout | none | run-length | LZ4 | up + LZ4 |
+|---|---|---|---|---|
+| e-ink screenshots, grey8 (median / largest of 8) | 1 | 0.030 / 0.210 | 0.019 / 0.081 | 0.013 / 0.074 |
+| colour desktop 1920×1080, RGB888 | 1 | 0.155 | 0.073 | 0.096 |
+| colour desktop 1920×1080, BGRx | 1 | 0.148 | 0.060 | 0.078 |
+| photographs 1920×1080, RGB888 | 1 | 0.96 | 0.85 | 0.75 |
+| photographs on the e-ink panel, grey8 | 1 | 1.05 | 0.91 | 0.82 |
+| a gradient in both directions 1920×1080, RGB888 | 1 | 0.275 | 0.239 | 0.010 |
+| noise | 1 | 1.01 | 1.004 | 1.004 |
+
+- Writing an e-ink screenshot from the screen's 32-bit pixels (to grey8, LZ4, the CRC)
+  takes about 4 ms (40 ms estimated on an A53-class core), and the result is 13 to
+  212 KB instead of 2.6 MB. Without compression, the CRC of the whole picture alone takes
+  longer; LZ4 is the fast choice.
+- Reading and checking one image (CRC, decoding, the filter, conversion to the
+  display's 32-bit pixels) takes at most 22 ms on that core for every picture above,
+  far below the reader's one second.
 
 ## The raw form
 
@@ -611,11 +675,19 @@ that fits:
 | free for later regions | 13 MiB | 3 MiB less 4 KiB |
 | (backup table) | 16 MiB less 4 KiB | 4 KiB |
 
-What fits a 3 MiB image region: a run-length image of at most 3 MiB less 64 bytes, or a
-raw picture of at most 786,416 pixels (four bytes a pixel), such as 1024×600. A raw
-picture of a 1404×1872 panel is 10,513,216 bytes with its header and does not fit; it
-fits only run-length encoded to 3 MiB or less, which a mostly flat picture (a logo on a
-background) does and a dithered photograph may not.
+What fits a 3 MiB image region (3,145,664 bytes of payload):
+
+- **grey8, always:** up to 3,145,664 pixels uncompressed, so every full-panel picture of
+  the Boox Note Air's 1404×1872 panel (2,628,352 bytes with its header) fits whatever it
+  shows, noise included. Its screenshots take 13 to 212 KB with LZ4.
+- **RGB888 or BGRx:** uncompressed, up to 1,048,554 or 786,416 pixels (such as 1280×800
+  or 1024×600). A full 1920×1080 or 1404×1872 colour picture fits only compressed to 3 MiB
+  or less: desktops and flat pictures do (0.06 to 0.10 of raw with LZ4), photographs don't
+  (0.75 and more with LZ4).
+
+So the 16 MiB partition and its 3 MiB image regions hold every picture of a grey panel.
+A colour device with the raw form and a 1920×1080 panel would need regions of 8 MiB
+(an uncompressed BGRx picture and its header) to hold a photograph.
 
 ## What a power cut leaves
 

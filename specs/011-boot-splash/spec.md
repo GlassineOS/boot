@@ -76,10 +76,17 @@ and an override that says to leave the screen,
   override, through one command. The command converts a picture into the store's
   format, for the display mode the earliest stage uses, and writes the result. The
   earliest stage never reads a file in any other format.
-- **FR-004** The store's format is one lossless raster format with a fixed, small
-  decoder, plus a header: format version, width, height, the display mode it was made
-  for, a background colour, a checksum. An image is at most as large as the display's
-  native mode, and at most 32 MiB.
+- **FR-004** The store's format is one lossless raster format with fixed, small
+  decoders, plus a header: format version, width, height, the display mode it was made
+  for, a pixel layout, a compression, a filter, a background colour, a checksum. The
+  layouts are grey (one byte a pixel), RGB (three) and BGRx (four); the compressions are
+  none, run-length and LZ4; the filter is none or each row less the row above. An image
+  is at most as large as the display's native mode, at most 8,388,608 pixels, and at
+  most 32 MiB.
+- **FR-004a** The earliest stage reads every layout with every compression and filter,
+  and the store's earlier format 1. Writers choose per picture: the layout for the
+  display (grey for a grey panel), and the smallest payload, or, where the write must be
+  fast (the hibernate step's picture of the screen), LZ4 without the filter.
 - **FR-005** The earliest stage draws an image only after its header, its length and its
   checksum check. An image that fails is skipped (Scenario 3). Reading and checking an
   image has a time limit; past it, the image is skipped.
@@ -160,14 +167,14 @@ and an override that says to leave the screen,
 - **The splash store**: the machine's place for these images, with its format version.
 - **An image**: header and picture (FR-004). One image holds one picture.
 - **The override**: an image for each display it was made for, or the instruction to
-  leave the screen. Format 1 of the store holds one image, so an override is made for
-  one display.
+  leave the screen. The store's format holds one image a file, so an override is made
+  for one display.
 
 ## Contracts
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
-| The store's image format | owned (new); read by each machine's earliest stage | `format=1` | `docs/boot-partition.md`, "The image format" |
+| The store's image format | owned (new); read by each machine's earliest stage | `format=2` (readers also read `format=1`) | `docs/boot-partition.md`, "The image format" |
 | The store's names on a PC | owned (new) | part of the boot partition's layout | `docs/boot-partition.md`, "The splash store" |
 | The store on a device without FAT | owned (new); the regions `splash-default`, `splash`, `override` of the boot partition's raw form | region table `format=1` | `docs/boot-partition.md`, "The raw form" |
 | The command that sets and removes the splash and the override | owned (new); used by the settings, the session and the hibernate step | — | to be added to `docs/boot.md` |
