@@ -13,6 +13,7 @@
 #   glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation]
 #   glassine-deploy stage BASE [--no-replay] [--without NAME]… [--accept-downgrades] [--now] [--yes] [--discard-hibernation]
 #   glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
+#   glassine-deploy receive FILE --boot [--sha256 HEX] [--discard-hibernation]
 #   glassine-deploy bases [--porcelain]
 #   glassine-deploy bases remove BASE [--yes] [--discard-hibernation]
 #   glassine-deploy remove ID [--yes] [--discard-hibernation]
@@ -34,11 +35,14 @@
 # takes the lower versions, --without NAME leaves NAME's change out (added, or a changed entry's removal),
 # --no-replay stages the bare base;
 # receive puts a btrfs send stream (full or incremental, .zst by its name) under
-# bases/ (or modules/), read-only; bases lists them with their users. bases
+# bases/ (or modules/), read-only; receive --boot puts a device tree or an
+# initramfs with its manifest into boot/ (identity checked, an existing name a
+# no-op); bases lists them with their users. bases
 # remove deletes a base no deployment needs to boot now: it refuses the base of
 # the booted, current, candidate or staged deployment, and asks first when other
 # deployments (the previous one, usually) would lose theirs: those stay on
-# userdata but can no longer be selected.
+# userdata but can no longer be selected. Then it removes the boot/ files no
+# kernel record names (docs/kernel-artifacts.md).
 # remove ID deletes a deployment's layers from userdata: it refuses the current,
 # candidate, staged and booted deployment and one that is mounted, and asks
 # first for the previous one (its rollback is lost). The clean-up does the same
@@ -961,6 +965,7 @@ subvol_received() {
 }
 
 cmd_receive() {
+    [ "$BOOT" = 1 ] && { cmd_receive_boot; return; }
     command -v btrfs >/dev/null || die "receive needs btrfs (btrfs-progs)"
     sub=bases; [ "$MODULES" = 1 ] && sub=modules
     if [ "$ARG" != - ]; then
@@ -1000,6 +1005,156 @@ cmd_receive() {
     sync
     RECV_TMP=''
     echo "glassine-deploy: received $sub/$name"
+}
+
+# --- boot/ files (docs/kernel-artifacts.md, "On the system partition") ---------
+# boot_kind NAME.EXT: initramfs or dtb by the file's name, empty for neither
+boot_kind() {
+    case "${1##*/}" in *.cpio.gz) echo initramfs ;; *.dtb) echo dtb ;; esac
+}
+
+# boot_sha FILE: its sha256, read from the disk (O_DIRECT where the file system
+# allows it: a read-back after a cached write must not see the page cache only)
+boot_sha() {
+    if dd if="$1" of=/dev/null bs=4096 count=1 iflag=direct 2>/dev/null; then
+        _bz=$(wc -c < "$1")
+        dd if="$1" bs=4096 iflag=direct 2>/dev/null | head -c "$_bz" | sha256sum | cut -d ' ' -f 1
+    else
+        sha256sum "$1" | cut -d ' ' -f 1
+    fi
+}
+
+# boot_put SRC DEST SHA: SRC to DEST through DEST.new: written with fsync, read
+# back against SHA, renamed, synced. A failure leaves DEST as it was and no .new.
+boot_put() {
+    rm -f "$2.new"
+    if dd if="$1" of="$2.new" bs=1M conv=fsync 2>/dev/null; then
+        if [ "${GLASSINE_DEPLOY_TEST:-}" = 1 ] && [ -n "${GLASSINE_DEPLOY_AFTER_BOOTNEW:-}" ]; then
+            ( set -- "$2.new"; eval "$GLASSINE_DEPLOY_AFTER_BOOTNEW" )
+        fi
+        sync
+        if [ "$(boot_sha "$2.new")" = "$3" ] && mv -f "$2.new" "$2" && sync; then
+            return 0
+        fi
+        echo "glassine-deploy: ${2##*/}: the read-back does not match what was written" >&2
+    else
+        echo "glassine-deploy: ${2##*/}: the write failed" >&2
+    fi
+    rm -f "$2.new"
+    return 1
+}
+
+# boot_check FILE KIND MANIFEST: FILE is the boot/ file its name says it is
+# (identity = content): prints its sha256, or dies naming the mismatch
+boot_check() {
+    _bn=${1##*/}
+    case $2 in initramfs) _bn=${_bn%.cpio.gz} ;; dtb) _bn=${_bn%.dtb} ;; esac
+    _bl=${_bn%@*} _bi=${_bn##*@}
+    case "$_bn" in ?*@?*) case "$_bn" in *@*@*) die "$1: not a boot/ name (one @)" ;; esac ;;
+    *) die "$1: not a boot/ name (DEVICE@ID or COMMIT12@ID)" ;; esac
+    case "$_bi" in *[!0-9a-f]*) die "$1: the id '$_bi' is not 16 hex digits" ;; esac
+    [ ${#_bi} = 16 ] || die "$1: the id '$_bi' is not 16 hex digits"
+    if [ $2 = initramfs ]; then
+        case "$_bl" in *[!0-9a-f]*) die "$1: the commit '$_bl' is not 12 hex digits" ;; esac
+        [ ${#_bl} = 12 ] || die "$1: the commit '$_bl' is not 12 hex digits"
+    else
+        case "$_bl" in .*|*[!A-Za-z0-9._+-]*) die "$1: bad device name '$_bl'" ;; esac
+    fi
+    [ -r "$3" ] || die "$1: no manifest ${3##*/} beside it"
+    _bf=$(gs_kv "$3" format)
+    case "$_bf" in 1) ;; ''|*[!0-9]*) die "${3##*/}: no format=1" ;; *) fail 3 "${3##*/} has format $_bf, newer than this tool (1)" ;; esac
+    _bs=$(sha256sum "$1" | cut -d ' ' -f 1)
+    [ -z "$SHA" ] || [ "$_bs" = "$SHA" ] || die "$1: sha256 $_bs, expected $SHA"
+    [ "$(gs_kv "$3" sha256)" = "$_bs" ] || die "$1: sha256 $_bs, its manifest says $(gs_kv "$3" sha256); nothing changed"
+    [ "$_bi" = "$(printf '%.16s' "$_bs")" ] || die "$1: the name's id $_bi is not the content's $(printf '%.16s' "$_bs"); nothing changed"
+    if [ $2 = initramfs ]; then
+        _bc=$(gs_kv "$3" commit)
+        case "$_bc" in "$_bl"*) ;; *) die "$1: the name's commit $_bl is not the manifest's commit '$_bc'; nothing changed" ;; esac
+    else
+        [ "$(gs_kv "$3" device)" = "$_bl" ] || die "$1: the name's device $_bl is not the manifest's device '$(gs_kv "$3" device)'; nothing changed"
+    fi
+    echo "$_bs"
+}
+
+# boot_sweep: the .new files a cut receive left in boot/ (never complete,
+# never read). Needs state_open_rw.
+boot_sweep() {
+    for _bw in "$SYSTEM_MNT"/boot/dtb/*.new "$SYSTEM_MNT"/boot/initramfs/*.new; do
+        [ -e "$_bw" ] || continue
+        rm -f "$_bw" && echo "glassine-deploy: removed ${_bw#"$SYSTEM_MNT"/}, a cut receive's"
+    done
+}
+
+# receive --boot FILE: a device tree (.dtb) or initramfs (.cpio.gz) with its
+# manifest beside it (NAME.manifest) into boot/dtb/ or boot/initramfs/. The file
+# first, its manifest last, each .new, fsynced, read back, renamed: a cut receive
+# leaves the old state or the file without its manifest, which a receive again
+# completes. A name that is there with the same bytes is a no-op; with other
+# bytes it is refused (a boot/ file never changes).
+cmd_receive_boot() {
+    [ "$ARG" != - ] || fail 2 "--boot takes a file, not -"
+    [ "$MODULES" = 0 ] || fail 2 "--boot and --modules: one or the other"
+    kind=$(boot_kind "$ARG")
+    [ -n "$kind" ] || fail 2 "$ARG: --boot takes a <device>@<id>.dtb or a <commit12>@<id>.cpio.gz"
+    [ -r "$ARG" ] || die "cannot read $ARG"
+    case $kind in initramfs) name=${ARG##*/}; name=${name%.cpio.gz}; src=${ARG%.cpio.gz}.manifest ;;
+    dtb) name=${ARG##*/}; name=${name%.dtb}; src=${ARG%.dtb}.manifest ;; esac
+    sha=$(boot_check "$ARG" $kind "$src") || exit $?
+    state_open_rw
+    d=$SYSTEM_MNT/boot/$kind
+    mkdir -p "$d" || die "cannot create $d"
+    boot_sweep
+    f=$d/${ARG##*/} m=$d/$name.manifest
+    if [ -e "$f" ]; then
+        [ "$(boot_sha "$f")" = "$sha" ] || die "boot/$kind/${f##*/} is there with other bytes; nothing changed (a boot/ file never changes)"
+    fi
+    if [ -e "$m" ]; then
+        cmp -s "$m" "$src" || die "boot/$kind/$name.manifest is there and differs from ${src##*/}; nothing changed"
+        if [ -e "$f" ]; then
+            echo "glassine-deploy: boot/$kind/$name is there already"
+            return 0
+        fi
+    fi
+    [ -e "$f" ] || boot_put "$ARG" "$f" "$sha" || die "receiving boot/$kind/${f##*/} failed; nothing kept"
+    [ -e "$m" ] || boot_put "$src" "$m" "$(sha256sum "$src" | cut -d ' ' -f 1)" ||
+        die "receiving boot/$kind/$name.manifest failed (boot/$kind/${f##*/} stays; receive it again)"
+    echo "glassine-deploy: received boot/$kind/$name"
+}
+
+# boot_prune: boot/ files no kernel record names (docs/kernel-artifacts.md):
+# not named by any image record in state/bootimg/ (dtb=, initramfs=) nor by
+# state/kernel's deferred_dtb or deferred_initramfs, and received before the
+# last install (the file's time is older than the newest record's staged=), so
+# a file received for an install that hasn't run stays. A record that can't be
+# read removes nothing. Needs state_open_rw. Prints what it removed.
+boot_prune() {
+    [ -d "$SYSTEM_MNT/boot" ] || return 0
+    _bk=" $(gs_kv "$S/kernel" deferred_dtb) $(gs_kv "$S/kernel" deferred_initramfs) " _blast=''
+    for _br in "$S"/bootimg/*.manifest; do
+        [ -e "$_br" ] || continue
+        [ -r "$_br" ] || { echo "glassine-deploy: cannot read ${_br#"$SYSTEM_MNT"/}; no boot/ file removed" >&2; return 0; }
+        _bst=$(gs_kv "$_br" staged)
+        case "$_bst" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
+        *) echo "glassine-deploy: ${_br#"$SYSTEM_MNT"/} has no staged time; no boot/ file removed" >&2; return 0 ;; esac
+        # YYYYMMDDHHMMSS as a number: the order of the times
+        _bsn=$(printf '%s' "$_bst" | tr -d 'TZ:-')
+        [ "$_bsn" -gt "${_blast:-0}" ] && _blast=$_bsn
+        _bk="$_bk$(gs_kv "$_br" dtb) $(gs_kv "$_br" initramfs) "
+    done
+    [ -n "$_blast" ] || return 0
+    for _bf in "$SYSTEM_MNT"/boot/dtb/*.dtb "$SYSTEM_MNT"/boot/initramfs/*.cpio.gz; do
+        [ -e "$_bf" ] || continue
+        _bn=${_bf##*/}; _bn=${_bn%.dtb}; _bn=${_bn%.cpio.gz}
+        case "$_bk" in *" $_bn "*) continue ;; esac
+        # a record from before the id names the initramfs by its bare commit
+        case "$_bf" in */initramfs/*) case "$_bk" in *" ${_bn%@*} "*) continue ;; esac ;; esac
+        [ "$(date -u -r "$_bf" +%Y%m%d%H%M%S)" -lt "$_blast" ] || continue
+        # the manifest first: a cut removal leaves a file no record names, which
+        # the next prune removes (never a manifest without its file)
+        rm -f "${_bf%/*}/$_bn.manifest" && rm -f "$_bf" || { echo "glassine-deploy: cannot remove $_bf" >&2; continue; }
+        echo "glassine-deploy: removed ${_bf#"$SYSTEM_MNT"/}, which no kernel record names"
+    done
+    sync
 }
 
 cmd_bases() {
@@ -1058,6 +1213,7 @@ cmd_bases_remove() {
     # the space comes back once the cleaner has dropped the subvolume
     btrfs -q subvolume sync "$SYSTEM_MNT" >/dev/null 2>&1 || :
     echo "glassine-deploy: base $ARG removed"
+    boot_prune
 }
 
 pkg_db() { awk -F: '$1 == "P" { p = $2 } $1 == "V" && p != "" { print p " " $2; p = "" }' "$1" 2>/dev/null | sort; }
@@ -1190,13 +1346,14 @@ cmd_init() {
 
 [ $# -ge 1 ] || usage
 CMD=$1; shift
-PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 SHA='' ARG='' NARG=0 FIRST='' KGATE=''
+PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 BOOT=0 SHA='' ARG='' NARG=0 FIRST='' KGATE=''
 NOREPLAY=0 ACCEPT_DOWN=0 WITHOUT='' MARKER=0
 while [ $# -gt 0 ]; do
     a=$1; shift
     case "$a" in
     --porcelain) PORC=1 ;;
     --modules) MODULES=1 ;;
+    --boot) BOOT=1 ;;
     --sha256) [ $# -ge 1 ] || usage; SHA=$1; shift ;;
     --no-replay) NOREPLAY=1 ;;
     --accept-downgrades) ACCEPT_DOWN=1 ;;
