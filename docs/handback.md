@@ -134,9 +134,8 @@ of its QueryMode, SetMode and Blt. With neither, the loader runs headless, as ab
 ### The start menu
 
 With the display above, the loader can show the list of 010 FR-039 and FR-040 as a menu
-the person taps on the panel (or moves through with the machine's keys), and answer the
-pick. There is no key to press at power-on on such a machine, so it opens only when
-asked:
+the person taps on the panel, and answer the pick. There is no key to press at power-on
+on such a machine, so it opens only when asked, and only with a tap source:
 
 - **When it opens:** `display=epd-fw` and an extended graphics output that passes the
   checks above; `display_failed` not set; not `drew=1` with `unmarked` above 0; no
@@ -191,8 +190,9 @@ asked:
   for 30 seconds before each refresh and at least every 10 seconds, and leaves it armed
   for 30 seconds when it answers; it never disables it. The parent disarms it when
   `StartImage` returns, as for any start.
-- **The probe:** with `probe=1`, the report is written again when the menu closes, so
-  its log holds the menu's lines (the refreshes and their times, the touches, the pick).
+- **The probe:** with `probe=1`, the report is written again after a start that opened
+  the menu or would have but for a tap source, so its log holds the menu's lines (the
+  refreshes and their times, the keys, the touches, the pick, or `MENU_NO_INPUT`).
 
 A parent that ignores `cmdline_add` boots a deployment pick as the GlassineOS pick, and
 one that can't boot a `set:` answer boots its baseline (see "What the parent does with
