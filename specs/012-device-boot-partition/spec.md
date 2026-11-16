@@ -188,9 +188,11 @@ systems to the boot partition, reading only, and then answers as it would have w
 - **FR-017** The probe is read-only towards the firmware: listing handles and their
   protocols, the memory map and the loaded images, `GetVariable`, the graphics outputs
   read raw ([handback.md](../../docs/handback.md#graphics-outputs-read-raw): `QueryMode`,
-  and `GetFrameBuffer` on an extended one), reading the text console's mode fields. No
-  mode is set, nothing is drawn or refreshed, no other protocol function is called, no
-  hardware is touched.
+  and `GetFrameBuffer` on an extended one), reading the text console's mode fields and
+  the input devices' interfaces and Modes from memory (the absolute and simple pointers'
+  ranges, the text inputs' identities). No mode is set, nothing is drawn or refreshed, no
+  other protocol function is called (no input device's `Reset`, `GetState` or
+  `ReadKeyStroke`), no hardware is touched.
 - **FR-018** A probe that fails (the write, the report too large) is logged and changes
   nothing else: the answer is the one the loader would have given without it.
 - **FR-019** The loader never changes `probe`; the running system clears it once it has
