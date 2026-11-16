@@ -42,7 +42,8 @@ give bytes, slots or flags, they describe `bootpart-test`, the kind this feature
 | | `bootpart-test` | `blocklist` | `uefi` |
 |---|---|---|---|
 | Machines | a board with a spare boot partition | a board whose bootloader reads a kernel file's blocks (the Note Air; [005](../005-blocklist-handoff/spec.md)) | a PC that starts from UEFI ([010](../010-uefi-deployments/spec.md)) |
-| Image of a record | one packed boot image: kernel, device tree, initramfs, command line | one packed boot image | a kernel set: kernel, initramfs, command line (010 "Terms") |
+| Image of a record | one packed boot image: kernel, device tree, initramfs, command line | one packed boot image | a kernel set: kernel, initramfs, command line (010 "Terms"); the initramfs followed by the kernel's boot modules (010 FR-049) |
+| Kernel image it starts | `Image.gz` | `Image.gz` | an EFI stub (`vmlinuz`) |
 | Device tree | yes, the board's (`DEVICE`, `--dtb`) | yes | none |
 | Default slot | a boot partition the bootloader starts by default | a boot partition the bootloader starts by default | the default set on the boot partition, named by the loader record (010 FR-006) |
 | A candidate is started once by | a test slot (a second boot partition) and a reboot reason | an image file on userdata whose blocks a record in the default slot names, and a reboot reason (blocklist.md) | a trial set next to the default set and a one-shot request in the loader record (010 FR-009, FR-025) |
@@ -299,6 +300,14 @@ row gives as none doesn't apply on that kind.
   - `failed`.
 
   Readers ignore unknown keys; a key changing meaning bumps `format`.
+- **FR-018** A kernel in `modules/<release>/` is either built by GlassineOS or a
+  distribution's kernel package, installed unchanged. Both have the same tree, record,
+  trial and rollback. A distribution's kernel keeps the package's own release, its
+  record names the package and its version as its source and has no build inputs
+  (builder, layout, configuration), and its record names its image file. Each hand-off
+  kind takes only the kernel image it can start (the table above) and refuses the
+  others, naming the image it found. A kernel record with no image name means
+  `Image.gz`.
 
 ## Decisions this spec adds to the contract (for review)
 
@@ -307,6 +316,7 @@ row gives as none doesn't apply on that kind.
 | board key `DEVICE` | the device name used in `<device>@<id>`, on hand-off kinds with a device tree | boot.md, `conf/board.conf.example` |
 | hand-off kind `uefi` | the value of `HANDOFF` on a PC that starts from UEFI (FR-007; 010) | kernel-artifacts.md, the hand-off table; boot.md, the board keys |
 | `install` flags | `--dtb <device>@<id>`, `--initramfs <commit12>@<id>`, with the defaults of FR-005 | kernel-artifacts.md, "Order on the device" |
+| a distribution's kernel | release the package's own, `source=<distribution>:<package>=<version>`, `image=` the image's file name (absent = `Image.gz`), no `builder`/`layout`/`config_sha256` (FR-018) | kernel-artifacts.md, "A distribution's kernel", "Records" |
 | `status` format 1 | `format=1`, `state=`, the keys, `default_slot=` (FR-017) | kernel-artifacts.md, "What the user sees" |
 | the default-slot write | `writing` set first for every hand-off, blocklist.md's procedure where the slot is a partition (FR-009), checked again by promote (FR-010) | kernel-artifacts.md, beside `writing` (the check is in this pull request) |
 | failure reasons | `no-boot`, `no-verdict`, `default slot write`, and the health check's own | kernel-artifacts.md, "Records" |

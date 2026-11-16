@@ -119,6 +119,34 @@ run dep-img "panic=5 rdinit=/init glassine.return=3 glassine.test glassine.img=0
 ok "deployments layout, glassine.img= with no root partition found: no kernel trial, no plain-layout peek" "grep -q 'image 0123456789abcdef: no kernel trial' /kmsg.dep-img && ! grep -q 'staged by glassine-bootimg\\|not staged' /kmsg.dep-img"
 unset GLASSINE_INIT_LIB
 
+# --- boot modules (an archive appended for this kernel, for another, none) ---
+cat > $S/uname <<'EOF2'
+#!/bin/sh
+[ "$1" = -r ] && { echo 9.9.9-test; exit 0; }
+exec /bin/uname "$@"
+EOF2
+cat > $S/insmod <<'EOF2'
+#!/bin/sh
+echo "insmod $*" >> /calls
+case $1 in */bad.ko) echo "insmod: can't insert '$1': invalid module format" >&2; exit 1 ;;
+*/loaded.ko) echo "insmod: can't insert '$1': File exists" >&2; exit 1 ;; esac
+EOF2
+chmod +x $S/uname $S/insmod
+mkdir -p /ml/modules/9.9.9-test
+printf 'crc\nbad\nbtrfs\nloaded\nnvme\n' > /ml/modules/9.9.9-test/load
+export GLASSINE_INIT_LIB=/ml
+run mod "panic=5 rdinit=/init glassine.return=3" /other.conf
+ok "boot modules: loaded in the archive's order, before the root partition is looked for" "[ \"\$(sed -n 's|^insmod /ml/modules/9.9.9-test/||p' /calls.mod | tr '\\n' ' ')\" = 'crc.ko bad.ko btrfs.ko loaded.ko nvme.ko ' ] && [ \"\$(grep -n 'boot modules:' /kmsg.mod | cut -d: -f1)\" -lt \"\$(grep -n 'root partition rootfs not found' /kmsg.mod | cut -d: -f1)\" ]"
+ok "boot modules: a failure logged by name, an already loaded one counted, the boot goes on" "grep -q 'boot modules: 4 of 5 loaded, failed: bad' /kmsg.mod && grep -q 'root partition rootfs not found' /kmsg.mod"
+mv /ml/modules/9.9.9-test /ml/modules/1.0.0-other
+run mod-other "panic=5 rdinit=/init glassine.return=3" /other.conf
+ok "boot modules for another release: none loaded, said" "! grep -q '^insmod' /calls.mod-other && grep -q 'boot modules: the archive is for 1.0.0-other and this kernel is 9.9.9-test: none loaded' /kmsg.mod-other"
+rm -rf /ml/modules
+run mod-none "panic=5 rdinit=/init glassine.return=3" /other.conf
+ok "no boot modules (a kernel with its drivers built in): no step, nothing logged" "! grep -q '^insmod' /calls.mod-none && ! grep -q 'boot modules' /kmsg.mod-none"
+unset GLASSINE_INIT_LIB
+rm -f $S/uname $S/insmod
+
 # --- no board config ---
 run noboard "panic=5 rdinit=/init glassine.return=3 glassine.devmode=usb" /does-not-exist
 ok "no board config: said, no listeners, no root to boot: powers off" "grep -q 'no board config' /kmsg.noboard && ! listens noboard && grep -q 'none configured' /kmsg.noboard && grep -q '^poweroff -f' /calls.noboard"

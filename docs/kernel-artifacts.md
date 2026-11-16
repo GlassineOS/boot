@@ -90,6 +90,30 @@ it right whatever the clone has (tags or not):
 A modules subvolume, once received, is never replaced: `glassine-deploy receive --modules`
 refuses a name that exists.
 
+### A distribution's kernel
+
+A kernel may also be a distribution's package, installed unchanged (a PC's: Alpine's
+`linux-lts`). It has the same tree, record, lifecycle and checks as a kernel built here,
+except:
+
+- **Its release is the package's own** `uname -r` (`6.18.63-0-lts`), not the form above.
+  The distribution's release string carries its package revision, so two builds of the
+  package don't share one. There is no `<cfg6>`: nothing is configured or compiled, and
+  the tree is the package's files as it installed them (modules, depmod's files), with
+  only the image renamed and `build`/`source` links removed. So everything in
+  `modules/<release>/` still follows from the release (the package at that version).
+- **`source=<distribution>:<package>=<version>`** (`source=alpine:linux-lts=6.18.63-r0`)
+  in `kernel.manifest`, in place of `URL@COMMIT`. `builder`, `layout` and
+  `config_sha256` are empty.
+- **Its image is named by `image`** in the record: `vmlinuz` for an x86 EFI stub, which
+  UEFI firmware starts as an application. A hand-off kind takes only the image it can
+  start: the kinds with a packed boot image take `Image.gz` and refuse another, the
+  `uefi` kind takes an EFI stub ([004](../specs/004-kernel-records/spec.md), FR-018).
+- **Its firmware is empty** until a firmware choice exists for PCs (`firmware=`, an empty
+  `firmware/`).
+- **Its storage and file-system drivers are modules**, so its kernel sets carry its
+  boot modules ([boot.md](boot.md#boot-modules)).
+
 ## On the system partition
 
 ```
@@ -97,7 +121,8 @@ system partition (btrfs, top level)
 ├── modules/<release>/            read-only subvolume, received
 │   ├── kernel/ …, modules.*      modules_install output, stripped; depmod run at build (-b)
 │   ├── firmware/                 redistributable firmware this kernel needs (below)
-│   ├── Image.gz                  gzip -n, so its checksum is stable
+│   ├── Image.gz                  gzip -n, so its checksum is stable (or the
+│   │                             image the record's `image` names: `vmlinuz`)
 │   └── kernel.manifest
 └── boot/                         plain directory, written under state/.lock
     ├── dtb/<device>@<id>.dtb             + <device>@<id>.manifest
@@ -410,18 +435,19 @@ Every record is `key=value`, one per line, the format of the state files
 | Key | Meaning |
 |---|---|
 | `release` | the release |
-| `source` | `URL@COMMIT` |
+| `source` | `URL@COMMIT`, or `<distribution>:<package>=<version>` for a distribution's kernel |
+| `image` | the kernel image's file name in `modules/<release>/`: `Image.gz` (also when absent) or `vmlinuz` |
 | `builder` | the builder image, `<image>@sha256:<64 hex>`, as `<cfg6>` uses it |
 | `layout` | the build's tree layout version, as `<cfg6>` uses it |
 | `config_sha256` | of the final `.config` |
-| `image_sha256` | of `Image.gz` |
+| `image_sha256` | of the image (`Image.gz`, or the one `image` names) |
 | `modules_sha256` | of the modules list (below) |
 | `firmware` | space-separated `name@sha256-16` of the files under `firmware/`, `name` relative to `firmware/`, sorted by bytes |
 | `provides` | features built in, from this repository's table (below) |
 | `features` | the version of that table used |
 
 The **modules list** is one line `<path> <sha256>` per regular file under
-`modules/<release>/` except `Image.gz`, `kernel.manifest` and everything under
+`modules/<release>/` except the image, `kernel.manifest` and everything under
 `firmware/` (those have their own keys); `<path>` is relative to `modules/<release>/`,
 without a leading `./`; lines sorted by bytes (`LC_ALL=C sort`), each ended by a newline.
 The tree holds no symlinks or other special files (the build removes `modules_install`'s
@@ -502,6 +528,13 @@ with header fields from `board.conf`.
 `board.conf`, verbatim; nothing is taken from a reference image. In the deployments layout
 the packer takes the kernel from `modules/<release>/Image.gz` and the device tree and
 initramfs from `boot/`, not from the base.
+
+Where a kernel builds boot-time drivers as modules, its image (a kernel set, 010) holds
+the initramfs from `boot/` followed by that kernel's boot-modules archive, made from
+`modules/<release>/` with `build-boot-modules.sh` ([boot.md](boot.md#boot-modules)). The
+archive is a function of the kernel's tree and this repository's list, so it has no
+record of its own: the image record's checksum covers it. The initramfs file in `boot/`
+is the same for every kernel.
 
 ## Order on the device
 

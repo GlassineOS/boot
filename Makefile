@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # make && make DESTDIR=… install     the tools (glassine-reboot, glassine-slot: a C compiler + linux-headers)
-# make initramfs                    the boot initramfs, inside an arm64 Alpine
+# make initramfs                    the boot initramfs, inside an Alpine of the target architecture
 #                                   (busybox-static busybox-extras e2fsprogs cpio gzip)
 PREFIX ?= /usr
 SYSCONFDIR ?= /etc
@@ -59,6 +59,7 @@ install: glassine-reboot glassine-slot
 check:
 	sh test/bootimg/test.sh
 	sh test/initramfs/test.sh
+	sh test/modules/test.sh
 	sh test/deploy/test.sh
 	sh test/root/test.sh
 	sh test/firststart/test.sh
