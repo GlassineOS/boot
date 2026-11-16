@@ -466,7 +466,11 @@ the start as one that never became healthy. The write is `glassine-loader-mark h
 (`GLASSINE_LOADER_MARK` in tests), in its own process, before the deployment accept; a
 failing write is logged and does not stop the accept. On a hand-off without a loader
 record (`bootpart-test`, `blocklist`, empty) nothing changes: the accept doesn't even wait when
-there is no candidate and no slot to mark.
+there is no candidate and no slot to mark. When the healthy start is the loader's
+start of the previous kernel set for its limit (`glassine-loader-mark` leaves
+`/run/glassine/limit-start`), the accept then runs `glassine-bootimg rollback --limit`
+(010 FR-013, [boot-partition.md](boot-partition.md#keys)): that set becomes the default
+kernel and the one that failed is listed as failed (`GLASSINE_BOOTIMG` in tests).
 
 **The recovery's keep marker:** every command that opens userdata read-write creates
 `.twrp-keep` in the prefix's top-level media directory (`media/glassine/.twrp-keep`

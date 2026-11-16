@@ -30,6 +30,11 @@
 #   loader-marked     the healthy mark was written in this start (by this tool)
 #   health-failed     a health check failed in this start (glassine-deploy-accept)
 #   booted            bare:* = a bare boot (the initramfs)
+#   limit-start       this start is the loader's start of the previous set for
+#                     its limit (the record's started = this boot's set,
+#                     started_why=limit), written by `healthy` whether or not the
+#                     mark's write succeeds: glassine-deploy-accept then runs
+#                     glassine-bootimg rollback --limit (010 FR-013)
 # The shutdown step takes one off only when neither of the first two is there,
 # the start was no bare boot, the record's `started` is the set this boot runs
 # (glassine.img= on the command line) and `started_why` is default, limit or
@@ -102,6 +107,10 @@ count=$(gp_get "$GP_REC" unmarked)
 case $count in ''|*[!0-9]*) say "the record's unmarked is '$count', not a count: nothing written"; exit 1 ;; esac
 case $cmd in
 healthy)
+    run=$(tr ' ' '\n' < "$CMDLINE" | sed -n 's/^glassine\.img=//p' | head -n 1)
+    if [ -n "$run" ] && [ "$(gp_get "$GP_REC" started)" = "$run" ] && [ "$(gp_get "$GP_REC" started_why)" = limit ]; then
+        : > "$RUN_DIR/limit-start"
+    fi
     if [ "$count" = 0 ]; then
         : > "$RUN_DIR/loader-marked"
         say "the healthy mark: unmarked is 0 already"
