@@ -12,6 +12,13 @@
 #   2  the same disk on NVMe
 #   3  the initramfs without the archive: no disk driver, the system partition not
 #      found (the failure the archive exists for), the init powers off
+# Then the disk as a PC install makes it: partitions whose GPT names are not the
+# board's (pc-system, pc-data), found only by the identities on the command line
+# (glassine.system=PARTUUID=, glassine.userdata=PARTUUID=; docs/boot.md):
+#   4  d1 boots from them
+#   5  glassine.deploy.once=d2: d2 boots this once, state/deploy not written
+#   6  the first partition named "system" again, the key naming an identity no
+#      partition has: not found, never taken by its name, the init powers off
 # Every boot must have started under UEFI (the kernel's "efi: EFI v" line).
 #
 # Not part of `make check` (minutes per boot when QEMU emulates the CPU). Needs Docker
@@ -71,11 +78,14 @@ printf "current=d1\nprevious=\ncandidate=\ntries=0\nstaged=\n" > $W/sys/state/de
 umount $W/sys
 truncate -s 200M $W/ud.img; mke2fs -q -F -t ext4 -b 4096 -L userdata $W/ud.img
 mkdir -p $W/ud && mount -t ext4 -o loop $W/ud.img $W/ud
-d=$W/ud/media/glassine/deployments/d1; mkdir -p $d/build $d/switch $d/work
-printf "base=b1\nkind=install\ncreated=qtest\n" > $d/meta
+for d in d1 d2; do
+    mkdir -p $W/ud/media/glassine/deployments/$d/build $W/ud/media/glassine/deployments/$d/switch $W/ud/media/glassine/deployments/$d/work
+    printf "base=b1\nkind=install\ncreated=qtest\n" > $W/ud/media/glassine/deployments/$d/meta
+done
 umount $W/ud
 rm -f /out/disk.img; truncate -s 840M /out/disk.img
-sgdisk -o -n 1:2048:+600M -c 1:system -n 2:0:+200M -c 2:userdata /out/disk.img >/dev/null
+sgdisk -o -n 1:2048:+600M -c 1:system -u 1:0F3E26A1-5C7B-4A55-9B8D-2C4F6E8A1B3D \
+    -n 2:0:+200M -c 2:userdata -u 2:6D1A5E2B-8C4F-4B3A-A9E7-1F2D3C4B5A69 /out/disk.img >/dev/null
 n=1
 for img in sys ud; do
     s=$(sgdisk -i $n /out/disk.img | sed -n "s/^First sector: \([0-9]*\).*/\1/p")
@@ -113,6 +123,12 @@ ck() {      # ck N PATTERN WHAT: a line the boot must have printed
     if grep -aq "$2" "$OUT/boot$1.log"; then echo "QTEST ok boot $1: $3" | tee -a "$OUT/boot$1.log"
     else echo "QTEST FAIL boot $1: $3" | tee -a "$OUT/boot$1.log"; fi
 }
+names() {   # names SYSTEM USERDATA: the two partitions' GPT names
+    docker run --rm --platform linux/$NATIVE -v "$OUT":/out alpine:3.22 sh -euc \
+        "apk add -q sgdisk >/dev/null; sgdisk -c 1:$1 -c 2:$2 /out/disk.img >/dev/null"
+}
+SU=0f3e26a1-5c7b-4a55-9b8d-2c4f6e8a1b3d UU=6d1a5e2b-8c4f-4b3a-a9e7-1f2d3c4b5a69
+KEYS="glassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=$UU"
 boot 1 '-device virtio-blk-pci,drive=d' initramfs.cpio.gz qtest.disk=virtio_blk
 ck 1 'QTEST DONE' 'the check script ran to its end'
 boot 2 '-device nvme,serial=qtest,drive=d' initramfs.cpio.gz qtest.disk=nvme
@@ -122,7 +138,17 @@ ck 3 'root partition system not found' 'without the boot modules: the system par
 ck 3 'default boot FAILED' 'without the boot modules: the default boot fails (and powers off)'
 if grep -aq 'glassine-boot: boot modules' "$OUT/boot3.log"; then echo "QTEST FAIL boot 3: no boot-modules step without the archive" | tee -a "$OUT/boot3.log"
 else echo "QTEST ok boot 3: no boot-modules step without the archive" | tee -a "$OUT/boot3.log"; fi
+names pc-system pc-data
+boot 4 '-device virtio-blk-pci,drive=d' initramfs.cpio.gz "qtest.disk=virtio_blk $KEYS"
+ck 4 'QTEST DONE' 'partitions not named as the board says, by their identities: the check script ran to its end'
+boot 5 '-device virtio-blk-pci,drive=d' initramfs.cpio.gz "qtest.disk=virtio_blk $KEYS glassine.deploy.once=d2 qtest.booted=d2"
+ck 5 'glassine-boot: deployment d2 by request, for this start only' 'glassine.deploy.once=d2: said by the initramfs'
+ck 5 'QTEST DONE' 'glassine.deploy.once=d2: the check script ran to its end'
+names system pc-data
+boot 6 '-device virtio-blk-pci,drive=d' initramfs.cpio.gz "glassine.system=PARTUUID=00000000-0000-4000-8000-000000000000 glassine.userdata=PARTUUID=$UU"
+ck 6 'root partition glassine.system=PARTUUID=00000000-0000-4000-8000-000000000000 not found' 'an identity no partition has: not found'
+ck 6 'default boot FAILED' 'an identity no partition has: the partition named system is not taken, the default boot fails'
 pass=$(cat "$OUT"/boot*.log | grep -ac 'QTEST ok' || true)
 fail=$(cat "$OUT"/boot*.log | grep -ac 'QTEST FAIL' || true)
 echo "qemu x86_64 (UEFI): $pass ok, $fail FAIL"
-[ "$fail" = 0 ] && [ "$pass" -ge 20 ]
+[ "$fail" = 0 ] && [ "$pass" -ge 60 ]

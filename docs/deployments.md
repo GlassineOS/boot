@@ -434,7 +434,8 @@ an installer ships must contain btrfs-progs and e2fsprogs.
 
 `glassine-deploy-accept`, started by the OpenRC service `glassine-deploy-accept` in the
 `default` runlevel (after every other service, as a background job). It acts only when
-the booted deployment is the candidate. It waits until the system has been up
+the booted deployment is the candidate, and never on a start of a deployment by request
+(`/run/glassine/deploy-once`, [boot.md](boot.md#command-line-keys)). It waits until the system has been up
 `ACCEPT_AFTER` seconds (default 120), then checks health:
 
 - no OpenRC service has crashed (`rc-status --crashed`);
