@@ -6,8 +6,10 @@ records, `glassine-bootimg` `install` (the `bootpart-test` hand-off), `status`, 
 `retry`, `accept`, `rollback`, the default-slot write, the interlocks with
 `glassine-deploy` and `glassine-hibernate`, the trial in the initramfs, and `promote`
 (finishing a cut write, `requested`, the verdict, a deferred install), and the `uefi`
-hand-off ([boot-partition.md](boot-partition.md), `test/bootpart`). Not built: the
-`blocklist` hand-off, the feature table (`conf/kernel-features`; until it exists,
+hand-off ([boot-partition.md](boot-partition.md), `test/bootpart`), `glassine-deploy
+receive --boot` and the `boot/` part of `bases remove` (`test/deploy`, `test/root`). Not
+built: the `blocklist` hand-off, the removal of unused modules by `bases remove`, the
+feature table (`conf/kernel-features`; until it exists,
 `provides`, `features` and `needs` are empty, so rule 1 passes), and everything under
 "Not covered here". It builds on
 `glassine-deploy`'s `receive --modules`, `stage` and `bases remove`. Kernel updates stay
@@ -147,12 +149,46 @@ system partition (btrfs, top level)
 ```
 
 `boot/` files are named by their content, so a file once written never changes; a new
-device tree or initramfs is a new file, added by `glassine-deploy receive --boot FILE`
-(new). Their manifests hold only facts about the bytes, so the same bytes give the same
-file and manifest, whichever build made them, and receiving an existing name is a no-op. A file may be removed only when no kernel record names it (`state/kernel`'s
+device tree or initramfs is a new file, added by `glassine-deploy receive --boot FILE`.
+Their manifests hold only facts about the bytes, so the same bytes give the same
+file and manifest, whichever build made them, and receiving an existing name is a no-op.
+
+`receive --boot FILE`:
+
+- **FILE** is `<device>@<id>.dtb` or `<commit12>@<id>.cpio.gz`, as a build's
+  `boot/dtb/` and `boot/initramfs/` hold them, with its manifest beside it
+  (`<device>@<id>.manifest`, `<commit12>@<id>.manifest`). The name's ending says where it
+  goes. `--sha256 HEX` checks the file first, as for a stream.
+- **Identity.** It is refused, with nothing written, unless `<id>` is the first 16 hex
+  digits of the file's sha256, the manifest's `sha256` is the file's, the manifest's
+  `format` is `1`, and the manifest's `commit` starts with `<commit12>` (12 hex digits)
+  or its `device` is `<device>`. A newer manifest format is exit 3.
+- **Writing.** The file first, then its manifest, each as `<name>.new`: written with
+  fsync, read back from the disk and compared with the sha256 it must have, renamed,
+  synced. A read-back that differs removes the `.new` and fails (exit 1). A receive
+  starts by removing the `.new` files in `boot/` (a cut receive's), under `state/.lock`.
+  So a cut receive leaves nothing, or the file without its manifest; neither is a
+  received file (`glassine-bootimg install` needs both), and receiving it again completes
+  it.
+- **An existing name:** the same bytes (file and manifest) is a no-op; a file or a
+  manifest with other bytes is refused and kept (exit 1).
+- Like `receive`, it takes `state/.lock` and refuses while userdata holds a hibernated
+  session (exit 4, `--discard-hibernation`). It needs no btrfs-progs.
+
+A file may be removed only when no kernel record names it (`state/kernel`'s
 `deferred_dtb` and `deferred_initramfs` included) and it was received
 before the last `glassine-bootimg install` (so a file received for an install that hasn't
-happened yet stays).
+happened yet stays). `bases remove` does this after it removed the base:
+
+- the names it keeps are `dtb` and `initramfs` of every image record in
+  `state/bootimg/`, and `deferred_dtb` and `deferred_initramfs`; an initramfs is also kept
+  when a record names only its commit12 (a record from before the id);
+- "received before the last install" is the file's modification time (the receive's
+  write; the rename keeps it) older than the newest `staged` of those records, both
+  read in UTC as `YYYY-MM-DDTHH:MM:SSZ`. With no record nothing is removed;
+- a record it can't read, or one without a `staged` time, removes nothing;
+- it removes a file's manifest first, then the file, so a cut removal leaves a file
+  without a manifest, which the next removal takes.
 
 At boot the initramfs (after `gr_boot`, through the merged root, whose upper is on
 userdata, or the tmpfs on a bare boot) makes the mount points, then binds:
@@ -614,7 +650,7 @@ kernel (with a kexec loader) is a loader change, not a format change: an empty v
 
 | Where | What |
 |---|---|
-| `glassine-deploy` | `receive --boot FILE` (an existing name is a no-op); exit 8 for `select`/`stage`/`reset`; `reset --now` and `rollback` cancel a kernel candidate first; `switch` leaves a deployment staged while a kernel candidate is set; `bases remove` also removes unused modules and `boot/` files |
+| `glassine-deploy` | `receive --boot FILE` ("On the system partition"; an existing name is a no-op); exit 8 for `select`/`stage`/`reset`; `reset --now` and `rollback` cancel a kernel candidate first; `switch` leaves a deployment staged while a kernel candidate is set; `bases remove` also removes unused modules and `boot/` files |
 | `glassine-bootimg` | kernel records, trial and accept on the system partition in the deployments layout; `install` defers during a deployment trial or with a staged deployment; `cancel` (new); `status` `format=1`; `rollback --limit` (`uefi`: the rollback after the loader's limit, 010 FR-013) |
 | initramfs | the kernel trial (boots current, no deployment try, no accept); the `DEVICE_PART` mount, verified before it is bound |
 | `glassine-hibernate` | exit 3 while another kernel than the running one is selected, during a kernel trial, and while `DEVICE_PART` is read-write |
