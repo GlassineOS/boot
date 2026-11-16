@@ -277,6 +277,10 @@ if [ "${ROOT_LAYOUT:-plain}" = deployments ]; then
     . "$GBLIB/glassine-state.sh" || die "cannot read $GBLIB/glassine-state.sh"
     # shellcheck source=../lib/glassine-kernel.sh
     . "$GBLIB/glassine-kernel.sh" || die "cannot read $GBLIB/glassine-kernel.sh"
+    if [ "${HANDOFF:-}" = uefi ]; then
+        # shellcheck source=../lib/glassine-bootpart.sh
+        . "$GBLIB/glassine-bootpart.sh" || die "cannot read $GBLIB/glassine-bootpart.sh"
+    fi
     gk_main "$@"
     exit $?
 fi
