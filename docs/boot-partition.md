@@ -34,6 +34,9 @@ partition it was started from.
 
 - Names are written as shown, in lower case apart from the firmware's `EFI` and `BOOT`.
   `<id>` is 16 hex digits (below).
+- The file system uses FAT long names (VFAT): a 16-digit id and `default.gspl` don't
+  fit a short 8.3 name. Every writer writes long-name entries, and every reader,
+  the loader's file-system access included, reads them (UEFI's FAT driver does).
 - The partition holds the default set, the previous set when there is one, at most one
   trial set, the recovery image and, during its update, the recovery's replacement.
 - A name ending in `.new` is a file being written. No reader uses it.
@@ -166,20 +169,58 @@ A kernel set is the image of one kernel record
 - **`vmlinuz`**: the kernel image of `modules/<release>/`, byte for byte: an EFI stub.
 - **`initrd`**: one file, the concatenation of these archives in this order, each
   starting at an offset that is a multiple of 4 (zero bytes between them):
-  1. the CPU microcode archives of `modules/<release>/microcode/` (`*-ucode.img`), in
-     byte order of their names, uncompressed as they are. They come first because the
-     kernel loads microcode only early, and only from an uncompressed archive at the
-     start of its initramfs. A kernel tree without `microcode/` adds none.
+  1. the CPU microcode archives of `modules/<release>/microcode/` (`*-ucode.img`), each
+     a file of its own, in byte order of their file names without the directory
+     (`amd-ucode.img` before `intel-ucode.img`), uncompressed as they are. Two with one
+     name are refused. They come first because the kernel loads microcode only early,
+     and only from an uncompressed archive at the start of its initramfs. A kernel tree
+     without `microcode/` adds none.
   2. the GlassineOS initramfs, the file from `boot/initramfs/`, unchanged;
-  3. the board archive: an uncompressed archive that holds `etc/glassine-boot/board.conf`
-     (and its two directories), the machine's board configuration as the booted system
-     has it in `/etc/glassine-bootimg/board.conf`;
+  3. the board archive (below), made from the machine's `board.conf`;
   4. the kernel's boot-modules archive ([boot.md](boot.md#boot-modules)), where the
      kernel has one.
 - **`set.rec`**: the set's record.
 
 The checksums cover the files as they are on the boot partition: the whole `initrd`,
-not its parts.
+not its parts. No zero bytes follow the last part.
+
+### The board archive
+
+The board archive is made by whoever assembles the set, so its bytes are fixed here:
+every builder gets the same `initrd`, checksum and id from the same `board.conf`. It
+is what `lib/glassine-bootimg-pack` puts behind the initramfs of a boot image.
+
+It is an uncompressed cpio archive in the `newc` form with four entries, in this order:
+
+| Entry | Name | Mode | Data |
+|---|---|---|---|
+| 1 | `etc` | `000041ED` (a directory, 0755) | none |
+| 2 | `etc/glassine-boot` | `000041ED` | none |
+| 3 | `etc/glassine-boot/board.conf` | `000081A4` (a file, 0644) | the bytes of `board.conf`, unchanged |
+| 4 | `TRAILER!!!` | `00000000` | none |
+
+Each entry is the six bytes `070701`, then thirteen fields of 8 upper-case hex digits
+each, then the name with one zero byte after it, zero bytes up to the next offset in
+the archive that is a multiple of 4, the data, and zero bytes again up to a multiple
+of 4. The fields, in order:
+
+| Field | Value |
+|---|---|
+| inode | the entry's number, 1 to 4 (the trailer has 4) |
+| mode | as in the table |
+| user id, group id | 0, 0 |
+| link count | 1, for every entry |
+| modification time | 0 |
+| file size | the length of the data; 0 without data |
+| device major, minor; rdev major, minor | 0, 0, 0, 0 |
+| name size | the length of the name with its zero byte |
+| checksum | 0 |
+
+Nothing follows the trailer's padding: the archive is not padded to a block size.
+
+`board.conf` is the machine's board configuration: in the booted system
+`/etc/glassine-bootimg/board.conf`, in a release the file of the manifest role `board`.
+The two are the same file of the same release.
 
 ### `set.rec`
 
@@ -191,7 +232,7 @@ not its parts.
 | `kernel_sha256`, `kernel_size` | of `vmlinuz`; the size in bytes, decimal |
 | `initrd_sha256`, `initrd_size` | of `initrd`; both empty where a recovery image has none |
 | `cmdline` | the whole command line the kernel is started with (below) |
-| `initramfs` | the identity of the initramfs file in the `initrd` (`<commit12>@<id>`); informative |
+| `initramfs` | the identity of the initramfs file in the `initrd` (`<commit12>@<id>`); informative. Empty when the builder doesn't know it (a release that names none, an `initrd` handed over assembled, a recovery image); no reader depends on it |
 | `check` | as for every record |
 
 The file names are fixed, so the record names no paths.
@@ -208,13 +249,26 @@ directory is named by its id, so a set once written never changes.
 
 `cmdline` is, separated by single spaces:
 
-1. the base command line: the board's `CMDLINE`;
+1. the base command line: the value of `CMDLINE` in the set's `board.conf`, and nothing
+   else. A release names no second command line for a kernel set: where its manifest
+   gives the kernel a `cmdline` too, it must be the same text, and a release in which
+   the two differ is refused before anything is written;
 2. `glassine.system=PARTUUID=<uuid>` and `glassine.userdata=PARTUUID=<uuid>`: the GPT
    unique partition identities of this installation's system partition and userdata, in
    lower case ([boot.md](boot.md#command-line-keys); 010 FR-005);
 3. `glassine.img=<id>`.
 
-It is at most 1920 bytes, so that the one key the loader may add (the one-shot
+The base command line is words of printable characters separated by single spaces:
+no space at its start or end, no two spaces in a row, no control character. It holds
+none of `glassine.system=`, `glassine.userdata=`, `glassine.img=` and
+`glassine.deploy.once=`. A base that breaks one of these is refused, never repaired,
+since the id is made from its bytes. It may be empty; the command line then starts
+with `glassine.system=`. `CMDLINE` is one line of `board.conf`, `CMDLINE="<text>"` or `CMDLINE=<word>`: the
+text between one pair of double quotes, or a bare word, with no backslash, `$`,
+backtick or further quote in it. Every reader of `board.conf` gets the same value from
+that form; a `CMDLINE` in another form is refused for a kernel set.
+
+The whole command line is at most 1920 bytes, so that the one key the loader may add (the one-shot
 deployment request, `glassine.deploy.once=<deployment id>`, 010 FR-042) fits the
 kernel's limit. A set whose command line lacks one of the three keys is not written
 and not started.
@@ -232,8 +286,15 @@ and not started.
 
 ### Who assembles a set
 
-- **The installer, at install**, from the release's files: it assembles `initrd` in the
-  order above, adds the identities of the partitions it made to the command line, and
+- **The installer, at install**, from the release's files. The release's manifest names
+  the parts by role: `microcode` and `microcode-<name>` (one role a file), the
+  `initramfs`, `board` (the `board.conf`), `boot-modules`. A release may hand the
+  `initrd` over assembled instead: its `initramfs` then has the kind
+  `kernel-set-initrd`, is written as the `initrd` byte for byte, and the release names
+  no `microcode` and no `boot-modules`; one that names them too is refused. `board` is
+  named in both cases, since the base command line comes from it; with an assembled
+  `initrd` the release answers for that file being the one inside. The installer
+  assembles `initrd` in the order above, adds the identities of the partitions it made to the command line, and
   writes the set, both slots of the loader record (the same record, `seq=1`: the set as
   `default`, no previous set, no trial, no request, `unmarked=0`, `deploys=0`), the
   recovery image, the loader at its two paths and the default splash.
@@ -265,8 +326,27 @@ and not started.
 ## The recovery image
 
 The recovery image has the form of a kernel set, in `\glassine\recovery\<id>\`, with the
-same record, id and checks. Its `initrd` may be absent (an image with its initramfs
-built in); its command line carries the two identities. It is updated like a kernel
+same record, id and checks. What differs:
+
+- **Its `initrd` is the release's file, whole.** Nobody assembles it: no microcode, no
+  board archive and no boot modules are added on the way to the boot partition. What
+  the recovery needs of them is in the image as the release built it. It may be absent
+  (an image with its initramfs built in); `initrd_sha256` and `initrd_size` are then
+  empty, and the id's second line is empty.
+- **Its base command line is the release's for the recovery** (the `cmdline` of the
+  manifest's `recovery` role, empty when it gives none), under the same rule for
+  spaces. No `board.conf` takes part.
+- **Its command line** is that base, the two identities and `glassine.img=<id>`, as
+  for a kernel set, so the recovery works on this installation's partitions and its
+  record's id is on its command line. No kernel record on the system partition has
+  this id: the recovery is no kernel candidate, and `glassine.img=` of a recovery
+  never starts a trial.
+- **`release`** is the release of the recovery's kernel (its flavor,
+  [kernel-artifacts.md](kernel-artifacts.md#kernel-release)); `initramfs` is empty.
+- A recovery image and a kernel set never have the same id on one partition; a release
+  in which they would is refused.
+
+It is updated like a kernel
 set: the new directory is written next to the old one and checked, the loader record is
 written with the new `recovery` and `recovery_rec`, and the old directory is removed as
 "Before files are removed" says. During the update two recovery images are on the
@@ -313,7 +393,7 @@ to leave the screen. All numbers are little endian. The header is 64 bytes:
 | 40 | 8 | length of the payload in bytes |
 | 48 | 4 | CRC-32 of the payload |
 | 52 | 4 | CRC-32 of the header's bytes 0 to 51 |
-| 56 | 8 | zero |
+| 56 | 8 | unused: a writer writes zero, a reader ignores them (no check covers them) |
 
 - **CRC-32** is the one of zlib and Ethernet: polynomial `0xEDB88320` (reflected),
   start value and final XOR `0xFFFFFFFF`.
