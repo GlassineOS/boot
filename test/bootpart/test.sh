@@ -7,4 +7,4 @@
 set -eu
 D=$(cd "$(dirname "$0")" && pwd)
 P=$(cd "$D/../.." && pwd)
-docker run --rm --privileged -v "$P":/p:ro alpine:3.22 sh -c 'apk add -q python3 dosfstools >/dev/null 2>&1; BP_PRIV=1 sh /p/test/bootpart/inner.sh'
+docker run --rm --privileged -v "$P":/p:ro alpine:3.22 sh -c 'apk add -q python3 dosfstools sgdisk >/dev/null 2>&1; BP_PRIV=1 sh /p/test/bootpart/inner.sh'

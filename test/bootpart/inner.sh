@@ -275,6 +275,17 @@ printf 'DEVNAME=vdb1\nPARTN=1\nPARTNAME=glassine-boot\n' > $SB/devices/vdb/vdb1/
 for p in vda/vda1 vda/vda2 vdb/vdb1; do ln -s devices/$p $SB/${p#*/}; done
 CMDLINE=$W/cmdline GLASSINE_BI_SYSBLOCK=$SB
 ok "the boot partition: glassine-boot on the system partition's disk, not another disk's" "[ \"\$(gk_ue_dev)\" = /dev/vda1 ]"
+# a kernel whose uevent has no PARTUUID= (6.12): the identity read from the disk's GPT
+mkdir -p $W/dev $SB/devices/vda/queue; echo 512 > $SB/devices/vda/queue/logical_block_size
+printf 'DEVNAME=vda\nDEVTYPE=disk\n' > $SB/devices/vda/uevent
+head -c 8388608 /dev/zero > $W/dev/vda
+sgdisk -o -n 1:2048:+1M -c 1:glassine-boot -n 2:4096:+2M -c 2:glassine-system -u 2:$SU $W/dev/vda >/dev/null 2>&1
+printf 'DEVNAME=vda2\nPARTN=2\nPARTNAME=glassine-system\n' > $SB/devices/vda/vda2/uevent; echo 4096 > $SB/devices/vda/vda2/start
+GLASSINE_BI_DEVDIR=$W/dev
+ok "no PARTUUID= in the uevent: the system partition by its GPT entry, the boot partition on its disk" "[ \"\$(gk_ue_dev)\" = $W/dev/vda1 ]"
+echo 2048 > $SB/devices/vda/vda2/start
+ok "the GPT entry's first block isn't the partition's start: no system partition, no boot partition" "! gk_ue_dev >/dev/null"
+printf "DEVNAME=vda2\nPARTN=2\nPARTNAME=glassine-system\nPARTUUID=$SU\n" > $SB/devices/vda/vda2/uevent
 printf 'DEVNAME=vda3\nPARTN=3\nPARTNAME=glassine-boot\n' > $W/u3; mkdir -p $SB/devices/vda/vda3; cp $W/u3 $SB/devices/vda/vda3/uevent
 ok "two partitions named glassine-boot on that disk: none" "! gk_ue_dev >/dev/null"
 

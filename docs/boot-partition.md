@@ -332,7 +332,8 @@ and not started.
   under 004's rules for the default slot (`writing` is set first). A set no record names
   any more is removed as "Before files are removed" says.
 - **The first start** of an installation records the installer's set on the system
-  partition: when `state/kernel` has no `current_img`, the default set is checked as the
+  partition (today `glassine-bootimg` does it, at the first `install`, accept or
+  `rollback`, before it writes anything): when `state/kernel` has no `current_img`, the default set is checked as the
   loader checks it, its `initrd` is copied to `state/bootimg/<id>.img`, and its record
   becomes the image record of `current_img`, marked `seeded=1`, with `current` its
   release.
