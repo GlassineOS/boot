@@ -261,6 +261,47 @@ boot $C2
 ok "a set directory no slot names and .new files: removed by the next install" "$B install 7.1.0-b --initramfs c1@1 >/dev/null 2>&1; [ ! -e $BP/glassine/sets/00000000deadbeef ] && [ ! -e $BP/glassine/splash.gspl.new ] && [ -e $BP/glassine/recovery/714c2000398993cc/set.rec ]"
 $B cancel >/dev/null 2>&1
 
+# the rollback after the loader's limit (rollback --limit, 010 FR-013): the loader
+# started the previous set because the count reached the limit, and it is healthy
+LP=$(kv previous_img) LC=$(kv current_img) LPR=$(kv previous) LCR=$(kv current) LF=$(kv failed_img)
+cp $K $W/lk; cp $BP/glassine/loader.a $W/lra; cp $BP/glassine/loader.b $W/lrb
+lreset() { cp $W/lk $K; cp $W/lra $BP/glassine/loader.a; cp $W/lrb $BP/glassine/loader.b; rm -f $W/run/glassine-bootimg.notice; $M next $BP unmarked=0 started="$1" started_why="$2"; boot "$3"; cp $K $W/lk1; }
+lsame() { cmp -s $K $W/lk1 && [ "$(rec default)" = $LC ] && [ ! -e $W/run/glassine-bootimg.notice ]; }
+ok "rollback --limit: the fixture has a default and a previous set" "[ -n \"$LP\" ] && [ -n \"$LC\" ] && [ \"\$(rec default)\" = $LC ] && [ \"\$(rec previous)\" = $LP ]"
+lreset $LP default $LP
+ok "rollback --limit on the previous set started by default (a pick, no limit): nothing" "$B rollback --limit >/dev/null 2>$W/err && lsame"
+lreset $LP choice $LP
+ok "rollback --limit on the previous set picked in the list (choice): nothing" "$B rollback --limit >/dev/null 2>$W/err && lsame"
+lreset $LP limit $LC
+ok "rollback --limit when this boot runs another set than the one started: nothing" "$B rollback --limit >/dev/null 2>$W/err && lsame"
+lreset $LP limit $LP; gs_update $K previous_img=00000000deadbeef; cp $K $W/lk1
+ok "rollback --limit when the state's previous image isn't the started set: nothing, said" "$B rollback --limit >/dev/null 2>$W/err && lsame && grep -q 'nothing rolled back' $W/err"
+lreset $LP limit $LP
+ok "rollback --limit after a limit start: the record's default = the previous set, previous = the failed one, by the loader's rules" "$B rollback --limit >$W/out 2>$W/err && [ \"\$(rec default)\" = $LP ] && [ \"\$(rec previous)\" = $LC ] && [ \"\$(rec default_rec)\" = \"\$(gs_kv $BI/$LP.manifest set_rec)\" ] && $M set-ok $BP $LP \$(gs_kv $BI/$LP.manifest set_rec) && [ \"\$(rec started_why)\" = limit ]"
+ok "rollback --limit: state current/previous swapped, the failed kernel listed as failed, writing cleared" "[ \"\$(kv current_img)\" = $LP ] && [ \"\$(kv previous_img)\" = $LC ] && [ \"\$(kv current)\" = $LPR ] && [ \"\$(kv failed_img)\" = $LC ] && [ \"\$(kv failed)\" = $LCR ] && [ -z \"\$(kv writing)\" ] && [ \"\$(st state)\" = failed ]"
+ok "rollback --limit: the person told (the notice), both sets kept" "grep -q 'did not start to a working system' $W/run/glassine-bootimg.notice && [ -d $BP/glassine/sets/$LP ] && [ -d $BP/glassine/sets/$LC ]"
+ok "rollback --limit run again on the same boot: nothing more (the record's default is the started set now)" "cp $K $W/lk2 && $B rollback --limit >/dev/null 2>&1 && cmp -s $K $W/lk2"
+lreset $LP limit $LP; $B install 7.3.0-d --initramfs c1@1 >/dev/null 2>&1; LK=$(kv candidate_img); cp $K $W/lk1
+ok "rollback --limit with a kernel candidate: rolled back, the candidate cancelled, its trial out of the record" "[ -n \"$LK\" ] && $B rollback --limit >/dev/null 2>$W/err && [ -z \"\$(kv candidate_img)\" ] && [ -z \"\$(rec trial)\" ] && [ \"\$(rec default)\" = $LP ] && grep -q 'candidate .* is cancelled' $W/log"
+# cut and mismatched writes
+lreset $LP limit $LP
+export GLASSINE_BI_AFTER_SLOT='n=$(cat /w/cnt); echo $((n - 1)) > /w/cnt; [ "$n" -le 0 ] || truncate -s 300 "$1"'; echo 2 > $W/cnt
+ok "rollback --limit, the record write cut both times: 1, the loader's default as it was, the state as it was (failed keys back, writing cleared)" "! $B rollback --limit >/dev/null 2>$W/err; [ \"\$($M get $BP default)\" = $LC ] && [ \"\$(kv current_img)\" = $LC ] && [ \"\$(kv failed_img)\" = \"$LF\" ] && [ -z \"\$(kv writing)\" ] && [ ! -e $W/run/glassine-bootimg.notice ]"
+lreset $LP limit $LP; echo 1 > $W/cnt
+ok "rollback --limit, the record write cut once: the retry writes it, rolled back" "$B rollback --limit >/dev/null 2>$W/err && [ \"\$($M get $BP default)\" = $LP ] && [ \"\$(kv current_img)\" = $LP ]"
+echo 0 > $W/cnt; lreset $LP limit $LP
+export GLASSINE_BI_AFTER_SLOT='case $1 in */loader.*) printf Z | dd of="$1" bs=1 seek=40 conv=notrunc 2>/dev/null ;; esac'
+ok "rollback --limit, the record doesn't read back (a flipped byte): 1, nothing rolled back" "! $B rollback --limit >/dev/null 2>$W/err; [ \"\$($M get $BP default)\" = $LC ] && [ \"\$(kv current_img)\" = $LC ] && [ -z \"\$(kv writing)\" ]"
+unset GLASSINE_BI_AFTER_SLOT
+lreset $LP limit $LP
+export GLASSINE_BI_AFTER_SLOT='grep -q "^default=$(cat /w/cid)$" "$1" && kill -9 $PPID $$'; echo $LP > $W/cid
+sh -c "$B rollback --limit" >/dev/null 2>&1
+unset GLASSINE_BI_AFTER_SLOT; rm -f $W/run/glassine-bootimg.started
+ok "rollback --limit cut right after the record named the set: writing stays, the failed kernel already listed" "[ \"\$(kv writing)\" = $LP ] && [ \"\$(kv writing_op)\" = rollback ] && [ \"\$(kv failed_img)\" = $LC ]"
+ok "the next promote completes it: the previous set the default" "$B promote 2>$W/err && [ -z \"\$(kv writing)\" ] && [ \"\$(kv current_img)\" = $LP ] && [ \"\$(rec default)\" = $LP ]"
+# back to the state before, for what follows
+cp $W/lk $K; cp $W/lra $BP/glassine/loader.a; cp $W/lrb $BP/glassine/loader.b; boot $LC; rm -f $W/run/glassine-bootimg.notice
+
 # no loader record: refused, nothing invented
 mv $BP/glassine/loader.a $W/keep.a; mv $BP/glassine/loader.b $W/keep.b
 ok "no valid loader record: install refused, nothing written to the boot partition" "! $B install 7.1.0-b --initramfs c1@1 >/dev/null 2>$W/err && grep -q 'no slot of the loader record is valid' $W/err && [ ! -e $BP/glassine/loader.a ]"
@@ -311,7 +352,7 @@ printf '#!/bin/sh\nexit 0\n' > $MH/10-ok; chmod +x $MH/10-ok
 mstart() {
     cp $D/golden/loader.a $D/golden/loader.b $MB/glassine/
     $M next $MB unmarked=2 started=$RUNSET started_why=default zz_unknown=keep "$@"
-    rm -f $MR/loader-marked $MR/health-failed $MR/kernel-boot $MR/deploy-once; echo d1 > $MR/booted; : > $MW/calls
+    rm -f $MR/loader-marked $MR/health-failed $MR/kernel-boot $MR/deploy-once $MR/limit-start; echo d1 > $MR/booted; : > $MW/calls
     cp $MB/glassine/loader.a $W/ma; cp $MB/glassine/loader.b $W/mb
 }
 menv() { env ${MNODEV:+-u GLASSINE_BI_BOOTPART_DEV} PATH=$MW:$PATH GLASSINE_DEPLOY_CONF=$MW/conf GLASSINE_DEPLOY=$MW/deploy GLASSINE_ACCEPT_UPTIME=$MW/uptime \
@@ -342,6 +383,13 @@ ok "accept on a kernel finishing boot: no deployment accept, the mark written" "
 mstart; printf '#!/bin/sh\necho epdd not running\nexit 1\n' > $MH/20-bad; chmod +x $MH/20-bad
 ok "accept, a health check fails: nothing written, the failure noted for the shutdown step" "! macc && same && grep -q 'no healthy mark: epdd not running' $MW/out && grep -q 'epdd not running' $MR/health-failed"
 rm $MH/20-bad
+printf '#!/bin/sh\necho "bootimg $*" >> %s/calls\n' $MW > $MW/bootimg; chmod +x $MW/bootimg
+mstart started_why=limit
+ok "accept on the loader's limit start (started_why=limit): marked, then glassine-bootimg rollback --limit" "GLASSINE_BOOTIMG=$MW/bootimg macc && [ \"\$($M get $MB unmarked)\" = 0 ] && grep -qx 'bootimg rollback --limit' $MW/calls && [ -e $MR/limit-start ]"
+mstart
+ok "accept on a start by default: no rollback --limit" "GLASSINE_BOOTIMG=$MW/bootimg macc && ! grep -q bootimg $MW/calls && [ ! -e $MR/limit-start ]"
+mstart started_why=limit started=$OTHERSET
+ok "accept when the record's limit start is another set than this boot's: no rollback --limit" "GLASSINE_BOOTIMG=$MW/bootimg macc && ! grep -q bootimg $MW/calls"
 mstart
 ok "accept with a hand-off that keeps no loader record: nothing written" "MBOARD=$MW/board.bl macc && same && [ ! -e $MR/loader-marked ]"
 mstart; export GLASSINE_BI_AFTER_SLOT='n=$(cat /w/cnt); echo $((n - 1)) > /w/cnt; [ "$n" -le 0 ] || truncate -s 300 "$1"'; echo 2 > $W/cnt

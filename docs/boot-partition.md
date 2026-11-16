@@ -7,7 +7,8 @@ its library `lib/glassine-bootpart.sh` are built and host-tested against the ins
 golden bytes and a port of the loader's reader (`test/bootpart`); nothing has run on a
 real PC. The healthy mark and the shutdown step (`unmarked`) are built too
 (`glassine-loader-mark`, run by `glassine-deploy-accept`, its service's stop and
-`glassine-hibernate`; host-tested in `test/bootpart`). Not built here: the
+`glassine-hibernate`; host-tested in `test/bootpart`), and so is the rollback after a
+healthy limit start (`glassine-bootimg rollback --limit`, 010 FR-013). Not built here: the
 `reboot recovery` request, the deployment list (`deploys`), the recovery's update, the
 repair, the splash store. This page is the contract between the three programs that read or write a PC's boot
 partition: the loader, the installer, and the running system's tools (`glassine-bootimg`,
@@ -125,6 +126,14 @@ write; the loader runs when no system does.
 - **The limit** is 3 in format 1. With no key pressed and no request, the loader starts,
   by the `unmarked` it reads: below 3 the default set; at 3 the previous set
   (`started_why=limit`); above 3, or at 3 with no previous set that checks, the recovery.
+  When that start of the previous set reaches the health conditions, the boot-success
+  step makes it the default set by the kernel rollback (010 FR-013), after the healthy
+  mark: `glassine-bootimg rollback --limit` writes `default` = that set and `previous` =
+  the one that failed in one write of the record, lists the failed kernel as `failed` in
+  `state/kernel` (so `retry` can give it a trial again), cancels a kernel candidate and
+  leaves the notice for the next login. It acts only when the record's `started` is
+  this boot's set, `started_why` is `limit`, and `state/kernel`'s `previous_img` is that
+  set and its `current_img` the record's `default`.
   A start of the recovery is not counted and writes nothing, apart from clearing a
   `request=recovery`.
 - **A deployment picked in the list** leaves no mark in the record (010 FR-042): the
