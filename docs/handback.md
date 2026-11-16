@@ -67,6 +67,7 @@ differences:
 | `display_partial` | `0`: every refresh of the start menu is the whole panel; `1` or empty: only the changed rectangles ("The start menu"). Set by the running system or the installer; the loader never changes it |
 | `drew` | `1`: a start drew through the firmware's refresh and its last refresh hasn't returned (yet); empty otherwise. Written by the loader only (below) |
 | `display_failed` | set (the count it was set at): a start that drew was never marked healthy, so the loader no longer draws, whatever `unmarked` says. Written by the loader; cleared only by the person's retry, `glassine-loader-mark display-retry`, never by a healthy mark |
+| `touch` | the loader's own touch driver ("The loader's touch driver", below): `probe`: bring the touch controller up once at this start and write what it read into the probe report; the loader clears it in its own write before it touches the controller; `on`: the driver is the start menu's tap source; anything else, or empty: the loader never touches the controller. Set by the running system (`probe`, `on`) or the installer (`on`); the loader only clears `probe` |
 | `request` | also `menu`: open the start menu at this start (below); cleared by the loader in its first write of the start, whether the menu opens or not |
 | `deploys`, `deploy1` … | kept as read; the start menu offers them, a headless loader offers no list |
 
@@ -184,8 +185,8 @@ asked:
   keys don't drive the menu; the loader logs each key it receives (scan code and
   character, so a run shows what a machine sends, the power key's `SCAN_SUSPEND` among
   them) and does nothing else with it. A tap source is a firmware absolute pointer of a
-  device's own (`GetState` only, never `Reset`, never waited on), or a touch driver of
-  the loader's own for the panel's controller. The console splitter's pointer on the
+  device's own (`GetState` only, never `Reset`, never waited on), or, with `touch=on`,
+  the loader's own touch driver (below). The console splitter's pointer on the
   console-in handle is not one: with no touch driver bound under it, it never reports.
 - **The watchdog:** while the menu is open the loader re-arms the firmware's watchdog
   for 30 seconds before each refresh and at least every 10 seconds, and leaves it armed
@@ -198,6 +199,46 @@ A parent that ignores `cmdline_add` boots a deployment pick as the GlassineOS pi
 one that can't boot a `set:` answer boots its baseline (see "What the parent does with
 it"): the menu offers what the record names, not what the parent can do.
 
+
+### The loader's touch driver
+
+A firmware may bind no touch driver at all (the Note Air's binds none: its only absolute
+pointer is the console splitter's). The loader then has a driver of its own for the
+panel's touch controller, which talks to the controller through the firmware's own I2C
+and GPIO protocols, the ones its display driver uses (on the Note Air: a Parade/Cypress
+cyttsp5 at I2C address 0x24 on the bus at `0xc178000`, GPIOs 61 and 62 its power
+switches, 66 its reset, 67 its interrupt). The protocols' layout is the loader's
+(`docs/firmware-i2c-gpio.md` in GlassineOS/loader). It is off unless the record asks:
+
+- **What it touches:** only the controller's four GPIOs, each as an output or input of
+  the plain GPIO function and only in the controller's power-up order (its power on, then
+  its reset low and high), and only the controller's bus, which the firmware's I2C
+  protocol powers when the loader opens it (its clock and its two pins, set by the
+  firmware) and releases when the loader closes it. No other GPIO, bus, regulator or
+  register. Every GPIO and I2C call is logged.
+- **As found:** before it drives anything the loader reads the four pins' levels
+  (read-only). When both power switches already read high, the controller was powered
+  and stays so; else the loader powers it and, when it is done, powers it down again
+  (its reset low, then both switches low) before it answers.
+- **Time:** the whole bring-up has one deadline (at most 3 seconds from its first call);
+  every wait, retry and I2C timeout is cut to what is left of it. A step that fails or
+  runs out of time ends the bring-up there, logged, with the controller powered down as
+  above; the start goes on as without the driver. The bring-up never blocks the answer
+  (the floor) and never comes near the parent's 30-second watchdog.
+- **`touch=probe`:** the loader first writes the record with `touch` cleared (the
+  write durable, as every write), and only then brings the controller up: a bring-up that
+  hangs inside the firmware is a watchdog reset that doesn't repeat at the next start.
+  When that write fails the loader doesn't touch the controller. It reads the
+  controller's HID descriptor and system information, writes them into the probe report
+  (`touch.*`, below; the report is written at that start even without `probe=1`) and
+  powers the controller down as above. It counts and answers as without the key.
+- **`touch=on`:** the driver is the start menu's tap source when the firmware's I2C and
+  GPIO protocols pass their checks (the probe report's, below); the bring-up runs inside
+  the menu, after the menu write, so a hang in it is a hang in the menu (`drew=1`: the
+  next start sets `display_failed`). It polls the controller's input register (no
+  interrupt), maps the first contact to the portrait panel, and powers the controller
+  down when the menu closes. A bring-up that fails leaves the menu without taps: it ends
+  at its timeout as with no input.
 
 ## The loader region
 
@@ -326,9 +367,13 @@ what the firmware offers it: the file `\glassine\probe.txt` in the FAT form, the
 call for it beyond listing handles and their protocols, reading the memory map, the
 loaded images and a few variables (`GetVariable`), reading the graphics outputs raw
 (below: `QueryMode`, and `GetFrameBuffer` on an extended one), reading the console's
-mode fields and reading the input devices' interfaces and Modes from memory (no function
-of an input protocol is called: no `Reset`, `GetState` or `ReadKeyStroke`). It never
-sets a mode, draws, refreshes a panel, or touches hardware.
+mode fields, reading the input devices' interfaces and Modes from memory (no function
+of an input protocol is called: no `Reset`, `GetState` or `ReadKeyStroke`), reading the
+firmware's I2C and GPIO protocols' interfaces from memory, and reading the levels of the
+touch controller's four GPIOs through the GPIO protocol's pin read (which configures
+nothing). It never sets a mode, draws, refreshes a panel, opens a bus, or drives a pin.
+With `touch=probe` the report also holds what the touch driver read ("The loader's touch
+driver"); that bring-up is the driver's, not the probe's.
 
 The report is a text record of the same form as the loader record, its last line
 `check=<sha256>` over the bytes before it, at most 65536 bytes. In the raw form it is
@@ -371,6 +416,12 @@ which a reader treats as no report.
 | `textins` | the number of handles with the simple text input protocol |
 | `textin<n>` | `handle=<index> conin=<0 or 1> ex=<0 or 1>`: `ex=1` when the handle also has the extended text input protocol |
 | `textin<n>.path`, `textin<n>.guids` | the handle's device path and its protocol GUIDs |
+| `i2c`, `gpio` | the firmware's I2C protocol (`b27ae8b1-3e10-4d07-ab5c-eb9a6dc6fa8f`) and GPIO protocol (`ad9aec18-7bf0-4809-9e96-3012309f3df7`): `handle=<index> iface=0x<address>`, `none` when no handle has it, `unopened` when it can't be opened |
+| `i2c.words`, `gpio.words` | the interface's first 6 (I2C) or 8 (GPIO) 64-bit words, `0x<hex>` each, or `not-ram` |
+| `i2c.in`, `gpio.in` | for each word after the first: `image<k>`, `0` or `-`, as `gop<n>.in` |
+| `i2c.check`, `gpio.check` | `ok` when the first word is the revision the loader knows (I2C `0x10000`, GPIO `1`) and the function words point into one loaded image; else the first check that failed (`not-ram`, `revision=0x<n>`, `outside`) |
+| `gpio.pin<n>` | for each of the touch controller's GPIOs (61, 62, 66, 67), only after `gpio.check=ok`: `<0 or 1>` from the pin read, or `error <status>` |
+| `touch.*` | with `touch=probe` only: the bring-up's steps and results (`touch.found`, `touch.power`, `touch.open`, `touch.hid`, `touch.desc`, `touch.sysinfo`, `touch.res`, `touch.down`, `touch.result`; the loader's spec 005 names them), each a line of text |
 | `boot_fs` | `1` when the firmware offers a file system (`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`) on the boot partition, so the loader uses the FAT form; `0` when not |
 | `fs_handles` | the number of handles with a file system, on any device: `0` means the firmware has no file system driver it has used, which decides that the machine needs the raw form |
 | `fs<n>` | `handle=<index> part=<GPT partition GUID or -> <partition number or ->`, one per handle with a file system |
