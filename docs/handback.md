@@ -224,7 +224,7 @@ which a reader treats as no report.
 
 A handle's index is its position in the handle database's list at that start; it is
 stable only within one report. Lines that don't fit are left out: `log` lines first, then
-`gop<n>.mode<m>` lines past the current mode, then `fs<n>` lines, then `proto` lines; `truncated=1` says so.
+`gop<n>.mode<m>` lines past the current mode, then `proto` lines (the `fs` lines are always kept); `truncated=1` says so.
 
 The loader knows these names: the protocols of the UEFI specification it uses or reports
 (graphics output, block I/O, disk I/O, device path, loaded image, simple text in and out,
