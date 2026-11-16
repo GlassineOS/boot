@@ -6,7 +6,7 @@ starts and that can't be replaced by the loader, but can start a UEFI program an
 its answer. What both sides do and why is [specs/012](../specs/012-handback/spec.md); this
 page gives the bytes. Changes go through this repository first.
 
-The first parent is the Onyx Boox Note Air's ABL
+The first parent is the Boox Note Air's ABL
 ([GlassineOS/abl](https://github.com/GlassineOS/abl)), which starts the loader on the
 GlassineOS slot only. Nothing on this page depends on that device.
 
@@ -20,7 +20,7 @@ the answer names, and when anything goes wrong it boots what it boots today: its
 ## The hand-back partition
 
 One raw partition, without a file system, that GlassineOS owns whole. The parent and the
-loader agree on it; how the parent finds it is the parent's (the ABL: by its GPT name).
+loader agree on it; how the parent finds it is the parent's (the ABL: by its GPT name, `glassine-handback`; a parent that finds it by name uses that name).
 All offsets are bytes from the partition's start.
 
 | Offset | Size | What | Written by |

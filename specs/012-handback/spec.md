@@ -13,7 +13,7 @@ layer of the block-list hand-off)
 
 ## Summary
 
-Some machines start a bootloader of their own that GlassineOS keeps: on the Onyx Boox
+Some machines start a bootloader of their own that GlassineOS keeps: on the Boox
 Note Air, Qualcomm's ABL in GlassineOS's build. Such a **parent bootloader** chooses
 nothing for GlassineOS beyond its slot, so it has no trial, no count of failed starts and
 no way into the recovery that the running system can ask for.
@@ -34,7 +34,7 @@ can't replace.
 | Term | Meaning |
 |---|---|
 | parent | the bootloader that starts the loader and acts on its answer |
-| baseline | what the parent boots on its GlassineOS slot without the loader (on the Note Air, `boot_b`) |
+| baseline | what the parent boots on its GlassineOS slot without the loader (on the Note Air, the boot partition of its GlassineOS slot) |
 | hand-back partition | the raw partition with the loader record, the probe area and the loader image ([handback.md](../../docs/handback.md#the-hand-back-partition)) |
 | answer | what the loader hands back: `baseline`, `recovery` or a kernel set by id |
 | headless | the loader draws nothing, waits for no key and shows no list |
