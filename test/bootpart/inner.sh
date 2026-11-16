@@ -423,6 +423,36 @@ ok "display-retry clears display_failed and drew, seq one higher, other keys kep
 cp $MB/glassine/loader.a $W/ma; cp $MB/glassine/loader.b $W/mb
 ok "display-retry with nothing set: 0, nothing written" "menv sh /p/sbin/glassine-loader-mark display-retry 2>/dev/null && same"
 ok "display-retry with an argument: usage (2)" "menv sh /p/sbin/glassine-loader-mark display-retry x 2>/dev/null; [ \$? = 2 ]"
+# the one-shot requests on a PC (HANDOFF=uefi): recovery (012 FR-021, boot-partition.md "Keys"), never menu
+lm() { menv sh /p/sbin/glassine-loader-mark "$@"; }
+both() { $M in-use $MB | head -n 1 | cut -d' ' -f3; }
+mstart
+ok "can-request on a PC: recovery 0, menu 3 (its loader opens the list with a key at power-on)" "lm can-request recovery && { lm can-request menu; [ \$? = 3 ]; } && same"
+ok "request menu on a PC: 3, said, nothing written" "lm request menu 2>$MW/out; [ \$? = 3 ] && grep -q 'no start menu on request' $MW/out && same"
+ok "request recovery on a blocklist board (no loader record): 3, nothing written" "MBOARD=$MW/board.bl lm request recovery 2>/dev/null; [ \$? = 3 ] && same"
+S1=$(mseq)
+ok "request recovery: the loader reads request=recovery, seq one higher, both slots valid, the count kept" "lm request recovery 2>/dev/null && [ \"\$($M get $MB request)\" = recovery ] && [ \$(mseq) = \$((S1 + 1)) ] && [ \"\$(both)\" = 1 ] && [ \"\$($M get $MB unmarked)\" = 2 ] && [ \"\$($M get $MB zz_unknown)\" = keep ]"
+ok "the shutdown step after it: one off, the request kept" "mshut && [ \"\$($M get $MB unmarked)\" = 1 ] && [ \"\$($M get $MB request)\" = recovery ] && [ \"\$(both)\" = 1 ]"
+ok "request clear: the loader reads no request" "lm request clear 2>/dev/null && [ -z \"\$($M get $MB request)\" ]"
+mstart request=trial
+ok "a kernel trial requested: request recovery refused (1), the trial kept" "! lm request recovery 2>$MW/out && grep -q 'kernel trial' $MW/out && same"
+mstart; export GLASSINE_BI_AFTER_SLOT='printf Z | dd of="$1" bs=1 seek=40 conv=notrunc 2>/dev/null'
+ok "request recovery whose bytes don't read back (both tries): 1, said, the loader reads no request" "! lm request recovery 2>$MW/out && grep -q 'request=recovery not written' $MW/out && [ -z \"\$($M get $MB request)\" ]"
+unset GLASSINE_BI_AFTER_SLOT
+mstart; echo 2 > $W/cnt; export GLASSINE_BI_AFTER_SLOT='n=$(cat /w/cnt); echo $((n - 1)) > /w/cnt; [ "$n" -le 0 ] || truncate -s 300 "$1"'
+ok "request recovery cut both times (a short slot): 1, the loader reads no request" "! lm request recovery 2>/dev/null && [ -z \"\$($M get $MB request)\" ]"
+unset GLASSINE_BI_AFTER_SLOT; echo 0 > $W/cnt
+cut_ok=1; mstart; lm request recovery 2>/dev/null
+cp $MB/glassine/loader.a $W/mna; cp $MB/glassine/loader.b $W/mnb
+for at in 0 1 100 500 4096 16383; do
+    cp $W/ma $MB/glassine/loader.a; cp $W/mb $MB/glassine/loader.b
+    if cmp -s $W/mna $W/ma; then nf=$W/mnb tf=$MB/glassine/loader.b of=$W/mb; else nf=$W/mna tf=$MB/glassine/loader.a of=$W/ma; fi
+    head -c $at $nf > $W/cut; tail -c +$((at + 1)) $of >> $W/cut; cp $W/cut $tf
+    q=$($M get $MB request) b=$(both)
+    # the loader takes a request only from both slots valid: a cut is no request, or the whole new record
+    case "$q $b" in " 1"|" 0"|"recovery 1") ;; *) cut_ok=0; echo "  cut at $at: request '$q', both $b" ;; esac
+done
+ok "request recovery cut at any byte: the loader takes no request, or request=recovery from both slots valid" "[ $cut_ok = 1 ]"
 # the shutdown step (010 FR-012)
 mstart
 ok "shutdown, this set started by default, no mark, no failure: one off (2 -> 1)" "mshut && [ \"\$($M get $MB unmarked)\" = 1 ] && [ \"\$($M get $MB zz_unknown)\" = keep ]"

@@ -8,9 +8,12 @@ golden bytes and a port of the loader's reader (`test/bootpart`); nothing has ru
 real PC. The healthy mark and the shutdown step (`unmarked`) are built too
 (`glassine-loader-mark`, run by `glassine-deploy-accept`, its service's stop and
 `glassine-hibernate`; host-tested in `test/bootpart`), and so is the rollback after a
-healthy limit start (`glassine-bootimg rollback --limit`, 010 FR-013). Not built here: the
-`reboot recovery` request, the deployment list (`deploys`), the recovery's update, the
-repair, the splash store's writer on FAT. The raw form's writer is built too
+healthy limit start (`glassine-bootimg rollback --limit`, 010 FR-013), and the running
+system's requests (`glassine-loader-mark request`, run by `glassine-reboot-clean`:
+`reboot recovery` writes `request=recovery`, `reboot menu` writes `request=menu` under a
+parent; host-tested in `test/bootpart`, `test/bootraw` and `test/reboot`). Not built here:
+the deployment list (`deploys`), the recovery's update, the repair, the splash store's
+writer on FAT, the clearing of a request a loader that can't write left. The raw form's writer is built too
 (`glassine-boot-raw`: the region table, the loader region, the splash regions; the
 loader record by slots through `glassine-loader-mark` with `BOOT_FORM=raw`), host-tested
 in `test/bootraw` against the loader's golden bytes and a port of its reader, and so is
@@ -163,7 +166,7 @@ write; the loader runs when no system does.
 | `previous`, `previous_rec` | the previous set, or both empty | with `default` |
 | `trial`, `trial_rec` | the trial set, or both empty | `glassine-bootimg` (install sets them; accept, cancel and a failed trial clear them) |
 | `recovery`, `recovery_rec` | the recovery image in `\glassine\recovery\` | the installer; the recovery's update; the repair |
-| `request` | empty, `trial`, `recovery` or `menu` | set by `glassine-bootimg reboot-test` (`trial`), by `reboot recovery` (`recovery`) and, on a machine whose loader shows the start menu under a parent, by the running system's "reboot to the start menu" (`menu`; [handback.md](handback.md#the-start-menu)); cleared by the loader before it acts on it; cleared by the running system when it finds one the loader left (a loader that can't write). A PC's loader takes no `menu` request (its list opens with a key at power-on) |
+| `request` | empty, `trial`, `recovery` or `menu` | set by `glassine-bootimg reboot-test` (`trial`), by `reboot recovery` (`recovery`) and, on a machine whose loader shows the start menu under a parent, by the running system's "reboot to the start menu" (`reboot menu`, `menu`; [handback.md](handback.md#the-start-menu)); both through `glassine-loader-mark request` (below); cleared by the loader before it acts on it; cleared by the running system when it finds one the loader left (a loader that can't write). A PC's loader takes no `menu` request (its list opens with a key at power-on) |
 | `unmarked` | the count of starts not marked healthy, decimal | the loader (one more, before it starts the default or the previous set); the boot-success step (`0`: the healthy mark); the shutdown step (one less, 010 FR-012); the recovery (`0`, 010 FR-014) |
 | `started` | id of the set the loader started last | the loader, in the same write as the count or the cleared request |
 | `started_why` | why: `default`, `limit` (the previous set, because the count reached the limit), `choice` (the previous kernel set, picked in the list), `request` (a trial) | the loader, with `started` |
@@ -210,6 +213,22 @@ write; the loader runs when no system does.
   writes the record with `request` empty, and `started` and `started_why=request` for a
   trial, and only after that write is flushed and read back does it start the trial set
   or the recovery. A trial start is not counted.
+- **The running system's requests** (`glassine-loader-mark request menu|recovery|clear`,
+  run by `glassine-reboot-clean menu|recovery` before a plain reboot) are one write of the
+  record that changes `request` alone, under the state lock, then a read of the record
+  again: the request counts only when the record in use holds it and both slots are valid,
+  the record the loader takes a request from. A request already there with both slots
+  valid is not written again. A board without a loader record, for `menu` any board but
+  the raw form, and on the raw form a partition whose region `loader` holds no valid loader
+  (the parent would boot its baseline and leave the request for a later start) refuse
+  with exit 3 before anything is written (`glassine-loader-mark
+  can-request` asks the same with no write, for the desktop's entry). A `request=trial` is
+  `glassine-bootimg`'s: never replaced or cleared by these. `reboot menu` writes nothing
+  and doesn't reboot when the request isn't written, and takes the request back when the
+  reboot can't be started after it. `reboot recovery` uses the parent's own recovery
+  request (the reboot reason) where the board keeps no loader record or the write fails,
+  never both: a parent that went to its recovery by its reason would leave the request
+  for the next start.
 - **The deployment list** holds the deployments the loader's list offers (010 FR-040):
   the previous one first, then the candidate, the last failed one and the kept ones,
   newest first. `<state>` is `previous`, `candidate`, `failed` or `kept`. `<label>` is
@@ -711,7 +730,7 @@ FR-020); the installer writes the first.
 **The loader record** in the raw form is written by the same code as on FAT
 (`gp_write`): the slot not in use, its 16384 bytes at the slot's place in `record`,
 flushed and read back (one retry). `glassine-loader-mark` (`healthy`, `display-retry`,
-`shutdown`) does so on a board whose `board.conf` says `BOOT_FORM=raw`; the
+`shutdown`, `request`, `display-sync`) does so on a board whose `board.conf` says `BOOT_FORM=raw`; the
 partition is the one named `BOOT_PART` (default `glassine-boot`), found on the system
 partition's disk when the command line names one (`glassine.system=PARTUUID=`), else as
 the one partition of that name on any disk (a device with one disk). A slot whose last
@@ -723,6 +742,14 @@ otherwise; `raw`, the raw form (not with `HANDOFF=uefi`: a PC is always FAT). It
 only where the loader record is; how kernels reach the parent stays `HANDOFF`'s. A board
 sets it once the parent starts the loader and the parent's recovery clears the count
 (012 FR-020).
+
+`LOADER_DISPLAY` (board key, raw form only): the record's `display` for this board (`epd-fw`
+on a board whose firmware has the extended graphics output of handback.md). The loader
+update's last step (`glassine-loader-mark display-sync`, after the regions hold the
+package's files) writes `display` to it when the record holds another value, by
+`gp_write` with its read-back; it never writes `display_failed` or `drew`, so a sticky
+`display_failed` stays until the person's `display-retry`. Empty or absent: `display` is
+left as it is (the installer's).
 
 Every write of `glassine-boot-raw` and of the record's writers holds an exclusive
 lock (`flock`) on the device, so a region write and a record write never overlap; the

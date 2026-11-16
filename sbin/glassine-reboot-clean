@@ -1,5 +1,5 @@
 #!/bin/sh
-# glassine-reboot-clean [recovery|bootloader|<reason>] — an orderly reboot WITH a
+# glassine-reboot-clean [menu|recovery|bootloader|<reason>] — an orderly reboot WITH a
 # reason. busybox `reboot` has init run OpenRC's shutdown (services stopped, the
 # file systems read-only) but can't pass a reason; glassine-reboot passes one but
 # skips the shutdown, which leaves the root fs dirty. The test boot looks at the
@@ -10,15 +10,62 @@
 # mount-ro and glassine-mount-ro), reboots with the reason. Nothing of this
 # script has to outlive the shutdown (its last steps kill what is left and
 # unmount from under it). No reason: a plain reboot.
+#
+# Two reasons are requests in the loader record (GlassineOS/boot
+# docs/boot-partition.md "Keys", written by glassine-loader-mark before the
+# reboot; the reboot after it is a plain one, the loader acts on the request):
+#   menu      the loader's start menu at the next start (docs/handback.md "The
+#             start menu"). Only where the loader takes it (glassine-loader-mark
+#             can-request menu); else exit 3 and no reboot. A request that isn't
+#             written: exit 1, no reboot. A reboot that can't be started after
+#             the write takes the request back
+#   recovery  where the loader takes it (012 FR-021): request=recovery in the
+#             record. Where it doesn't (no loader record), or the write fails:
+#             the bootloader's own recovery request, the reason as above
+# GLASSINE_REBOOT_FORCE=1 (reboot -f): no shutdown; a reason goes straight to
+# glassine-reboot, and GLASSINE_INIT_REBOOT is the forced reboot.
 # Exit 1: glassine-reboot-reason isn't in the shutdown runlevel (the reboot would
-# lose the reason).
+# lose the reason), or a menu request not written; 2 a bad reason; 3 this board's
+# loader takes no menu request.
 REASON_FILE=${GLASSINE_REBOOT_REASON_FILE:-/run/glassine-reboot.reason}
 RUNLEVELS=${GLASSINE_RUNLEVELS:-/etc/runlevels}
 INIT_REBOOT=${GLASSINE_INIT_REBOOT:-reboot}
+NOW=${GLASSINE_REBOOT:-/usr/sbin/glassine-reboot}
+MARK=${GLASSINE_LOADER_MARK:-/usr/sbin/glassine-loader-mark}
+say() { echo "glassine-reboot-clean: $*" >&2; }
 [ -n "$1" ] || exec $INIT_REBOOT
-case "$1" in *[!a-z0-9-]*) echo "glassine-reboot-clean: bad reason '$1'" >&2; exit 2 ;; esac
+case "$1" in *[!a-z0-9-]*) say "bad reason '$1'"; exit 2 ;; esac
+
+# the request is in the record: a plain reboot; one that doesn't start takes it back
+request_reboot() {
+	$INIT_REBOOT && exit 0
+	_r=$?
+	"$MARK" request clear 2>/dev/null || say "the $1 request could not be taken back: the loader acts on it at the next start"
+	say "the reboot did not start (exit $_r)"
+	exit 1
+}
+
+case "$1" in
+menu)
+	[ -x "$MARK" ] || { say "glassine-loader-mark is not installed: no start menu request, no reboot"; exit 3; }
+	"$MARK" request menu; _r=$?
+	[ $_r = 0 ] || { say "the start menu request was not written: no reboot"; [ $_r = 3 ] && exit 3; exit 1; }
+	request_reboot menu
+	;;
+recovery)
+	if [ -x "$MARK" ] && "$MARK" can-request recovery 2>/dev/null; then
+		"$MARK" request recovery && request_reboot recovery
+		say "request=recovery was not written to the loader record: the bootloader's own recovery request instead"
+	fi
+	;;
+esac
+
+if [ "${GLASSINE_REBOOT_FORCE:-}" = 1 ]; then
+	sync
+	exec "$NOW" "$1"
+fi
 { [ -e "$RUNLEVELS/shutdown/glassine-reboot-reason" ] || [ -L "$RUNLEVELS/shutdown/glassine-reboot-reason" ]; } ||
-	{ echo "glassine-reboot-clean: glassine-reboot-reason is not in the shutdown runlevel" >&2; exit 1; }
+	{ say "glassine-reboot-reason is not in the shutdown runlevel"; exit 1; }
 printf '%s\n' "$1" > "$REASON_FILE.new" && mv -f "$REASON_FILE.new" "$REASON_FILE" ||
-	{ echo "glassine-reboot-clean: cannot write $REASON_FILE" >&2; exit 1; }
+	{ say "cannot write $REASON_FILE"; exit 1; }
 exec $INIT_REBOOT

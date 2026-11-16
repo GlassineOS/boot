@@ -6,7 +6,10 @@
 #   no reason         busybox reboot with the options as given
 #   <reason>          glassine-reboot-clean <reason>: the whole shutdown, then the
 #                     reason reaches the bootloader
-#   -f <reason>       glassine-reboot <reason> at once, no shutdown (like -f)
+#   -f <reason>       no shutdown (like -f): glassine-reboot-clean with
+#                     GLASSINE_REBOOT_FORCE=1, which writes a loader request
+#                     (menu, recovery) and then reboots with busybox reboot -f,
+#                     or hands the reason to glassine-reboot at once
 # -d and -n don't go with a reason (exit 2).
 BUSYBOX_REBOOT=${GLASSINE_BUSYBOX_REBOOT:-/sbin/reboot}
 CLEAN=${GLASSINE_REBOOT_CLEAN:-/usr/sbin/glassine-reboot-clean}
@@ -28,7 +31,6 @@ done
 [ -z "$other" ] || { echo "reboot: only -f goes with a reason" >&2; exit 2; }
 case "$reason" in *[!a-z0-9-]*) echo "reboot: bad reason '$reason'" >&2; exit 2 ;; esac
 if [ -n "$force" ]; then
-	sync
-	exec "$NOW" "$reason"
+	GLASSINE_REBOOT_FORCE=1 GLASSINE_REBOOT=$NOW GLASSINE_INIT_REBOOT="$BUSYBOX_REBOOT -f" exec "$CLEAN" "$reason"
 fi
 GLASSINE_INIT_REBOOT=$BUSYBOX_REBOOT exec "$CLEAN" "$reason"
