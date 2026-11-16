@@ -329,9 +329,26 @@ ok "bases remove: an unknown base: exit 1" "$G bases remove nope --yes 2>$W/err;
 ok "bases remove: the current deployment's base: refused even with --yes" "$G bases remove $NB --yes 2>$W/err; [ \$? = 1 ] && grep -q \"in use by deployment $CUR\" $W/err && [ -e $S/bases/$NB ]"
 ok "bases remove: the candidate's base: refused" "$G bases remove b2 --yes 2>$W/err; [ \$? = 1 ] && grep -q \"in use by deployment $SB\" $W/err && [ -e $S/bases/b2 ]"
 ok "bases remove: unreadable deployments do not read as unused" "mv $U/deployments/$CUR/meta $W/meta.save; $G bases remove b3 --yes 2>$W/err; a=\$?; mv $W/meta.save $U/deployments/$CUR/meta; [ \$a = 1 ] && grep -q 'cannot read the deployments' $W/err && [ -e $S/bases/b3 ]"
+# boot/ files: the ones no kernel record names and received before the last install go
+BD=$S/boot; mkdir -p $BD/dtb $BD/initramfs $S/state/bootimg
+for n in dtb/dev@1111111111111111.dtb dtb/dev@2222222222222222.dtb initramfs/aaaaaaaaaaaa@3333333333333333.cpio.gz \
+    initramfs/bbbbbbbbbbbb@4444444444444444.cpio.gz initramfs/cccccccccccc@5555555555555555.cpio.gz \
+    initramfs/dddddddddddd@6666666666666666.cpio.gz dtb/dev@7777777777777777.dtb; do
+    m=${n%.dtb}; m=${m%.cpio.gz}; echo x > $BD/$n; echo format=1 > $BD/$m.manifest; touch -d '2026-01-01 00:00:00' $BD/$n
+done
+touch -d '2026-03-01 00:00:00' $BD/dtb/dev@7777777777777777.dtb
+printf 'format=1\nid=r1\nstaged=2026-02-01T00:00:00Z\ndtb=dev@1111111111111111\ninitramfs=aaaaaaaaaaaa@3333333333333333\n' > $S/state/bootimg/r1.manifest
+printf 'format=1\nid=r2\nstaged=2025-12-01T00:00:00Z\ndtb=\ninitramfs=bbbbbbbbbbbb\n' > $S/state/bootimg/r2.manifest
+printf 'format=1\nid=r3\ndtb=\ninitramfs=\n' > $S/state/bootimg/r3.manifest
+gs_update $S/state/kernel deferred_initramfs=cccccccccccc@5555555555555555
+ls -R $BD > $W/boot.before
 ok "bases remove: an unused base: gone, without asking" "$G bases remove b3 </dev/null >/dev/null && [ ! -e $S/bases/b3 ] && ! btrfs subvolume list $S | grep -q 'bases/b3$'"
+ok "bases remove: a kernel record without a staged time: no boot/ file removed" "ls -R $BD | cmp -s - $W/boot.before"
+rm $S/state/bootimg/r3.manifest
 ok "bases remove: the previous deployment's base: asks, names the rollback, nothing removed" "$G bases remove bad </dev/null 2>$W/err; [ \$? = 1 ] && grep -q 'rm1' $W/err && grep -q 'Rollback to rm1 is lost' $W/err && [ -e $S/bases/bad ]"
 ok "bases remove --yes: removed; the deployment stays, base_present=no" "$G bases remove bad --yes >/dev/null && [ ! -e $S/bases/bad ] && [ -e $U/deployments/rm1/meta ] && $G list --porcelain | grep 'id=rm1' | grep -q 'base_present=no'"
+ok "bases remove: prunes boot/: unnamed and older than the last install gone (file and manifest), named, deferred, bare-commit and newer kept" "[ ! -e $BD/dtb/dev@2222222222222222.dtb ] && [ ! -e $BD/dtb/dev@2222222222222222.manifest ] && [ ! -e $BD/initramfs/dddddddddddd@6666666666666666.cpio.gz ] && [ ! -e $BD/initramfs/dddddddddddd@6666666666666666.manifest ] && [ -e $BD/dtb/dev@1111111111111111.manifest ] && [ -e $BD/initramfs/aaaaaaaaaaaa@3333333333333333.cpio.gz ] && [ -e $BD/initramfs/bbbbbbbbbbbb@4444444444444444.cpio.gz ] && [ -e $BD/initramfs/cccccccccccc@5555555555555555.manifest ] && [ -e $BD/dtb/dev@7777777777777777.dtb ]"
+rm -rf $BD $S/state/bootimg/r1.manifest $S/state/bootimg/r2.manifest; gs_update $S/state/kernel deferred_initramfs=
 C0=$(st candidate)
 ok "select, rollback: a deployment without its base: refused, candidate unchanged" "$G select rm1 2>$W/err; a=\$?; $G rollback 2>/dev/null; [ \$a\$? = 11 ] && grep -q 'its base bad is not on' $W/err && [ \"\$(st candidate)\" = \"$C0\" ]"
 rm -rf $U/deployments/rm1; gs_update $S/state/deploy "previous=$PREV0"

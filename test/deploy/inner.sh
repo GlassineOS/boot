@@ -408,5 +408,53 @@ ok "stage: less free space than the replay needs: exit 5, said with both numbers
 ok "stage --no-replay: no space check" "PATH=$W/shimdf:\$PATH $G stage gb --no-replay --yes </dev/null >/dev/null 2>&1 && [ -n \"\$(gs_kv \$D staged)\" ]"
 unset GLASSINE_DEPLOY_MOUNTINFO
 
+# --- receive --boot: device trees and initramfs into boot/ -------------------------
+BW=$W/bootin; mkdir -p $BW; SB=$W/sysmnt/boot
+mkbf() {    # mkbf KIND LABEL CONTENT [MANIFEST-EXTRA]: a file named by its content + its manifest, in $BW; prints its path
+    printf '%s' "$3" > $BW/x; _s=$(sha256sum $BW/x | cut -d ' ' -f 1); _n=$2@$(printf '%.16s' $_s)
+    if [ $1 = dtb ]; then mv $BW/x $BW/$_n.dtb; printf 'format=1\ndevice=%s\nsha256=%s\n%s' $2 $_s "${4:-}" > $BW/$_n.manifest; echo $BW/$_n.dtb
+    else mv $BW/x $BW/$_n.cpio.gz; printf 'format=1\ncommit=%s0000000000000000000000000000\nsha256=%s\nstate_format=1\nneeds=\nfeatures=\n%s' $2 $_s "${4:-}" > $BW/$_n.manifest; echo $BW/$_n.cpio.gz; fi
+}
+nonew() { [ -z "$(find $SB -name '*.new' 2>/dev/null)" ]; }
+IR=$(mkbf initramfs 0123456789ab initramfs-one); IRN=$(basename $IR .cpio.gz)
+DT=$(mkbf dtb example-board dtb-one); DTN=$(basename $DT .dtb)
+ok "receive --boot: an initramfs: boot/initramfs/, its file and manifest, nothing .new" "$G receive $IR --boot >$W/out && cmp -s $IR $SB/initramfs/$IRN.cpio.gz && cmp -s ${IR%.cpio.gz}.manifest $SB/initramfs/$IRN.manifest && grep -q 'received boot/initramfs/$IRN' $W/out && nonew"
+ok "receive --boot: a device tree: boot/dtb/" "$G receive $DT --boot --sha256 \$(sha256sum $DT | cut -d ' ' -f 1) >/dev/null && cmp -s $DT $SB/dtb/$DTN.dtb && cmp -s ${DT%.dtb}.manifest $SB/dtb/$DTN.manifest"
+ok "receive --boot: the same name again: a no-op, said" "$G receive $IR --boot >$W/out && grep -q 'is there already' $W/out"
+ok "receive --boot: needs no btrfs-progs" "! command -v btrfs >/dev/null"
+cp -R $SB $W/sbsave
+same() { diff -r $W/sbsave $SB >/dev/null; }
+X=$BW/fedcba987654@$(sha256sum $IR | cut -c1-16)
+cp $IR $X.cpio.gz; cp ${IR%.cpio.gz}.manifest $X.manifest
+ok "receive --boot: the name's commit is not the manifest's: refused, nothing changed" "$G receive $X.cpio.gz --boot 2>$W/err; [ \$? = 1 ] && grep -q 'is not the manifest.s commit' $W/err && same"
+Y=$BW/0123456789ab@0000000000000000; cp $IR $Y.cpio.gz; cp ${IR%.cpio.gz}.manifest $Y.manifest
+ok "receive --boot: the name's id is not the content's: refused, nothing changed" "$G receive $Y.cpio.gz --boot 2>$W/err; [ \$? = 1 ] && grep -q 'is not the content' $W/err && same"
+Z=$(mkbf initramfs 0123456789ab initramfs-two); sed -i 's/^sha256=.*/sha256=00/' ${Z%.cpio.gz}.manifest
+ok "receive --boot: the manifest's sha256 is not the file's: refused, nothing changed" "$G receive $Z --boot 2>$W/err; [ \$? = 1 ] && grep -q 'its manifest says 00' $W/err && same"
+V=$(mkbf dtb other-device dtb-two); VI=$(basename $V .dtb | cut -d@ -f2)
+mv $V $BW/example-board@$VI.dtb; mv $BW/other-device@$VI.manifest $BW/example-board@$VI.manifest; V=$BW/example-board@$VI.dtb
+ok "receive --boot: a device tree whose manifest names another device: refused" "$G receive $V --boot 2>$W/err; [ \$? = 1 ] && grep -q 'not the manifest.s device' $W/err && same"
+Q=$(mkbf initramfs 0123456789ab initramfs-three); rm ${Q%.cpio.gz}.manifest
+ok "receive --boot: no manifest beside it: refused" "$G receive $Q --boot 2>$W/err; [ \$? = 1 ] && grep -q 'no manifest' $W/err && same"
+Q=$(mkbf initramfs 0123456789ab initramfs-four); sed -i 's/^format=1/format=2/' ${Q%.cpio.gz}.manifest
+ok "receive --boot: a newer manifest format: exit 3" "$G receive $Q --boot 2>/dev/null; [ \$? = 3 ] && same"
+ok "receive --boot: a wrong --sha256: refused" "$G receive $IR --boot --sha256 00 2>$W/err; [ \$? = 1 ] && grep -q 'expected 00' $W/err && same"
+ok "receive --boot: stdin, --modules, another kind of file: usage (exit 2)" "$G receive - --boot </dev/null 2>/dev/null; a=\$?; $G receive $IR --boot --modules 2>/dev/null; b=\$?; $G receive $W/kv --boot 2>/dev/null; [ \$a\$b\$? = 222 ] && same"
+cp $SB/initramfs/$IRN.cpio.gz $W/f.save; printf 'other' > $SB/initramfs/$IRN.cpio.gz
+ok "receive --boot: the name is there with other bytes: refused, never replaced" "$G receive $IR --boot 2>$W/err; [ \$? = 1 ] && grep -q 'there with other bytes' $W/err && [ \"\$(cat $SB/initramfs/$IRN.cpio.gz)\" = other ]"
+cp $W/f.save $SB/initramfs/$IRN.cpio.gz
+I2=$(mkbf initramfs 0123456789ab initramfs-five); I2N=$(basename $I2 .cpio.gz)
+export GLASSINE_DEPLOY_TEST=1
+ok "receive --boot: a read-back mismatch: exit 1, no file, no manifest, no .new" "GLASSINE_DEPLOY_AFTER_BOOTNEW='printf x >> \"\$1\"' $G receive $I2 --boot 2>$W/err; [ \$? = 1 ] && grep -q 'read-back does not match' $W/err && [ ! -e $SB/initramfs/$I2N.cpio.gz ] && [ ! -e $SB/initramfs/$I2N.manifest ] && nonew"
+ok "receive --boot: a cut write (killed before the rename): .new left, no file, no manifest" "GLASSINE_DEPLOY_AFTER_BOOTNEW='kill -9 \$\$' $G receive $I2 --boot 2>/dev/null; [ ! -e $SB/initramfs/$I2N.cpio.gz ] && [ ! -e $SB/initramfs/$I2N.manifest ] && ! nonew"
+ok "receive --boot: the next receive sweeps the cut .new and completes" "$G receive $I2 --boot >$W/out && grep -q 'a cut receive' $W/out && cmp -s $I2 $SB/initramfs/$I2N.cpio.gz && [ -e $SB/initramfs/$I2N.manifest ] && nonew"
+rm $SB/initramfs/$I2N.manifest
+ok "receive --boot: the file there without its manifest (cut after the file): the manifest is completed" "$G receive $I2 --boot >/dev/null && cmp -s ${I2%.cpio.gz}.manifest $SB/initramfs/$I2N.manifest && nonew"
+ok "receive --boot: a cut manifest write: the file stays, the manifest is not there, a receive again completes it" "GLASSINE_DEPLOY_AFTER_BOOTNEW='case \$1 in *.manifest.new) kill -9 \$\$ ;; esac' $G receive $(mkbf dtb example-board dtb-three) --boot 2>/dev/null; D3=\$(ls $SB/dtb/*.dtb | grep -v $DTN); [ -e \"\$D3\" ] && [ ! -e \"\${D3%.dtb}.manifest\" ] && $G receive $BW/\$(basename \$D3) --boot >/dev/null && [ -e \"\${D3%.dtb}.manifest\" ] && nonew"
+unset GLASSINE_DEPLOY_TEST
+printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/dev/null
+ok "receive --boot: hibernated: exit 4, nothing written" "$G receive $(mkbf dtb example-board dtb-four) --boot </dev/null 2>/dev/null; [ \$? = 4 ] && [ \$(ls $SB/dtb/*.dtb | wc -l) = 2 ]"
+gs_invalidate_file $U/swap/hibernate
+
 echo "$fails failed"
 [ $fails = 0 ]
