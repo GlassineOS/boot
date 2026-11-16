@@ -160,7 +160,7 @@ apk add -q sgdisk >/dev/null 2>&1
 GU=5a0c3e7d-1b2f-4c6a-8d9e-0f1a2b3c4d5e
 SB2=/sysblock2; mkdir -p $SB2/devices/vdz/queue $SB2/devices/vdz/vdz1 /devdir
 head -c 4194304 /dev/zero > /devdir/vdz
-sgdisk -o -n 1:2048:+1M -c 1:pc-system -u 1:$(echo $GU | tr a-f A-F) /devdir/vdz >/dev/null
+sgdisk -o -n 1:2048:+1M -c 1:pc-system -u "1:$(echo $GU | tr a-f A-F)" /devdir/vdz >/dev/null
 printf 'MAJOR=254\nDEVNAME=vdz\nDEVTYPE=disk\n' > $SB2/devices/vdz/uevent; echo 512 > $SB2/devices/vdz/queue/logical_block_size
 printf 'MAJOR=254\nDEVNAME=vdz1\nDEVTYPE=partition\nPARTN=1\nPARTNAME=pc-system\n' > $SB2/devices/vdz/vdz1/uevent; echo 2048 > $SB2/devices/vdz/vdz1/start
 ln -s devices/vdz/vdz1 $SB2/vdz1; ln -s devices/vdz $SB2/vdz

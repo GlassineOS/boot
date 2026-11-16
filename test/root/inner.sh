@@ -606,6 +606,7 @@ gr_boot_umount $R
 # a candidate with two tries, $CUR current
 mount -t btrfs $SD $W/sysmnt && gs_update $W/sysmnt/state/deploy candidate=d1 tries=2 staged= failed= && umount $W/sysmnt
 dsum() { mount -t btrfs -o ro $SD $W/sysmnt && md5sum < $W/sysmnt/state/deploy; r=$?; umount $W/sysmnt; return $r; }
+# shellcheck disable=SC2034  # read in the ok strings
 D0=$(dsum)
 ok "a deployment request: that deployment, no pick, no try, state/deploy byte for byte unchanged" "gr_boot $SD $UDEV $P $R 7.3.0 '' $CUR 2>$W/blog && [ \"\$GR_BOOTED\" = $CUR ] && [ \"\$GR_ONCE\" = $CUR ] && grep -q 'deployment $CUR by request, for this start only' $W/blog && mountpoint -q $R/home"
 ok "a deployment request: gr_carry records it in deploy-once" "gr_carry $R && [ \"\$(cat $R/run/glassine/deploy-once)\" = $CUR ] && [ \"\$(cat $R/run/glassine/booted)\" = $CUR ]"
