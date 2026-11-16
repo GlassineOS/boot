@@ -63,7 +63,7 @@ differences:
 | `trial`, `trial_rec` | the trial set, as on a PC |
 | `recovery`, `recovery_rec` | not used: the recovery is the parent's own |
 | `probe` | `1`: write the probe report at this start; anything else, or empty: don't. Set and cleared by the running system; the loader never changes it |
-| `display` | `epd-fw`: draw the splash through the firmware's panel refresh when the firmware has an extended graphics output (below, "A display through the firmware's refresh"), and show the start menu when it is asked for ("The start menu"); anything else, or empty: headless. Set by the running system or the installer; the loader never changes it |
+| `display` | `epd-fw`: draw the splash through the firmware's panel refresh when the firmware has an extended graphics output (below, "A display through the firmware's refresh"), and show the start menu when it is asked for ("The start menu"); anything else, or empty: headless. Set by the installer, or by the running system from the board's `LOADER_DISPLAY` ([boot-partition.md](boot-partition.md#the-running-systems-writer)); the loader never changes it |
 | `display_partial` | `0`: every refresh of the start menu is the whole panel; `1` or empty: only the changed rectangles ("The start menu"). Set by the running system or the installer; the loader never changes it |
 | `drew` | `1`: a start drew through the firmware's refresh and its last refresh hasn't returned (yet); empty otherwise. Written by the loader only (below) |
 | `display_failed` | set (the count it was set at): a start that drew was never marked healthy, so the loader no longer draws, whatever `unmarked` says. Written by the loader; cleared only by the person's retry, `glassine-loader-mark display-retry`, never by a healthy mark |

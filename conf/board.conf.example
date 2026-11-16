@@ -52,6 +52,11 @@ HANDOFF=
 # that only once it starts the loader and its recovery clears the count (012
 # FR-020), so it stays empty.
 BOOT_FORM=
+# The loader record's display on the raw form (docs/boot-partition.md, "The running
+# system's writer"): epd-fw where the firmware refreshes the panel for the loader;
+# the loader update writes it into the record when it differs, never clearing
+# display_failed. Empty: the record's display is left as it is.
+LOADER_DISPLAY=
 # The blocklist hand-off (docs/blocklist.md, "Board keys"), read only with
 # HANDOFF=blocklist. The default slot's partition name, which holds the record;
 # the reboot reason that asks the bootloader for the one-shot; the bootloader's
