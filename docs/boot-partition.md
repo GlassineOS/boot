@@ -543,15 +543,16 @@ Format 1 is format 2 with these differences, and readers read it as before:
 
 #### Sizes and speed
 
-Measured on 21 test pictures (e-ink desktop and settings screenshots of a 1404×1872
-panel, a 1920×1080 colour desktop, two CC0 photographs, gradients and noise), on a
+Measured on 21 test pictures (seven e-ink desktop and settings screenshots of a 1404×1872
+panel and a page of dense text rendered at that size, a 1920×1080 colour desktop, two CC0
+photographs, gradients and noise), on a
 desktop x86-64 core with the loader's build settings (size-optimised). An estimate for an
-in-order Arm Cortex-A53-class core at about 1.6 GHz is ten times these times; it is not
-measured. Size is the file's, as a share of the raw picture in that layout:
+in-order Arm Cortex-A53-class core at about 1.6 GHz is ten times these times: an assumed
+factor, not measured. Size is the file's, as a share of the raw picture in that layout:
 
 | Picture, layout | none | run-length | LZ4 | up + LZ4 |
 |---|---|---|---|---|
-| e-ink screenshots, grey8 (median / largest of 8) | 1 | 0.030 / 0.210 | 0.019 / 0.081 | 0.013 / 0.074 |
+| e-ink screenshots and the text page, grey8 (median / largest of 8; the largest is the text page, the screenshots stay at or below 0.033 with LZ4) | 1 | 0.030 / 0.210 | 0.019 / 0.081 | 0.013 / 0.074 |
 | colour desktop 1920×1080, RGB888 | 1 | 0.155 | 0.073 | 0.096 |
 | colour desktop 1920×1080, BGRx | 1 | 0.148 | 0.060 | 0.078 |
 | photographs 1920×1080, RGB888 | 1 | 0.96 | 0.85 | 0.75 |
@@ -561,7 +562,7 @@ measured. Size is the file's, as a share of the raw picture in that layout:
 
 - Writing an e-ink screenshot from the screen's 32-bit pixels (to grey8, LZ4, the CRC)
   takes about 4 ms (40 ms estimated on an A53-class core), and the result is 13 to
-  212 KB instead of 2.6 MB. Without compression, the CRC of the whole picture alone takes
+  86 KB for the screenshots and 212 KB for the text page, instead of 2.6 MB. Without compression, the CRC of the whole picture alone takes
   longer; LZ4 is the fast choice.
 - Reading and checking one image (CRC, decoding, the filter, conversion to the
   display's 32-bit pixels) takes at most 22 ms on that core for every picture above,
@@ -679,7 +680,8 @@ What fits a 3 MiB image region (3,145,664 bytes of payload):
 
 - **grey8, always:** up to 3,145,664 pixels uncompressed, so every full-panel picture of
   the Boox Note Air's 1404×1872 panel (2,628,352 bytes with its header) fits whatever it
-  shows, noise included. Its screenshots take 13 to 212 KB with LZ4.
+  shows, noise included. Its screenshots take 13 to 86 KB with LZ4, a page of dense text
+  212 KB.
 - **RGB888 or BGRx:** uncompressed, up to 1,048,554 or 786,416 pixels (such as 1280×800
   or 1024×600). A full 1920×1080 or 1404×1872 colour picture fits only compressed to 3 MiB
   or less: desktops and flat pictures do (0.06 to 0.10 of raw with LZ4), photographs don't
