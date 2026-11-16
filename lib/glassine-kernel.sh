@@ -24,6 +24,16 @@
 # holds what the bootloader reads (candidate_img, failed_img), and state/bootimg
 # what can go back into the default slot (current_img, previous_img, writing).
 #
+# uefi (docs/boot-partition.md, specs/010 FR-025 to FR-028): the image is a
+# kernel set on the PC's boot partition (lib/glassine-bootpart.sh). install
+# assembles its initrd (state/bootimg/<id>.img, the manifest adds kernel_sha256,
+# kernel_size and set_rec, the sha256 of its set.rec), writes the set next to the
+# default one and names it as the trial in the loader record; reboot-test writes
+# request=trial; accept and rollback are the default-slot write of 004 FR-009 (one
+# write of the record); cancel and a failed trial clear the trial. The boot
+# partition (board key BOOT_PART, on the disk of the system partition this boot
+# names by its identity) is mounted only for the time of a command (FR-026).
+#
 # The trial (FR-011, FR-012): the initramfs takes the try on the candidate's
 # boot (lib/glassine-root.sh, gr_boot) and boots the current deployment;
 # `promote` (glassine-bootimg-promote, at every boot) then finishes a cut
@@ -40,7 +50,10 @@
 # GLASSINE_BI_AFTER_BODY (eval'd in gk_put after an image's body is written and
 # before its header: the tests cut or corrupt writes with it),
 # GLASSINE_BI_AFTER_RECORD (eval'd in gk_bl_put after the record is written);
-# both only with GLASSINE_BI_TEST=1, never on an ordinary write.
+# both only with GLASSINE_BI_TEST=1, never on an ordinary write. uefi:
+# GLASSINE_BI_BOOTPART_DIR (the boot partition's top level, not mounted),
+# GLASSINE_BI_BOOTPART_DEV (its device), GLASSINE_BI_BOOTMODS (build-boot-modules.sh),
+# and lib/glassine-bootpart.sh's GLASSINE_BI_AFTER_SLOT / _AFTER_SETFILE.
 
 GK_CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 SYSTEM_MNT=/run/glassine/system RUN_DIR=/run/glassine
@@ -67,6 +80,9 @@ GK_BLTOOL=${GLASSINE_BI_BLOCKLIST:-/usr/lib/glassine-bootimg/glassine-blocklist}
 GK_MODES=${GLASSINE_BI_REBOOT_MODES:-/sys/class/reboot-mode}
 GK_PSDIR=${GLASSINE_POWER_SUPPLY:-/sys/class/power_supply}
 GK_SEED=${GLASSINE_BI_DEVICE_SEED:-/run/glassine/device}
+BOOT_PART=${BOOT_PART:-glassine-boot}
+GK_BOOTMODS=${GLASSINE_BI_BOOTMODS:-/usr/lib/glassine-bootimg/build-boot-modules.sh}
+GK_BP='' GK_BPMNTD=''
 GK_RAM=''
 GK_STARTED=$TMP/glassine-bootimg.started
 GK_REQUESTED=$TMP/glassine-bootimg.requested    # reboot-test ran on this boot (in RAM)
@@ -118,6 +134,7 @@ gk_handoff() {
     bootpart-test) ;;
     '') die "kernel updates are paused on this board (no HANDOFF in $BOARD)" ;;
     blocklist) gk_bl_handoff; return 0 ;;
+    uefi) return 0 ;;
     *) die "unknown HANDOFF '$HANDOFF' in $BOARD" ;;
     esac
     [ -n "$TESTDEV" ] && [ -n "$DEFDEV" ] || die "no TEST_DEV/DEFAULT_DEV in $BOARD"
@@ -448,6 +465,287 @@ gk_deploy_trial() {
     fi
 }
 
+# --- the uefi hand-off (docs/boot-partition.md; lib/glassine-bootpart.sh) ------
+# gk_cmdpart KEY: the identity this boot's command line gives KEY
+# (KEY=PARTUUID=<uuid>, once), in lower case; 1 = none
+gk_cmdpart() {
+    _cq=$(tr ' ' '\n' < "$CMDLINE" | awk -v k="$1=" 'index($0, k) == 1 { n++; v = substr($0, length(k) + 1) } END { if (n == 1) print v }')
+    case $_cq in PARTUUID=*) _cq=$(echo "${_cq#PARTUUID=}" | tr A-F a-f) ;; *) return 1 ;; esac
+    echo "$_cq" | grep -qx '[0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}' || return 1
+    echo "$_cq"
+}
+
+# gk_ue_dev: the boot partition's device: the partition named BOOT_PART on the disk
+# that holds the system partition this boot names (glassine.system=PARTUUID=; its
+# identity from the kernel's uevent, else the disk's GPT, as the initramfs reads it),
+# and only one. 1 = not found (the reason printed).
+gk_ue_dev() {
+    [ -z "${GLASSINE_BI_BOOTPART_DEV:-}" ] || { echo "$GLASSINE_BI_BOOTPART_DEV"; return 0; }
+    _sb=${GLASSINE_BI_SYSBLOCK:-/sys/class/block}
+    _su=$(gk_cmdpart glassine.system) || { echo "this boot's command line names no system partition (glassine.system=PARTUUID=)"; return 1; }
+    _sd=''
+    for _u in "$_sb"/*/uevent; do
+        grep -q '^PARTN=' "$_u" 2>/dev/null || continue
+        [ "$(gk_part_uuid "${_u%/uevent}")" = "$_su" ] || continue
+        _sd=$(cd -P "${_u%/uevent}/.." && pwd -P) || continue
+    done
+    [ -n "$_sd" ] || { echo "no partition is the system partition $_su"; return 1; }
+    _bn=0 _bd=''
+    for _u in "$_sd"/*/uevent; do
+        grep -qx "PARTNAME=$BOOT_PART" "$_u" 2>/dev/null || continue
+        _bn=$((_bn + 1)) _bd=${GLASSINE_BI_DEVDIR:-/dev}/$(sed -n 's/^DEVNAME=//p' "$_u")
+    done
+    [ $_bn = 1 ] || { echo "$_bn partitions named $BOOT_PART on the system partition's disk"; return 1; }
+    echo "$_bd"
+}
+
+# gk_le DEV OFFSET N, gk_part_uuid DIR: as the initramfs's le and part_uuid
+gk_le() { od -An -v -tu1 -j "$2" -N "$3" "$1" 2>/dev/null | awk 'BEGIN { m = 1 } { for (i = 1; i <= NF; i++) { v += $i * m; m *= 256 } } END { if (m > 1) printf "%.0f\n", v }'; }
+gk_part_uuid() {
+    _qu=$(sed -n 's/^PARTUUID=//p' "$1/uevent" 2>/dev/null | head -n 1)
+    [ -z "$_qu" ] || { echo "$_qu" | tr A-F a-f; return 0; }
+    _pn=$(sed -n 's/^PARTN=//p' "$1/uevent" 2>/dev/null)
+    case $_pn in ''|*[!0-9]*) return 1 ;; esac
+    _pd=$(cd -P "$1/.." 2>/dev/null && pwd -P) || return 1
+    _dn=$(sed -n 's/^DEVNAME=//p' "$_pd/uevent" 2>/dev/null)
+    _dv=${GLASSINE_BI_DEVDIR:-/dev}/$_dn
+    [ -n "$_dn" ] && [ -r "$_dv" ] || return 1
+    _lb=$(cat "$_pd/queue/logical_block_size" 2>/dev/null); _lb=${_lb:-512}
+    [ "$(dd if="$_dv" bs=1 skip="$_lb" count=8 2>/dev/null)" = "EFI PART" ] || return 1
+    _el=$(gk_le "$_dv" $((_lb + 72)) 8) _en=$(gk_le "$_dv" $((_lb + 80)) 4) _es=$(gk_le "$_dv" $((_lb + 84)) 4)
+    [ -n "$_el" ] && [ -n "$_en" ] && [ -n "$_es" ] && [ "$_pn" -ge 1 ] && [ "$_pn" -le "$_en" ] && [ "$_es" -ge 128 ] || return 1
+    _eo=$((_el * _lb + (_pn - 1) * _es))
+    [ "$(gk_le "$_dv" $((_eo + 32)) 8)" = "$(( $(cat "$1/start" 2>/dev/null || echo -1) * 512 / _lb ))" ] || return 1
+    od -An -v -tx1 -j $((_eo + 16)) -N 16 "$_dv" 2>/dev/null | tr -s ' \n' ' ' | awk '{ if (NF != 16) exit 1
+        printf "%s%s%s%s-%s%s-%s%s-%s%s-%s%s%s%s%s%s\n", $4, $3, $2, $1, $6, $5, $8, $7, $9, $10, $11, $12, $13, $14, $15, $16 }'
+}
+
+# gk_ue_mount [ro]: the boot partition mounted for this command (FR-026); GK_BP its
+# top level. 1 = not mounted (logged).
+gk_ue_mount() {
+    [ -z "$GK_BP" ] || return 0
+    if [ -n "${GLASSINE_BI_BOOTPART_DIR:-}" ]; then GK_BP=$GLASSINE_BI_BOOTPART_DIR; return 0; fi
+    _bd=$(gk_ue_dev) || { log "the boot partition: $_bd"; return 1; }
+    _bm=$GK_RUN/boot-partition
+    mkdir -p "$_bm" || { log "cannot create $_bm"; return 1; }
+    ! mountpoint -q "$_bm" || { log "$_bm is mounted already: another writer?"; return 1; }
+    mount -t vfat -o "${1:-rw},noatime" "$_bd" "$_bm" || { log "cannot mount the boot partition $_bd"; return 1; }
+    GK_BP=$_bm GK_BPMNTD=1
+}
+gk_ue_umount() {
+    [ -n "$GK_BPMNTD" ] || return 0
+    sync
+    umount "$GK_BP" || log "cannot unmount the boot partition at $GK_BP"
+    GK_BP='' GK_BPMNTD=''
+}
+
+# gk_ue_in_use CMD: the loader record in use read (gp_in_use), else CMD refused
+gk_ue_in_use() {
+    gp_in_use "$GK_BP"
+    case $? in
+    0) ;;
+    2) die "$1: $GP_WHY; nothing written" ;;
+    *) die "$1: $GP_WHY (the boot partition needs the repair); nothing written" ;;
+    esac
+}
+
+# gk_ue_set_ok ID: ID's set on the boot partition checks as the loader checks it,
+# against the set.rec its manifest names
+gk_ue_set_ok() { gp_set_check "$GK_BP" "$1" "$(man "$1" set_rec)"; }
+
+# gk_ue_holds ID: the record in use (gp_in_use read) names ID's set as the default,
+# and the set checks
+gk_ue_holds() {
+    [ "$(gp_get "$GP_REC" default)" = "$1" ] && [ "$(gp_get "$GP_REC" default_rec)" = "$(man "$1" set_rec)" ] &&
+        gk_ue_set_ok "$1"
+}
+
+# gk_ue_setrec ID OUT: ID's set.rec, made again from its manifest
+gk_ue_setrec() {
+    gp_set_rec "$2" "$1" "$(man "$1" release)" "$(man "$1" kernel_sha256)" "$(man "$1" kernel_size)" \
+        "$(man "$1" sha256)" "$(man "$1" size)" "$(man "$1" cmdline)" "$(man "$1" initramfs)"
+}
+
+# gk_ue_put_set ID: ID's set in glassine/sets/ID on the boot partition, from the
+# system partition (vmlinuz from modules/<release>/, the initrd from
+# state/bootimg/ID.img, set.rec made again): kept when it checks already, else
+# written file by file (gp_put: .new, synced, read back, renamed), set.rec last,
+# after the free space is checked (FR-028). 1 = not written (GP_WHY), no directory
+# left of it.
+gk_ue_put_set() {
+    gk_ue_set_ok "$1" && return 0
+    _pk=$SYS/modules/$(man "$1" release)/vmlinuz
+    gk_img_ok "$1" || { GP_WHY="$BI/$1.img is gone or damaged"; return 1; }
+    [ -r "$_pk" ] && [ "$(gk_sha "$_pk")" = "$(man "$1" kernel_sha256)" ] ||
+        { GP_WHY="$_pk is gone or isn't the kernel of set $1"; return 1; }
+    _ps=$TMP/glassine-bootimg.setrec.$$
+    gk_ue_setrec "$1" "$_ps" && [ "$(gk_sha "$_ps")" = "$(man "$1" set_rec)" ] ||
+        { rm -f "$_ps"; GP_WHY="set.rec of $1 can't be made again from its manifest"; return 1; }
+    _pd=${GK_BP:?}/glassine/sets/${1:?}
+    rm -rf "${_pd:?}"
+    _need=$(( ($(man "$1" kernel_size) + $(man "$1" size) + $(wc -c < "$_ps")) / 1024 + 64 ))
+    _free=$(df -Pk "$GK_BP" | awk 'NR == 2 { print $4 }')
+    [ -n "$_free" ] && [ "$_free" -ge "$_need" ] ||
+        { rm -f "$_ps"; GP_WHY="the boot partition has ${_free:-?} KiB free, set $1 needs $_need KiB"; return 1; }
+    if mkdir -p "$_pd" && gp_put "$_pk" "$_pd/vmlinuz" && gp_put "$BI/$1.img" "$_pd/initrd" && gp_put "$_ps" "$_pd/set.rec" &&
+        gk_ue_set_ok "$1"; then
+        rm -f "$_ps"; sync
+        log "set $1 written to the boot partition"
+        return 0
+    fi
+    rm -f "$_ps"; rm -rf "${_pd:?}"; sync
+    return 1
+}
+
+# gk_ue_settle [KEY=VALUE...]: the loader record written with the changes, then
+# once more, so both slots are valid and neither names what goes; then what no slot
+# names is removed (boot-partition.md, "Before files are removed"). GK_UE_KEEP: a set
+# id to keep. 1 = a write failed (nothing removed).
+gk_ue_settle() {
+    gp_write "$GK_BP" "$@" && gp_write "$GK_BP" && gp_in_use "$GK_BP" && [ "$GP_BOTH" = 1 ] || return 1
+    gp_sweep "$GK_BP" "${GK_UE_KEEP:-}" | while read -r _sw; do log "removed from the boot partition: $_sw"; done
+}
+
+# gk_ue_clear_trial: the trial and a trial request out of the loader record (cancel,
+# a failed trial), then settled. Logged when it can't be: the loader takes a request
+# only once, and an install clears what is left.
+gk_ue_clear_trial() {
+    gk_ue_mount && gp_in_use "$GK_BP" || { log "the loader record can't be read (${GP_WHY:-not mounted}): its trial stays until the next install"; return 0; }
+    _ct=''; [ "$(gp_get "$GP_REC" request)" != trial ] || _ct=request=
+    # shellcheck disable=SC2086  # one KEY= word or none
+    gk_ue_settle trial= trial_rec= $_ct || log "the trial could not be cleared from the loader record ($GP_WHY)"
+}
+
+# gk_ue_point ID: ID's set made the default in one write of the loader record, the
+# default set the previous one, the trial and a trial request cleared (accept,
+# rollback; promote's finishing step). The set is written first if it doesn't
+# check. 0 = the record in use names it (also when the read-back failed but the
+# slot holds it); 1 = it doesn't (GP_WHY).
+gk_ue_point() {
+    gk_ue_put_set "$1" || return 1
+    gp_in_use "$GK_BP" || return 1
+    [ "$(gp_get "$GP_REC" default)" != "$1" ] || return 0
+    _po=$(gp_get "$GP_REC" default) _por=$(gp_get "$GP_REC" default_rec)
+    _pq=''; [ "$(gp_get "$GP_REC" request)" != trial ] || _pq=request=
+    # shellcheck disable=SC2086  # one KEY= word or none
+    gp_write "$GK_BP" "default=$1" "default_rec=$(man "$1" set_rec)" "previous=$_po" "previous_rec=$_por" trial= trial_rec= $_pq && return 0
+    _pw=$GP_WHY
+    gp_in_use "$GK_BP" && gk_ue_holds "$1" && return 0
+    GP_WHY=$_pw
+    return 1
+}
+
+# gk_ue_write_default ID OP [KEY=VALUE...]: gk_write_default for uefi (FR-009): the
+# write named in state/kernel first (writing, writing_op and the KEY=VALUEs), then
+# the set and the record. 0 = the record names ID as the default; 1 = it doesn't:
+# the record in use is as it was, writing cleared and the KEY=VALUEs back.
+gk_ue_write_default() {
+    _wid=$1 _wop=$2; shift 2
+    _undo=''
+    for _a in "$@"; do _undo="$_undo ${_a%%=*}=$(k "${_a%%=*}")"; done
+    gk_ue_mount || { log "$_wop: the boot partition can't be mounted; nothing written"; return 1; }
+    gk_ue_in_use "$_wop"
+    [ -n "$(k current_img)" ] || gk_ue_seed
+    echo "$_wid" > "$GK_STARTED" || die "cannot write $GK_STARTED"
+    kset "writing=$_wid" "writing_op=$_wop" "$@"
+    log "$_wop: set $_wid becomes the default in the loader record"
+    gk_ue_point "$_wid" && return 0
+    # shellcheck disable=SC2086  # KEY=VALUE words without spaces
+    kset writing= writing_op= $_undo
+    rm -f "$GK_STARTED"
+    log "$_wop: the set or the loader record could not be written ($GP_WHY); the default set is as it was"
+    return 1
+}
+
+# gk_ue_kver FILE REL: an x86 boot image's kernel version string starts with REL
+# (an image of another architecture has none to read: passes)
+gk_ue_kver() {
+    [ "$(dd if="$1" bs=1 skip=514 count=4 2>/dev/null)" = HdrS ] || return 0
+    _kv=$(od -An -tu2 -j 526 -N 2 "$1" | tr -d ' ')
+    [ -n "$_kv" ] || return 1
+    _kv=$(dd if="$1" bs=1 skip=$((_kv + 512)) count=256 2>/dev/null | tr '\000' '\n' | head -n 1)
+    [ "${_kv%% *}" = "$2" ]
+}
+
+# gk_ue_seed: 010 "the first start": with no current_img, the record's default set
+# (checked as the loader checks it) becomes the current one's image record: its
+# initrd copied to state/bootimg/<id>.img, a manifest from its set.rec with
+# seeded=1, current_img set (and current, when empty, to its release). Needs
+# gp_in_use. Nothing when it doesn't qualify (logged).
+gk_ue_seed() {
+    _sd=$(gp_get "$GP_REC" default) _sdr=$(gp_get "$GP_REC" default_rec)
+    [ -n "$_sd" ] || { log "seed: the loader record names no default set: no rollback until the next accept"; return 0; }
+    gp_set_check "$GK_BP" "$_sd" "$_sdr" || { log "seed: the default set doesn't check ($GP_WHY): no rollback until the next accept"; return 0; }
+    _sf=$GK_BP/glassine/sets/$_sd/set.rec _st=${BI:?}/${_sd:?}.img
+    _sr=$(gp_get "$_sf" release) _cur=$(k current)
+    [ -z "$_cur" ] || [ "$_cur" = "$_sr" ] || { log "seed: the default set is release $_sr, state/kernel's current $_cur: not recorded"; return 0; }
+    _sz=$(gp_get "$_sf" initrd_size)
+    if ! { gp_read "$GK_BP/glassine/sets/$_sd/initrd" "$_sz" > "$_st.tmp" &&
+        [ "$(gk_sha "$_st.tmp")" = "$(gp_get "$_sf" initrd_sha256)" ] && mv -f "$_st.tmp" "$_st"; }; then
+        rm -f "$_st.tmp"; log "seed: cannot copy the default set's initrd"; return 0
+    fi
+    printf 'format=1\nid=%s\nrelease=%s\nsize=%s\nsha256=%s\nstaged=%s\nreason=\nseeded=1\ndevice=\nkernel=%s\ndtb=\ninitramfs=%s\ncmdline=%s\nboard=\nkernel_sha256=%s\nkernel_size=%s\nset_rec=%s\n' \
+        "$_sd" "$_sr" "$_sz" "$(gp_get "$_sf" initrd_sha256)" "$(gk_utc)" "$_sr" "$(gp_get "$_sf" initramfs)" \
+        "$(gp_get "$_sf" cmdline)" "$(gp_get "$_sf" kernel_sha256)" "$(gp_get "$_sf" kernel_size)" "$_sdr" |
+        gs_write "$BI/$_sd.manifest" || { rm -f "$_st"; log "seed: cannot write $BI/$_sd.manifest"; return 0; }
+    if [ -n "$_cur" ]; then kset "current_img=$_sd"; else kset "current_img=$_sd" "current=$_sr"; fi
+    log "seed: the default set $_sd (release $_sr) recorded as the current one (seeded=1)"
+}
+
+# gk_ue_install: the rest of gk_install for uefi (boot-partition.md, "Who
+# assembles a set"), after the checks: the initrd assembled and kept with its record
+# on the system partition, then on the boot partition: the old trial cleared and
+# what a cut write left removed, the set written, then named as the trial; then
+# the candidate keys.
+gk_ue_install() {
+    _base=$(gp_board_cmdline "$BOARD" 2>&1) || die "install $_rel: $_base"
+    _e=$(gp_base_ok "$_base" 2>&1) || die "install $_rel: $_e"
+    _su=$(gk_cmdpart glassine.system) && _uu=$(gk_cmdpart glassine.userdata) ||
+        die "install $_rel: this boot's command line doesn't name the system partition and userdata by their identities (glassine.system=PARTUUID=, glassine.userdata=PARTUUID=); a kernel set needs them"
+    _kf=$_md/vmlinuz
+    gk_ue_kver "$_kf" "$_rel" || die "install $_rel: $_kf is not kernel release $_rel"
+    _img=$(mktemp "$TMP/glassine-bootimg.XXXXXX") || die "mktemp in $TMP failed"
+    _bmo=$_img.modules
+    _o=$(sh "$GK_BOOTMODS" "$_md" "$_bmo" 2>&1) ||
+        { rm -f "$_img" "$_bmo"; die "install $_rel: the boot modules could not be built: $(echo "$_o" | tail -n 1)"; }
+    gp_assemble "$_img" "$BOARD" "$_irf" "$_md/microcode" "$_bmo" || { rm -f "$_img" "$_bmo"; die "install $_rel: the initrd could not be assembled"; }
+    rm -f "$_bmo"
+    _ks=$(gk_sha "$_kf") _kz=$(stat -c %s "$_kf") _sha=$(gk_sha "$_img") _size=$(stat -c %s "$_img")
+    _id=$(gp_set_id "$_ks" "$_sha" "$_base")
+    _cmd="$_base glassine.system=PARTUUID=$_su glassine.userdata=PARTUUID=$_uu glassine.img=$_id"
+    [ ${#_cmd} -le "$GP_CMDLINE_MAX" ] || { rm -f "$_img"; die "install $_rel: the command line would be ${#_cmd} bytes, more than $GP_CMDLINE_MAX"; }
+    [ "$_id" != "$(k current_img)" ] || { rm -f "$_img"; die "install $_rel: set $_id is the current one already"; }
+    _sr=$TMP/glassine-bootimg.setrec.$$
+    gp_set_rec "$_sr" "$_id" "$_rel" "$_ks" "$_kz" "$_sha" "$_size" "$_cmd" "$_ird" || { rm -f "$_img" "$_sr"; die "install $_rel: cannot make set.rec"; }
+    _mx="kernel_sha256=$_ks kernel_size=$_kz set_rec=$(gk_sha "$_sr")"
+    rm -f "$_sr"
+    mv -f "$_img" "$BI/$_id.img.tmp" && sync && mv -f "$BI/$_id.img.tmp" "$BI/$_id.img" && sync ||
+        { rm -f "$_img" "${BI:?}/${_id:?}.img.tmp"; die "install $_rel: cannot write $BI/$_id.img"; }
+    gk_manifest
+
+    gk_ue_mount || { gk_prune; die "install $_rel: the boot partition can't be mounted; nothing installed"; }
+    gk_ue_in_use "install $_rel"
+    _old=$(k candidate_img)
+    if [ -n "$_old" ]; then
+        log "install $_rel: replaces the candidate $(k candidate) ($_old), whose trial never started"
+        echo "glassine-bootimg: kernel $_rel replaces the candidate $(k candidate)"
+    fi
+    kset candidate= candidate_img= tries= requested=
+    _ct=''; [ "$(gp_get "$GP_REC" request)" != trial ] || _ct=request=
+    # shellcheck disable=SC2086  # one KEY= word or none
+    GK_UE_KEEP=$_id gk_ue_settle trial= trial_rec= $_ct ||
+        { gk_prune; die "install $_rel: the loader record could not be written ($GP_WHY): there is no kernel candidate now"; }
+    gk_ue_put_set "$_id" || { gk_prune; die "install $_rel: $GP_WHY: there is no kernel candidate now (the default set is untouched)"; }
+    gp_write "$GK_BP" "trial=$_id" "trial_rec=$(man "$_id" set_rec)" ||
+        { gk_prune; die "install $_rel: the loader record could not be written ($GP_WHY): there is no kernel candidate now (the next writer removes the set)"; }
+    if [ "$(k deferred)" = "$_rel" ]; then kset "candidate=$_rel" "candidate_img=$_id" tries=1 deferred= deferred_dtb= deferred_initramfs=
+    else kset "candidate=$_rel" "candidate_img=$_id" tries=1; fi
+    gk_prune
+    gk_ue_umount
+    log "install $_rel: the candidate, set $_id on the boot partition ($_size bytes of initrd)"
+    echo "glassine-bootimg: kernel $_rel is ready. Reboot to test it (glassine-bootimg reboot-test)."
+}
+
 # --- records -------------------------------------------------------------------
 # gk_prune: drop every state/bootimg/*.img no key names (FR-003); the
 # manifests stay
@@ -479,6 +777,7 @@ gk_fail() {
     if [ "$HANDOFF" = blocklist ]; then
         gk_bl_clear "$DEFDEV" || log "the record could not be cleared (harmless: nothing sets the reboot reason for it)"
     fi
+    [ "$HANDOFF" != uefi ] || gk_ue_clear_trial
     [ -z "$_ci" ] || [ ! -e "$BI/$_ci.manifest" ] || gs_update "$BI/$_ci.manifest" "reason=$1" || die "cannot write $BI/$_ci.manifest"
     kset "failed=$_c" "failed_img=$_ci" candidate= candidate_img= tries= requested=
     log "kernel $_c ($_ci) FAILED: $1; the default boot keeps $(k current)"
@@ -516,6 +815,7 @@ gk_seed() {
 # cleared; 2 = failed and so did the restore: writing stays set, the default
 # slot can't boot.
 gk_write_default() {
+    [ "$HANDOFF" != uefi ] || { gk_ue_write_default "$@"; return; }
     _wid=$1 _wop=$2; shift 2
     _undo=''
     for _a in "$@"; do _undo="$_undo ${_a%%=*}=$(k "${_a%%=*}")"; done
@@ -554,7 +854,7 @@ gk_seed_clash() {
 
 # --- commands ------------------------------------------------------------------
 gk_install() {
-    _rel='' _dtb='' _ird=''
+    _rel='' _dtb='' _ird='' _mx=''
     while [ $# -gt 0 ]; do
         case "$1" in
         --dtb) [ $# -ge 2 ] || gk_usage; _dtb=$2; shift ;;
@@ -568,13 +868,26 @@ gk_install() {
     gk_handoff
     gk_open rw
     [ -z "$(k writing)" ] || die "install $_rel: a write of the default slot is unfinished (image $(k writing)); nothing installed"
+    # uefi, no current_img yet (the first install after the installer's): the
+    # installer's default set recorded first, so its initramfs is the default one
+    if [ "$HANDOFF" = uefi ] && [ -z "$(k current_img)" ]; then
+        gk_ue_mount || die "install $_rel: the boot partition can't be mounted; nothing installed"
+        gk_ue_in_use "install $_rel"
+        gk_ue_seed
+    fi
     _md=$SYS/modules/$_rel
     [ -d "$_md" ] || die "install $_rel: no $_md (receive the kernel's modules first)"
     [ -r "$_md/kernel.manifest" ] || die "install $_rel: $_md has no kernel.manifest"
     # the record's image (absent: Image.gz); this hand-off kind packs Image.gz only (FR-018)
     _kim=$(gs_kv "$_md/kernel.manifest" image)
-    [ -z "$_kim" ] || [ "$_kim" = Image.gz ] || die "install $_rel: its image is $_kim; this hand-off kind ($HANDOFF) starts Image.gz only"
-    [ -r "$_md/Image.gz" ] || die "install $_rel: $_md has no Image.gz"
+    if [ "$HANDOFF" = uefi ]; then
+        [ "$_kim" = vmlinuz ] || die "install $_rel: its image is ${_kim:-Image.gz}; this hand-off kind (uefi) starts an EFI stub (vmlinuz) only"
+        [ -r "$_md/vmlinuz" ] || die "install $_rel: $_md has no vmlinuz"
+        [ -z "$_dtb" ] || die "install $_rel: --dtb: a kernel set has no device tree"
+    else
+        [ -z "$_kim" ] || [ "$_kim" = Image.gz ] || die "install $_rel: its image is $_kim; this hand-off kind ($HANDOFF) starts Image.gz only"
+        [ -r "$_md/Image.gz" ] || die "install $_rel: $_md has no Image.gz"
+    fi
     gk_record_ok "$_md/kernel.manifest"
     _clash=$(gk_seed_clash "$_md/kernel.manifest")
     [ -z "$_clash" ] || die "install $_rel: the kernel's firmware provides files the device seed holds:$_clash (the seed's copy would win; the device package must drop them from its list)"
@@ -582,10 +895,12 @@ gk_install() {
     # the device tree and the initramfs (FR-005)
     # no --dtb: the tree of the running image (the device's update names a new one)
     _cimg=$(k current_img)
-    if [ -z "$_dtb" ]; then
+    if [ "$HANDOFF" = uefi ]; then :
+    elif [ -z "$_dtb" ]; then
         [ -z "$_cimg" ] || _dtb=$(man "$_cimg" dtb)
         [ -n "$_dtb" ] || die "install $_rel: the current image names no device tree; name one with --dtb DEVICE@ID"
     fi
+    if [ "$HANDOFF" != uefi ]; then
     case "$_dtb" in *@*) ;; *) die "install $_rel: --dtb takes DEVICE@ID" ;; esac
     # DEVICE@ID: a device name (not starting with a dot), then a hex id
     case "${_dtb%@*}" in ''|.*|*[!A-Za-z0-9._+-]*) die "install $_rel: bad device tree name '$_dtb' (DEVICE@ID)" ;; esac
@@ -593,6 +908,7 @@ gk_install() {
     [ -n "$DEVICE" ] || die "install $_rel: no DEVICE in $BOARD (it names the device trees this board boots)"
     [ "${_dtb%@*}" = "$DEVICE" ] || die "install $_rel: device tree $_dtb is for another device than $DEVICE"
     [ -r "$SYS/boot/dtb/$_dtb.dtb" ] || die "install $_rel: no $SYS/boot/dtb/$_dtb.dtb"
+    fi
     if [ -z "$_ird" ]; then
         [ -z "$_cimg" ] || _ird=$(man "$_cimg" initramfs)
         [ -n "$_ird" ] || die "install $_rel: the current image names no initramfs; name one with --initramfs COMMIT12@ID"
@@ -627,6 +943,7 @@ gk_install() {
     # a candidate whose trial ended without a verdict: the verdict promote
     # would give (Story 1.7)
     [ -n "$_ci" ] && [ "$(k tries)" = 0 ] && gk_fail no-verdict
+    if [ "$HANDOFF" = uefi ]; then gk_ue_install; return; fi
 
     # pack (rule 2: the packer checks PART_SIZE; the slots are checked here)
     if [ "$HANDOFF" = blocklist ]; then
@@ -675,9 +992,12 @@ gk_install() {
 
 # gk_manifest: state/bootimg/ID.manifest for the image gk_install just packed
 gk_manifest() {
-    printf 'format=1\nid=%s\nrelease=%s\nsize=%s\nsha256=%s\nstaged=%s\nreason=\ndevice=%s\nkernel=%s\ndtb=%s\ninitramfs=%s\ncmdline=%s\nboard=%s\n' \
-        "$_id" "$_rel" "$_size" "$_sha" "$(gk_utc)" "${_dtb%@*}" "$_rel" "$_dtb" "$_ird" "$_cmd" "$(gk_sha "$BOARD")" |
-        gs_write "$BI/$_id.manifest" || die "install $_rel: cannot write $BI/$_id.manifest"
+    {
+        printf 'format=1\nid=%s\nrelease=%s\nsize=%s\nsha256=%s\nstaged=%s\nreason=\ndevice=%s\nkernel=%s\ndtb=%s\ninitramfs=%s\ncmdline=%s\nboard=%s\n' \
+            "$_id" "$_rel" "$_size" "$_sha" "$(gk_utc)" "${_dtb%@*}" "$_rel" "$_dtb" "$_ird" "$_cmd" "$(gk_sha "$BOARD")"
+        # shellcheck disable=SC2086  # KEY=VALUE words without spaces (uefi)
+        [ -z "$_mx" ] || printf '%s\n' $_mx
+    } | gs_write "$BI/$_id.manifest" || die "install $_rel: cannot write $BI/$_id.manifest"
 }
 
 # gk_bl_install: the rest of gk_install for the block-list hand-off
@@ -727,7 +1047,12 @@ gk_status() {
         [ -z "$_v" ] || echo "$_key=$_v"
     done
     [ -z "$_fi" ] || { _v=$(man "$_fi" reason); [ -z "$_v" ] || echo "reason=$_v"; }
-    if [ -n "$_w" ] && [ -n "$DEFDEV" ] && ! gk_slot_holds "$DEFDEV" "$_w"; then
+    if [ "$HANDOFF" = uefi ]; then
+        # read only: the boot partition mounted read-only for the check
+        if [ -n "$_w" ] && gk_ue_mount ro 2>/dev/null && gp_in_use "$GK_BP" && ! gk_ue_holds "$_w"; then
+            echo "default_slot=bad"
+        fi
+    elif [ -n "$_w" ] && [ -n "$DEFDEV" ] && ! gk_slot_holds "$DEFDEV" "$_w"; then
         echo "default_slot=bad"
     fi
     return 0
@@ -742,6 +1067,7 @@ gk_cancel() {
     if [ "$HANDOFF" = blocklist ]; then
         gk_bl_clear "$DEFDEV" || log "cancel: the record could not be cleared (harmless: nothing sets the reboot reason for it)"
     fi
+    [ "$HANDOFF" != uefi ] || gk_ue_clear_trial
     gs_kernel_cancel "$K" || die "cannot write $K"
     log "cancel: the kernel candidate $_c is dropped; its files stay"
     if [ -n "$_trial" ]; then
@@ -768,15 +1094,31 @@ gk_reboot_test() {
         _v=$(gk_bl_verify "$_ci"); _vc=$?
         [ "$_vc" != 2 ] || die "reboot-test: the record can't be checked: $_v"
         [ "$_vc" = 0 ] || die "reboot-test: $_v; run glassine-bootimg install again"
+    elif [ "$HANDOFF" = uefi ]; then
+        _reason=''
+        gk_ue_mount || die "reboot-test: the boot partition can't be mounted"
+        gk_ue_in_use reboot-test
+        [ "$(gp_get "$GP_REC" trial)" = "$_ci" ] && [ "$(gp_get "$GP_REC" trial_rec)" = "$(man "$_ci" set_rec)" ] ||
+            die "reboot-test: the loader record doesn't name the candidate's set as the trial; run glassine-bootimg retry"
+        gk_ue_set_ok "$_ci" || die "reboot-test: $GP_WHY; run glassine-bootimg retry"
     else
         gk_slot_holds "$TESTDEV" "$_ci" || die "reboot-test: the test slot doesn't hold the candidate's image any more; run glassine-bootimg retry"
     fi
     echo "$_ci" > "$GK_REQUESTED" || die "cannot write $GK_REQUESTED"
     kset "requested=$_ci"
+    if [ "$HANDOFF" = uefi ]; then
+        # the request last (010 FR-025): the loader takes it only from both slots valid
+        if ! gp_write "$GK_BP" request=trial; then
+            kset requested=; rm -f "$GK_REQUESTED"
+            die "reboot-test: the request could not be written to the loader record ($GP_WHY)"
+        fi
+        gk_ue_umount
+    fi
     log "reboot-test: $(k candidate) ($_ci)"
     [ -n "${GLASSINE_BI_NOREBOOT:-}" ] && return 0
     exec 9>&-       # the lock released: the shutdown's own steps (the switch) take it
-    exec "$REBOOT_CLEAN" "$_reason"
+    # shellcheck disable=SC2086  # uefi: no reason, a plain reboot (the request is in the record)
+    exec "$REBOOT_CLEAN" $_reason
 }
 
 gk_retry() {
@@ -798,6 +1140,14 @@ gk_retry() {
         fi
     elif ! gk_img_ok "$_id"; then
         die "retry: $BI/$_id.img is gone or damaged; install the kernel again"
+    elif [ "$HANDOFF" = uefi ]; then
+        gk_ue_mount || die "retry: the boot partition can't be mounted"
+        gk_ue_in_use retry
+        if ! gk_ue_put_set "$_id" || ! gp_write "$GK_BP" "trial=$_id" "trial_rec=$(man "$_id" set_rec)"; then
+            [ "$_from" = failed ] && die "retry: the set could not be written or named ($GP_WHY); $_rel stays failed"
+            kset candidate= candidate_img= tries= requested=
+            die "retry: the set could not be written or named ($GP_WHY): there is no kernel candidate now"
+        fi
     elif ! gk_slot_holds "$TESTDEV" "$_id"; then
         log "retry: the test slot doesn't hold image $_id; writing it again"
         if ! gk_put "$BI/$_id.img" "$TESTDEV"; then
@@ -874,6 +1224,7 @@ gk_complete() {
     esac
     rm -f "$GK_STARTED"
     [ "$HANDOFF" != blocklist ] || gk_bl_settle
+    [ "$HANDOFF" != uefi ] || gk_ue_settle || log "$_op: the loader record could not be written twice: old sets stay until the next writer"
     gk_prune
     log "$_op of image $_w completed"
 }
@@ -911,6 +1262,18 @@ gk_rollback() {
 gk_writing() {
     _w=$(k writing)
     [ -n "$_w" ] || return 0
+    if [ "$HANDOFF" = uefi ]; then
+        gk_ue_mount && gp_in_use "$GK_BP" || { log "promote: writing=$_w, but the loader record can't be read (${GP_WHY:-not mounted}): writing stays"; return 1; }
+        if gk_ue_holds "$_w"; then
+            log "promote: the loader record names set $_w as the default: completing $(k writing_op)"
+        else
+            log "promote: the loader record doesn't name set $_w as the default (its write was cut): writing it again"
+            gk_img_ok "$_w" || { log "promote: $BI/$_w.img is gone or damaged (writing=$_w stays)"; return 1; }
+            gk_ue_point "$_w" || { log "promote: writing the set or the loader record again failed ($GP_WHY; writing=$_w stays)"; return 1; }
+        fi
+        gk_complete
+        return
+    fi
     [ -n "$DEFDEV" ] || { log "promote: writing=$_w, but no DEFAULT_DEV in $BOARD: nothing checked"; return 1; }
     if gk_slot_holds "$DEFDEV" "$_w"; then
         log "promote: the default slot holds image $_w: completing $(k writing_op)"
@@ -1013,7 +1376,7 @@ gk_deferred() {
     _dd=$(k deferred_dtb) _di=$(k deferred_initramfs)
     kset deferred= deferred_dtb= deferred_initramfs=
     log "promote: installing the deferred $_d${_dd:+ (device tree $_dd, initramfs $_di)}"
-    ( gk_install "$_d" ${_dd:+--dtb "$_dd"} ${_di:+--initramfs "$_di"} )
+    ( [ -n "$GK_BPMNTD" ] || trap gk_ue_umount EXIT; gk_install "$_d" ${_dd:+--dtb "$_dd"} ${_di:+--initramfs "$_di"} )
     _rc=$?
     [ "$_rc" = 0 ] && return 0
     log "promote: installing the deferred $_d failed (exit $_rc)"
@@ -1049,7 +1412,7 @@ gk_usage() {
 }
 
 gk_main() {
-    trap 'rm -f "$TMP/glassine-bootimg.ram" "$TMP/glassine-bootimg.writing"' EXIT
+    trap 'rm -f "$TMP/glassine-bootimg.ram" "$TMP/glassine-bootimg.writing"; gk_ue_umount; [ "$HANDOFF" != uefi ] || gp_clean' EXIT
     _cmd=${1:-}; [ $# -gt 0 ] && shift
     case "$_cmd:$#" in
     install:*) gk_install "$@" ;;
