@@ -20,10 +20,13 @@
 #                                      glassine-deploy-accept service as the
 #                                      system goes down)
 #
-# Where the record is comes from the board's hand-off (board.conf HANDOFF; the
-# backend in lib/glassine-bootpart.sh, gp_open): with uefi, the boot partition
-# (BOOT_PART), mounted for the one write and unmounted again. A hand-off without
-# a loader record has nothing to write: exit 0, nothing said. The write is the
+# Where the record is comes from the board (board.conf HANDOFF and BOOT_FORM; the
+# backend in lib/glassine-bootpart.sh, gp_kind and gp_open): with HANDOFF=uefi, the
+# FAT boot partition (BOOT_PART), mounted for the one write and unmounted again;
+# with BOOT_FORM=raw, the raw boot partition (the partition named BOOT_PART, its
+# region table, the slots of its region record; docs/boot-partition.md "The raw
+# form"). A board without a loader record has nothing to write: exit 0, nothing
+# said. The write is the
 # library's (gp_write: the other slot, seq + 1, every other key kept, flushed and
 # read back); this tool never makes a record where there is none.
 #
@@ -58,7 +61,7 @@ GBLIB=${GLASSINE_BI_LIB:-/usr/lib/glassine-boot}
 RUN_DIR=/run/glassine SYSTEM_MNT=/run/glassine/system ACCEPT_BUSY_S=600
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
-HANDOFF='' BOOT_PART=glassine-boot
+HANDOFF='' BOOT_FORM='' BOOT_PART=glassine-boot
 # shellcheck source=/dev/null
 [ -r "$BOARD" ] && . "$BOARD"
 # after board.conf: its CMDLINE is the set's base command line, not this file
@@ -80,7 +83,9 @@ case $cmd in has-record|healthy|shutdown|display-retry) ;; *) echo "$USAGE" >&2;
 . "$GBLIB/glassine-bootpart.sh"
 # shellcheck disable=SC2034  # read by the library
 GP_TMP=${GLASSINE_BI_TMP:-/run}
-gp_has_record "$HANDOFF" || { [ "$cmd" = has-record ] && exit 3; exit 0; }
+kind=$(gp_kind "$HANDOFF" "$BOOT_FORM"); kr=$?
+[ $kr != 2 ] || { say "board.conf: the boot partition's form is wrong: nothing written"; exit 1; }
+gp_has_record "$kind" || { [ "$cmd" = has-record ] && exit 3; exit 0; }
 [ "$cmd" = has-record ] && exit 0
 
 # the shutdown step's conditions that need no record (FR-012)
@@ -105,7 +110,7 @@ done
 
 rc=0
 trap 'gp_close >/dev/null 2>&1; gp_clean' EXIT
-gp_open "$HANDOFF" "$CMDLINE" "$BOOT_PART" "$MNT" || { say "$GP_WHY: nothing written"; exit 1; }
+gp_open "$kind" "$CMDLINE" "$BOOT_PART" "$MNT" || { say "$GP_WHY: nothing written"; exit 1; }
 if ! gp_in_use "$GP_DIR"; then
     say "$GP_WHY: nothing written"
     exit 1

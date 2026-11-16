@@ -1,0 +1,179 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-boot-raw: the running system's writer of the boot partition's raw form
+# (docs/boot-partition.md, "The raw form"; docs/handback.md, "The loader region";
+# specs/012): for a machine whose parent bootloader has no FAT driver, such as the
+# Boox Note Air's.
+#
+#   glassine-boot-raw find [NAME]            the device of the one partition named NAME
+#                                            (default: board.conf BOOT_PART, else
+#                                            glassine-boot)
+#   glassine-boot-raw table DEV              the region table in use: copy=primary or
+#                                            backup, then "region NAME OFFSET SIZE
+#                                            FLAGS" lines (exit 3: no valid table)
+#   glassine-boot-raw init [--force] DEV     the region table for DEV's size (the
+#                                            layout of "Sizes"; 16 MiB or more): every
+#                                            region emptied (record whole, the others'
+#                                            first 4096 bytes), then the backup copy
+#                                            written, flushed and read back, then the
+#                                            primary. Refused (3) where a valid table
+#                                            (either copy) or a FAT boot sector is,
+#                                            unless --force
+#   glassine-boot-raw loader DEV FILE        FILE (loader.efi, 1 to 3141632 bytes) as
+#                                            the region loader, with its header
+#   glassine-boot-raw splash-default|splash|override DEV FILE
+#                                            a format-2 splash image as that region
+#   glassine-boot-raw clear DEV REGION       the region emptied (its first 4096 bytes
+#                                            zero, read back): loader, probe,
+#                                            splash-default, splash or override
+#   glassine-boot-raw read DEV REGION        the region's item to stdout, as its reader
+#                                            takes it: loader (the image), the splash
+#                                            regions (the file), probe (the report),
+#                                            record (the record in use). Exit 3: none
+#
+# A region is written as "Writing a region" says: its head zeroed and read back, the
+# content from byte 4096 on, then its first 4096 bytes, then all of it read back. A
+# cut at any byte leaves the old item, no item, or the new one. Content that is not
+# valid or would not fit is refused before anything is written. The loader record
+# (the region record) is not written here: its writers are glassine-loader-mark and
+# glassine-bootimg (lib/glassine-bootpart.sh, by slots), and this tool never makes a
+# record (an installer does, 012 FR-020).
+#
+# Every write holds an exclusive lock on the device (flock), the one the record's
+# writers take too. Exit: 0 done, 1 a write or its read-back failed (said; the
+# region holds no item, or the new one), 2 usage, 3 refused (nothing written), 6
+# busy (the device's lock stayed held).
+# Test hooks: GLASSINE_BI_LIB, GLASSINE_BI_BOARD, GLASSINE_BI_TMP, and the library's
+# (GLASSINE_BI_TEST with GLASSINE_BI_RAW_TRACE, GLASSINE_BI_RAW_CUT,
+# GLASSINE_BI_AFTER_PUT; GLASSINE_BI_SYSBLOCK, GLASSINE_BI_DEVDIR).
+set -u
+GBLIB=${GLASSINE_BI_LIB:-/usr/lib/glassine-boot}
+BOARD=${GLASSINE_BI_BOARD:-/etc/glassine-bootimg/board.conf}
+# shellcheck source=../lib/glassine-bootpart.sh
+. "$GBLIB/glassine-bootpart.sh"
+# shellcheck disable=SC2034  # read by the library
+GP_TMP=${GLASSINE_BI_TMP:-/run}
+trap 'gp_clean' EXIT
+
+say() { echo "glassine-boot-raw: $*" >&2; }
+usage() {
+    echo "usage: glassine-boot-raw find [NAME] | table DEV | init [--force] DEV | loader DEV FILE |" >&2
+    echo "       splash-default|splash|override DEV FILE | clear DEV REGION | read DEV REGION" >&2
+    exit 2
+}
+lock() {    # lock DEV: the device's lock, waiting up to 10 s
+    exec 8<"$1" || { say "cannot open $1"; exit 1; }
+    n=0
+    until flock -n 8; do
+        [ $n -lt 10 ] || { say "busy: $1 is locked by another writer"; exit 6; }
+        sleep 1; n=$((n + 1))
+    done
+}
+open() {    # open DEV: its table, or exit 3
+    gr_open "$1" || { say "$GR_WHY"; exit 3; }
+}
+
+cmd=${1:-}; [ $# -ge 1 ] && shift
+case $cmd in
+find)
+    [ $# -le 1 ] || usage
+    name=${1:-}
+    if [ -z "$name" ]; then
+        BOOT_PART=glassine-boot
+        # shellcheck source=/dev/null
+        [ -r "$BOARD" ] && . "$BOARD"
+        name=${BOOT_PART:-glassine-boot}
+    fi
+    dev=$(GLASSINE_BI_BOOTPART_DEV='' gp_raw_dev /dev/null "$name") || { say "$dev"; exit 3; }
+    echo "$dev"
+    ;;
+table)
+    [ $# = 1 ] || usage
+    open "$1"
+    echo "copy=$GR_COPY"
+    sed 's/^/region /' "$GR_REGS"
+    ;;
+init)
+    force=''
+    [ "${1:-}" = --force ] && { force=1; shift; }
+    [ $# = 1 ] || usage
+    dev=$1
+    lock "$dev"
+    part=$(gr_dev_size "$dev") || { say "$dev: no device, or a block size that doesn't divide 4096"; exit 3; }
+    [ "$part" -ge $GR_LAYOUT_MIN ] || { say "$dev has $part bytes; the region table's layout needs $GR_LAYOUT_MIN or more: nothing written"; exit 3; }
+    [ $((part % 4096)) = 0 ] || { say "$dev's size ($part bytes) is not a multiple of 4096: nothing written"; exit 3; }
+    if [ -z "$force" ]; then
+        if gr_open "$dev"; then say "$dev holds a valid region table (the $GR_COPY copy): nothing written (--force makes a new one, emptying every region)"; exit 3; fi
+        GR_DEV=$dev
+        b=$GP_TMP/glassine-bootpart.bs.$$; gr_get 0 512 > "$b"
+        if [ "$(gr_part "$b" 510 2 | od -An -tx1 | tr -d ' \n')" = 55aa ] && { [ "$(gr_part "$b" 82 5)" = FAT32 ] || [ "$(gr_part "$b" 54 3)" = FAT ]; }; then
+            say "$dev holds a FAT boot sector (the FAT form): nothing written (--force makes the raw form)"; exit 3
+        fi
+    fi
+    # shellcheck disable=SC2034  # read by the library
+    GR_DEV=$dev
+    t=$GP_TMP/glassine-bootpart.newtable.$$ z=$GP_TMP/glassine-bootpart.zeros.$$
+    gr_table_bytes "$part" "$t"
+    gr_table_check "$t" "$part" > /dev/null || { say "internal: the table made isn't valid ($GR_WHY)"; exit 1; }
+    # in this shell, not a pipe's: a cut (the test's kill) stops every write
+    while read -r name off size; do
+        n=$GR_HEAD; [ "$name" != record ] || n=$size
+        head -c "$n" /dev/zero > "$z"
+        gr_put_check "$off" "$z" || { say "emptying the region $name failed or didn't read back: no table written"; exit 1; }
+    done <<EOF
+$GR_LAYOUT
+EOF
+    gr_put_check $((part - GR_TABLE)) "$t" || { say "the backup table didn't write or read back"; exit 1; }
+    gr_put_check 0 "$t" || { say "the primary table didn't write or read back (the backup is in place)"; exit 1; }
+    gr_open "$dev" && [ "$GR_COPY" = primary ] || { say "the table doesn't read back as valid: $GR_WHY"; exit 1; }
+    say "$dev: region table written ($(wc -l < "$GR_REGS") regions, $part bytes)"
+    ;;
+loader|splash-default|splash|override)
+    [ $# = 2 ] || usage
+    dev=$1 file=$2
+    [ -r "$file" ] || { say "cannot read $file"; exit 3; }
+    lock "$dev"
+    open "$dev"
+    if [ "$cmd" = loader ]; then
+        n=$(wc -c < "$file")
+        [ "$n" -ge 1 ] && [ "$n" -le $GR_LOADER_MAX ] || { say "$file is $n bytes; a loader image is 1 to $GR_LOADER_MAX: nothing written"; exit 3; }
+        c=$GP_TMP/glassine-bootpart.loader.$$
+        gr_loader_content "$file" "$c"
+    else
+        gr_splash_ok "$file" "$cmd" || { say "$file: $GR_WHY: nothing written"; exit 3; }
+        c=$file
+    fi
+    gr_write_region "$cmd" "$c"; rc=$?
+    case $rc in
+    0) say "$dev: $cmd written ($(wc -c < "$c") bytes)" ;;
+    2) say "$GR_WHY"; exit 3 ;;
+    *) say "$GR_WHY"; exit 1 ;;
+    esac
+    ;;
+clear)
+    [ $# = 2 ] || usage
+    case $2 in loader|probe|splash-default|splash|override) ;; *) say "clear: not a region this tool empties: $2"; exit 3 ;; esac
+    lock "$1"
+    open "$1"
+    gr_clear "$2" || { say "$GR_WHY"; exit 1; }
+    say "$1: $2 emptied"
+    ;;
+read)
+    [ $# = 2 ] || usage
+    open "$1"
+    o=$GP_TMP/glassine-bootpart.item.$$
+    if [ "$2" = record ]; then
+        gr_region record && [ "$GR_RSIZE" -ge $((2 * GP_SLOT_BYTES)) ] || { say "no region record"; exit 3; }
+        # shellcheck disable=SC2034  # read by the library (gp_in_use)
+        GP_RAW=$1 GP_RAW_REC=$GR_ROFF GP_DIR=$GP_TMP/glassine-bootpart.raw.$$
+        mkdir -p "$GP_DIR/glassine"
+        gp_in_use "$GP_DIR" || { say "$GP_WHY"; exit 3; }
+        cat "$GP_REC"
+    else
+        gr_item "$2" "$o" || { say "$2: $GR_WHY"; exit 3; }
+        cat "$o"
+    fi
+    ;;
+*) usage ;;
+esac
+exit 0
