@@ -9,6 +9,12 @@
 #   glassine-loader-mark healthy       the healthy mark: unmarked=0 (run by
 #                                      glassine-deploy-accept on a healthy boot,
 #                                      and by glassine-hibernate after a resume)
+#   glassine-loader-mark display-retry the person's retry of the firmware-refreshed
+#                                      display (docs/handback.md, "A display
+#                                      through the firmware's refresh"): clears the
+#                                      loader's sticky display_failed (and drew);
+#                                      nothing to clear: exit 0, nothing written.
+#                                      Never run by a healthy mark
 #   glassine-loader-mark shutdown      the shutdown step: one off unmarked, never
 #                                      below 0, when FR-012 allows it (run by the
 #                                      glassine-deploy-accept service as the
@@ -67,8 +73,9 @@ say() {
 }
 
 cmd=${1:-}
-case $cmd in has-record|healthy|shutdown) ;; *) echo "usage: glassine-loader-mark has-record|healthy|shutdown" >&2; exit 2 ;; esac
-[ $# = 1 ] || { echo "usage: glassine-loader-mark has-record|healthy|shutdown" >&2; exit 2; }
+USAGE="usage: glassine-loader-mark has-record|healthy|shutdown|display-retry"
+case $cmd in has-record|healthy|shutdown|display-retry) ;; *) echo "$USAGE" >&2; exit 2 ;; esac
+[ $# = 1 ] || { echo "$USAGE" >&2; exit 2; }
 # shellcheck source=../lib/glassine-bootpart.sh
 . "$GBLIB/glassine-bootpart.sh"
 # shellcheck disable=SC2034  # read by the library
@@ -106,6 +113,16 @@ fi
 count=$(gp_get "$GP_REC" unmarked)
 case $count in ''|*[!0-9]*) say "the record's unmarked is '$count', not a count: nothing written"; exit 1 ;; esac
 case $cmd in
+display-retry)
+    failed=$(gp_get "$GP_REC" display_failed)
+    if [ -z "$failed" ]; then
+        say "display-retry: display_failed isn't set: nothing written"
+    elif gp_write "$GP_DIR" display_failed= drew=; then
+        say "display-retry: display_failed=$failed cleared; the loader draws again after a healthy start"
+    else
+        say "display-retry not written: $GP_WHY"; rc=1
+    fi
+    ;;
 healthy)
     run=$(tr ' ' '\n' < "$CMDLINE" | sed -n 's/^glassine\.img=//p' | head -n 1)
     if [ -n "$run" ] && [ "$(gp_get "$GP_REC" started)" = "$run" ] && [ "$(gp_get "$GP_REC" started_why)" = limit ]; then

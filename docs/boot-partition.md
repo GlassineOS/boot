@@ -168,7 +168,9 @@ write; the loader runs when no system does.
   every start that reaches the health conditions (010 FR-023), whichever set and
   deployment started, also a start by request (010 FR-044), and again after a resume
   of a session that had it. It is `glassine-loader-mark healthy`; a mark already at
-  `0` is not written again.
+  `0` is not written again. It changes no other key: in particular it leaves the loader's
+  `display_failed` ([handback.md](handback.md#a-display-through-the-firmwares-refresh)),
+  which only `glassine-loader-mark display-retry` clears.
 - **The limit** is 3 in format 1. With no key pressed and no request, the loader starts,
   by the `unmarked` it reads: below 3 the default set; at 3 the previous set
   (`started_why=limit`); above 3, or at 3 with no previous set that checks, the recovery.
