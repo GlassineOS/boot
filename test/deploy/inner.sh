@@ -61,6 +61,10 @@ for kb in trial finishing; do
 done
 : > $AW/run/kernel-boot
 ok "accept: kernel-boot empty: accepted as before" "acc && grep -qx 'accept c1' $AW/calls"
+echo c1 > $AW/run/deploy-once
+ok "accept: the candidate started by request for this start only (deploy-once): not accepted, said" "acc && [ ! -s $AW/calls ] && grep -q 'c1 runs by request for this start only: no deployment accept' $AW/out"
+: > $AW/run/deploy-once
+ok "accept: deploy-once empty: accepted as before" "acc && grep -qx 'accept c1' $AW/calls"
 printf 'type=status\tcandidate=\ttries=0\n' > $AW/status
 ok "accept: the booted one is not the candidate: nothing" "acc && [ ! -s $AW/calls ]"
 echo bare:b1 > $AW/run/booted

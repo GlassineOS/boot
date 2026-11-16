@@ -290,7 +290,8 @@ gr_kernel_mode() {
 # read-write. A hibernate image on userdata is resumed when MAY = resume and
 # every check passes (the kernel does not return then); otherwise it is
 # invalidated (rule 5), the only write before the mounts. MAY: resume, or a
-# word saying why not (noresume, test-role). 0 = no image left (none,
+# word saying why not (noresume, test-role). GR_ONCE_REQ: a deployment request
+# that a resume drops (said before the resume write). 0 = no image left (none,
 # invalidated, or a block size other than 4096: the wrapper never hibernates
 # there); 1 = an image that could not be invalidated: mount nothing read-write.
 gr_resume() {
@@ -302,6 +303,7 @@ gr_resume() {
     if [ -z "$_gr_why" ]; then
         _gr_mm=$(stat -L -c '%t %T' "$2") && _gr_mm=$(printf '%d:%d' 0x${_gr_mm% *} 0x${_gr_mm#* })
         gr_log "resuming the hibernated session (block $_gr_b, $_gr_mm)"
+        [ -z "${GR_ONCE_REQ:-}" ] || gr_log "deployment request $GR_ONCE_REQ dropped: the hibernated session comes first"
         gr_wd_stop
         echo "$_gr_b" > "$GR_SYSPOWER/resume_offset" && echo "$_gr_mm" > "$GR_SYSPOWER/resume"
         gr_wd_start
@@ -313,7 +315,7 @@ gr_resume() {
     return 1
 }
 
-# gr_boot SYSDEV UDDEV PREFIX NEWROOT KREL [IMG]: after gr_resume. The system
+# gr_boot SYSDEV UDDEV PREFIX NEWROOT KREL [IMG] [ONCE]: after gr_resume. The system
 # partition read-write at NEWROOT.sys with its state locked (fd 9, until
 # gr_carry), userdata checked and mounted at NEWROOT.ud, the deployment picked
 # (gr_pick: a try used) and assembled at NEWROOT. IMG is this boot's
@@ -328,10 +330,16 @@ gr_resume() {
 # A hibernate guard left on userdata (the image was invalidated) is removed.
 # A deployment gets the person's storage (gr_storage), a bare boot only the
 # shared /var/tmp (nothing from userdata).
-# Sets GR_BOOTED (the id, or bare:<base>), GR_KBOOT and GR_STORAGE. 1 = nothing
-# bootable, nothing left mounted.
+# ONCE is the one-shot deployment request (glassine.deploy.once=, 010 FR-042 to
+# FR-047): that deployment boots in place of the pick, for this start only, with
+# no state written and no try used or given back. A trial or finishing boot takes
+# none; one that names a deployment that isn't there, is staged or doesn't
+# assemble is dropped with a message, and the ordinary pick runs (nothing is
+# marked failed).
+# Sets GR_BOOTED (the id, or bare:<base>), GR_KBOOT, GR_ONCE (ONCE, when it
+# booted) and GR_STORAGE. 1 = nothing bootable, nothing left mounted.
 gr_boot() {
-    _gr_sm=$4.sys _gr_um=$4.ud GR_BOOTED='' GR_KBOOT='' GR_STORAGE='' _gr_ud=''
+    _gr_sm=$4.sys _gr_um=$4.ud GR_BOOTED='' GR_KBOOT='' GR_ONCE='' GR_STORAGE='' _gr_ud=''
     mkdir -p "$_gr_sm" && mount -t btrfs -o rw,noatime "$1" "$_gr_sm" || { gr_log "cannot mount $1"; return 1; }
     _gr_f=$(gs_format_version "$_gr_sm")
     [ "$_gr_f" != none ] || { gr_log "the system partition has no state/ (not migrated)"; umount "$_gr_sm"; return 1; }
@@ -353,6 +361,20 @@ gr_boot() {
         else gr_log "userdata does not mount: bare boot"; fi
     fi
     _gr_st=$_gr_sm/state/deploy
+    _gr_o=${7:-}
+    if [ -n "$_gr_o" ]; then
+        if [ -z "$_gr_ud" ]; then gr_log "deployment request $_gr_o dropped: userdata is not mounted"
+        elif [ -n "$GR_KBOOT" ]; then gr_log "deployment request $_gr_o dropped: a kernel $GR_KBOOT boot takes none"
+        elif [ ! -r "$_gr_ud/deployments/$_gr_o/meta" ]; then gr_log "deployment request $_gr_o dropped: there is no such deployment (the ordinary pick runs)"
+        elif [ "$_gr_o" = "$(gs_kv "$_gr_st" staged)" ]; then gr_log "deployment request $_gr_o dropped: it is staged (the ordinary pick runs)"
+        elif gr_assemble "$_gr_sm" "$_gr_ud" "$_gr_o" "$4" "$5"; then
+            gr_log "deployment $_gr_o by request, for this start only (no pick, state/deploy not written)"
+            GR_BOOTED=$_gr_o GR_ONCE=$_gr_o
+            gr_storage "$_gr_ud" "$4"
+            return 0
+        else gr_log "deployment request $_gr_o dropped: it does not assemble (the ordinary pick runs)"
+        fi
+    fi
     if [ -n "$_gr_ud" ]; then
         if [ -n "$GR_KBOOT" ]; then
             _gr_id=$(gs_kv "$_gr_st" current)
@@ -399,9 +421,10 @@ gr_boot_umount() {
 # SYSTEM_MNT, USERDATA_MNT), a bare boot's tmpfs to /run/glassine/bare, the
 # booted deployment in /run/glassine/booted (for the boot-success service's
 # accept), GR_KBOOT in /run/glassine/kernel-boot (that service skips a kernel
-# trial or finishing boot), GR_STORAGE in /run/glassine/storage (what
-# glassine-deploy status reports); the state lock released, so the system's
-# glassine-deploy can take it.
+# trial or finishing boot), GR_ONCE in /run/glassine/deploy-once (a deployment
+# started by request: that service accepts nothing), GR_STORAGE in
+# /run/glassine/storage (what glassine-deploy status reports); the state lock
+# released, so the system's glassine-deploy can take it.
 gr_carry() {
     _gr_r=$1/run/glassine
     # a base without /run: made in the overlay underneath (/ is read-only)
@@ -414,6 +437,7 @@ gr_carry() {
     if mountpoint -q "$1.tmp"; then mkdir -p "$_gr_r/bare" && mount --move "$1.tmp" "$_gr_r/bare" || return 1; fi
     echo "$GR_BOOTED" > "$_gr_r/booted"
     echo "${GR_KBOOT:-}" > "$_gr_r/kernel-boot"
+    echo "${GR_ONCE:-}" > "$_gr_r/deploy-once"
     printf '%s' "${GR_STORAGE:-}" > "$_gr_r/storage"
     exec 9>&-
 }

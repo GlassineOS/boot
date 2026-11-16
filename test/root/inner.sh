@@ -602,6 +602,34 @@ rm -f $R/run/glassine/userdata/$P/flatpak && mv $W/flatpak.saved $R/run/glassine
 gr_boot_umount $R
 ok "storage: the next boot tries again and binds both" "gr_boot $SD $UDEV $P $R 7.3.0 2>$W/blog && mountpoint -q $R/home && mountpoint -q $R/var/lib/flatpak && [ -e $R/var/lib/flatpak/app ] && [ -e $R/home/1000/f ]"
 gr_boot_umount $R
+# the one-shot deployment request (glassine.deploy.once=, 010 FR-042 to FR-047): d1
+# a candidate with two tries, $CUR current
+mount -t btrfs $SD $W/sysmnt && gs_update $W/sysmnt/state/deploy candidate=d1 tries=2 staged= failed= && umount $W/sysmnt
+dsum() { mount -t btrfs -o ro $SD $W/sysmnt && md5sum < $W/sysmnt/state/deploy; r=$?; umount $W/sysmnt; return $r; }
+D0=$(dsum)
+ok "a deployment request: that deployment, no pick, no try, state/deploy byte for byte unchanged" "gr_boot $SD $UDEV $P $R 7.3.0 '' $CUR 2>$W/blog && [ \"\$GR_BOOTED\" = $CUR ] && [ \"\$GR_ONCE\" = $CUR ] && grep -q 'deployment $CUR by request, for this start only' $W/blog && mountpoint -q $R/home"
+ok "a deployment request: gr_carry records it in deploy-once" "gr_carry $R && [ \"\$(cat $R/run/glassine/deploy-once)\" = $CUR ] && [ \"\$(cat $R/run/glassine/booted)\" = $CUR ]"
+gr_boot_umount $R
+ok "a deployment request: state/deploy unchanged after the start" "[ \"\$(dsum)\" = \"\$D0\" ]"
+ok "a request for the candidate: the candidate, its tries untouched" "gr_boot $SD $UDEV $P $R 7.3.0 '' d1 2>$W/blog && [ \"\$GR_BOOTED\" = d1 ] && [ \"\$(gs_kv $R.sys/state/deploy tries)\" = 2 ]"
+gr_boot_umount $R
+ok "a request for a deployment that isn't there: dropped, said, the ordinary pick (a try used)" "gr_boot $SD $UDEV $P $R 7.3.0 '' gone 2>$W/blog && grep -q 'deployment request gone dropped: there is no such deployment' $W/blog && [ \"\$GR_BOOTED\" = d1 ] && [ -z \"\$GR_ONCE\" ] && [ \"\$(gs_kv $R.sys/state/deploy tries)\" = 1 ]"
+ok "after a dropped request: deploy-once empty" "gr_carry $R && [ -e $R/run/glassine/deploy-once ] && [ -z \"\$(cat $R/run/glassine/deploy-once)\" ]"
+mkdir -p $R/run/glassine/userdata/$P/deployments/dz && echo base=gone > $R/run/glassine/userdata/$P/deployments/dz/meta
+gs_update $R/run/glassine/system/state/deploy tries=2
+gr_boot_umount $R
+ok "a request for a deployment that doesn't assemble: dropped, nothing marked failed, the ordinary pick" "gr_boot $SD $UDEV $P $R 7.3.0 '' dz 2>$W/blog && grep -q 'deployment request dz dropped: it does not assemble' $W/blog && [ \"\$GR_BOOTED\" = d1 ] && [ -z \"\$(gs_kv $R.sys/state/deploy failed)\" ]"
+rm -rf $R.ud/$P/deployments/dz; gs_update $R.sys/state/deploy "staged=$CUR" tries=2
+gr_boot_umount $R
+ok "a request for the staged deployment: dropped, the ordinary pick" "gr_boot $SD $UDEV $P $R 7.3.0 '' $CUR 2>$W/blog && grep -q 'deployment request $CUR dropped: it is staged' $W/blog && [ \"\$GR_BOOTED\" = d1 ]"
+gs_update $R.sys/state/deploy staged= tries=2
+printf 'current=7.3.0\ncandidate=7.4.0\ncandidate_img=c0ffee\ntries=1\n' > $R.sys/state/kernel
+gr_boot_umount $R
+ok "a request on a kernel trial: dropped, current boots" "gr_boot $SD $UDEV $P $R 7.3.0 c0ffee d1 2>$W/blog && grep -q 'deployment request d1 dropped: a kernel trial boot takes none' $W/blog && [ \"\$GR_BOOTED\" = $CUR ] && [ \"\$GR_KBOOT\" = trial ]"
+rm $R.sys/state/kernel; gs_update $R.sys/state/deploy candidate= tries=0
+gr_boot_umount $R
+ok "a request without userdata: dropped, bare" "gr_boot $SD '' $P $R 7.3.0 '' d1 2>$W/blog && grep -q 'deployment request d1 dropped: userdata is not mounted' $W/blog && [ \"\$GR_BOOTED\" = bare:b1 ]"
+gr_boot_umount $R
 ok "gr_boot without userdata: bare on the newest base" "gr_boot $SD '' $P $R 7.3.0 2>$W/blog && [ \"\$GR_BOOTED\" = bare:b1 ] && [ \"\$(cat $R/etc/motd)\" = welcome ] && gr_carry $R && mountpoint -q $R/run/glassine/bare"
 ok "a bare boot binds nothing from userdata; /var/tmp shared" "! mountpoint -q $R/home && ! mountpoint -q $R/var/lib/flatpak && shared $R/var/tmp && [ \"\$(cat $R/run/glassine/storage)\" = vartmp=shared ]"
 gr_boot_umount $R

@@ -60,8 +60,9 @@ mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
 log() { echo "<3>glassine-boot: $*" > /dev/kmsg; }
 # The host test's overrides (test/initramfs). Never as PID 1: the kernel puts
 # unknown command line words of the form A=B into PID 1's environment.
-[ $$ = 1 ] && unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS GLASSINE_INIT_LIB
+[ $$ = 1 ] && unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS GLASSINE_INIT_LIB GLASSINE_INIT_SYSBLOCK
 CMDF=${GLASSINE_INIT_CMDLINE:-/proc/cmdline}
+SYSBLOCK=${GLASSINE_INIT_SYSBLOCK:-/sys/class/block}
 BOARD=${GLASSINE_INIT_BOARD:-/etc/glassine-boot/board.conf}
 HOOKDIR=${GLASSINE_INIT_HOOKS:-/lib/glassine-boot/hooks.d}
 LIBDIR=${GLASSINE_INIT_LIB:-/lib/glassine-boot}
@@ -208,19 +209,74 @@ glassine_endpoint back   'echo rebooting to the default boot; (sleep 1; reboot -
 glassine_endpoint default 'touch /tmp/boot-default; echo "switching to the DEFAULT boot (root fs read-write, full runlevels) in 1s"'
 run_stage endpoints
 
-# The root partition's block device name. Storage may still be probing
-# when /init starts: wait up to 15 s for it.
+# A partition's block device name, by its GPT name. Storage may still be
+# probing when /init starts: wait up to 15 s for it.
 find_part() {
     [ -n "$1" ] || return 1
     for _ in $(seq 1 60); do
-        for u in /sys/class/block/*/uevent; do
+        for u in "$SYSBLOCK"/*/uevent; do
             grep -qx "PARTNAME=$1" "$u" && { sed -n 's/^DEVNAME=//p' "$u"; return 0; }
         done
         sleep 0.25
     done
     return 1
 }
-find_root() { find_part "$ROOT_PART"; }
+# The same by its GPT unique partition identity (lower case), waiting as long.
+# Two partitions that carry it (a cloned disk): none is taken.
+find_partuuid() {
+    for _ in $(seq 1 60); do
+        _fn=0 _fd=''
+        for u in "$SYSBLOCK"/*/uevent; do
+            grep -qix "PARTUUID=$1" "$u" || continue
+            _fn=$((_fn + 1)) _fd=$(sed -n 's/^DEVNAME=//p' "$u")
+        done
+        [ $_fn = 1 ] && { echo "$_fd"; return 0; }
+        [ $_fn = 0 ] || { log "PARTUUID=$1: $_fn partitions carry it: none taken"; return 1; }
+        sleep 0.25
+    done
+    return 1
+}
+# cmdkey KEY: the value of the command-line word KEY=<value>, matched as a whole
+# word. 0 = given once (the value printed), 1 = not given, 2 = given more than once.
+cmdkey() (
+    set -f
+    _n=0
+    # shellcheck disable=SC2013  # words, not lines
+    for _w in $(cat "$CMDF"); do
+        case $_w in "$1="*) _v=${_w#"$1="} _n=$((_n + 1)) ;; esac
+    done
+    [ $_n = 0 ] && return 1
+    [ $_n = 1 ] || return 2
+    printf '%s' "$_v"
+)
+# part_for KEY NAME: in the deployments layout the partition the boot chain names
+# with KEY=PARTUUID=<uuid> on the command line (docs/boot.md, "Command-line keys"),
+# and only that one: a partition called NAME with another identity is never taken.
+# Without KEY (the Note Air: one disk, its names unique), the partition called NAME.
+part_for() {
+    if [ "$ROOT_LAYOUT" = deployments ]; then
+        _pv=$(cmdkey "$1"); _pr=$?
+        case $_pr in
+        2) log "$1= is given more than once: no partition taken"; return 1 ;;
+        0)
+            _pu=$(echo "${_pv#PARTUUID=}" | tr A-F a-f)
+            case $_pv in PARTUUID=*) ;; *) log "$1=$_pv is not PARTUUID=<uuid>: no partition taken"; return 1 ;; esac
+            echo "$_pu" | grep -qxE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' ||
+                { log "$1=$_pv is not PARTUUID=<uuid>: no partition taken"; return 1; }
+            find_partuuid "$_pu" || return 1
+            return 0
+            ;;
+        esac
+    fi
+    find_part "$2"
+}
+# part_given KEY NAME: a partition is asked for, by the key or by the board's name
+part_given() { [ -n "$2" ] && return 0; [ "$ROOT_LAYOUT" = deployments ] || return 1; cmdkey "$1" >/dev/null; [ $? != 1 ]; }
+find_root() { part_for glassine.system "$ROOT_PART"; }
+# what the boot looked for: the key's value, or the board's name
+part_what() {
+    if [ "$ROOT_LAYOUT" = deployments ] && _pw=$(cmdkey "$1"); then echo "$1=$_pw"; else echo "${2:-(none configured)}"; fi
+}
 
 # The deployments layout: resume or invalidate a hibernated session first
 # (nothing mounted before it), then the deployment's root at $NEWROOT. No
@@ -229,16 +285,18 @@ find_root() { find_part "$ROOT_PART"; }
 # (KBOOT, FR-011).
 mount_deployments() {
     U=''
-    [ -n "$USERDATA_PART" ] && { U=$(find_part "$USERDATA_PART") || log "default: userdata $USERDATA_PART not found"; }
+    if part_given glassine.userdata "$USERDATA_PART"; then
+        U=$(part_for glassine.userdata "$USERDATA_PART") || log "default: userdata $(part_what glassine.userdata "$USERDATA_PART") not found"
+    fi
     may=resume
     [ $DEFAULT = 1 ] || may=test-role
     grep -qw glassine.noresume "$CMDF" && may=noresume
     [ -z "$KBOOT" ] || may=kernel-$KBOOT
-    if [ -n "$U" ] && ! gr_resume "/dev/$P" "/dev/$U" "$USERDATA_PREFIX" $may; then
+    if [ -n "$U" ] && ! GR_ONCE_REQ=$ONCE gr_resume "/dev/$P" "/dev/$U" "$USERDATA_PREFIX" $may; then
         log "default: userdata holds a hibernate image that cannot be invalidated: nothing mounted"
         return 1
     fi
-    gr_boot "/dev/$P" "${U:+/dev/$U}" "$USERDATA_PREFIX" $NEWROOT "$(uname -r)" "$IMG_ID" || return 1
+    gr_boot "/dev/$P" "${U:+/dev/$U}" "$USERDATA_PREFIX" $NEWROOT "$(uname -r)" "$IMG_ID" "$ONCE" || return 1
     log "default: deployment $GR_BOOTED"
 }
 root_release() {
@@ -264,7 +322,8 @@ device_data() {
 boot_default() {
     log "default: preparing"
     P=$(find_root)
-    [ -n "$P" ] || { log "default: root partition ${ROOT_PART:-(none configured)} not found"; return 1; }
+    [ -n "$P" ] || { log "default: root partition $(part_what glassine.system "$ROOT_PART") not found"; return 1; }
+    log "default: root partition $(part_what glassine.system "$ROOT_PART") is /dev/$P"
     mkdir -p $NEWROOT
     if [ "$ROOT_LAYOUT" = deployments ]; then
         mount_deployments || return 1
@@ -317,6 +376,18 @@ boot_default() {
 # this boot is to state/kernel (trial, finishing, or empty), on either role.
 AUTOTEST=0 KBOOT=''
 IMG_ID=$(sed -n 's/.*glassine[._]img=\([0-9a-f]*\).*/\1/p' "$CMDF")
+# The one-shot deployment request (glassine.deploy.once=<deployment id>, 010
+# FR-042 to FR-047): gr_boot starts that deployment in place of the pick, for this
+# start only, with no state written; a bad id is dropped here.
+ONCE=''
+if [ "$ROOT_LAYOUT" = deployments ]; then
+    ONCE=$(cmdkey glassine.deploy.once); _or=$?
+    case $_or:$ONCE in
+    1:*) ONCE='' ;;
+    2:*) log "glassine.deploy.once= is given more than once: no deployment request"; ONCE='' ;;
+    *:.*|*:|*:*[!A-Za-z0-9._-]*) log "glassine.deploy.once=$ONCE is not a deployment id: no deployment request"; ONCE='' ;;
+    esac
+fi
 if [ -n "$IMG_ID" ] && [ "$ROOT_LAYOUT" = deployments ]; then
     P=$(find_root)
     [ -z "$P" ] || KBOOT=$(gr_kernel_mode "/dev/$P" "$IMG_ID")
@@ -371,7 +442,7 @@ httpd -p "$DEVMODE_ADDR:80" -h /www
 {
     echo "kernel: $(uname -r)"
     echo "cmdline: $(cat "$CMDF")"
-    echo "block: $(ls /sys/class/block 2>/dev/null | wc -l) devices, root ${ROOT_PART:-?} $(find_root || echo 'not found')"
+    echo "block: $(ls "$SYSBLOCK" 2>/dev/null | wc -l) devices, root $(part_what glassine.system "$ROOT_PART") $(find_root || echo 'not found')"
     echo "input: $(cat /sys/class/input/input*/name 2>/dev/null | tr '\n' ',')"
     echo "backlight: $(ls /sys/class/backlight 2>/dev/null | tr '\n' ' ')"
     echo "leds: $(ls /sys/class/leds 2>/dev/null | tr '\n' ' ')"
