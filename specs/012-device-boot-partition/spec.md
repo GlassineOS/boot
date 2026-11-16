@@ -124,7 +124,10 @@ systems to the boot partition, reading only, and then answers as it would have w
 - **FR-005** The parent writes nothing on the boot partition and keeps no state of the
   loader's.
 - **FR-006** A parent with no display the firmware can draw on starts the loader without
-  one: the loader runs headless. A parent never asks the loader to draw.
+  one: the loader runs headless. A parent never asks the loader to draw. The one display
+  a loader under a parent may draw on is a panel the firmware refreshes through an
+  extended graphics output, and only with `display=epd-fw` in the record
+  ([handback.md](../../docs/handback.md#a-display-through-the-firmwares-refresh)).
 - **FR-007** Where the parent can arm a watchdog through the firmware, it does so for the
   loader's run (handback.md, step 5), so a loader that hangs ends in a reset.
 
@@ -137,7 +140,9 @@ systems to the boot partition, reading only, and then answers as it would have w
   the option, the loader runs as on a PC (loader spec 001), unchanged.
 - **FR-009** In hand-back mode it draws nothing, opens no display, waits for no key,
   shows no message, and calls no serial protocol unless the load options ask for it
-  (`glassine.log=serial`).
+  (`glassine.log=serial`). With the display of FR-006 it draws the picture of 011 once
+  (one full refresh, before it answers) and nothing else: no key line, no list, no
+  message.
 - **FR-010** It decides as 010 and boot-partition.md say, with the record keys of
   [handback.md](../../docs/handback.md#the-loader-record-raw): a request taken only from
   a record read with both slots valid and cleared durably before the answer; the count
@@ -158,11 +163,12 @@ systems to the boot partition, reading only, and then answers as it would have w
   answer.
 - **FR-015** It opens every protocol with `GetProtocol`, never exclusively, so that no
   driver of the firmware is disconnected for the parent's later use.
-- **FR-015a** In hand-back mode it reads and writes nothing of the splash store: the
+- **FR-015a** In hand-back mode, headless, it reads and writes nothing of the splash store: the
   images and the override stay as they are for the stage of the machine that draws
   ([handback.md](../../docs/handback.md#the-splash-store-under-a-parent)). The store's
   code reads and writes the raw form too, for a loader that draws and for the running
-  system's writer (011 FR-019, FR-020).
+  system's writer (011 FR-019, FR-020). With the display of FR-006 it uses the store as
+  on a PC: the override removed durably before it is drawn.
 
 ### The probe
 
@@ -272,4 +278,5 @@ systems to the boot partition, reading only, and then answers as it would have w
 - Writing the boot partition's raw form from the running system and the installer (a
   later feature), and the partition-table change that adds it.
 - A gesture at power-on that picks the recovery (`glassine.pick=recovery` is reserved).
-- Drawing on displays the firmware can't drive (e-ink).
+- Drawing on displays the firmware can't drive (e-ink) other than through the firmware's
+  own refresh (FR-006).
