@@ -307,7 +307,7 @@ row gives as none doesn't apply on that kind.
   (builder, layout, configuration), and its record names its image file. Each hand-off
   kind takes only the kernel image it can start (the table above) and refuses the
   others, naming the image it found. A kernel record with no image name means
-  `Image.gz`, so the records of kernels built before this keep their meaning.
+  `Image.gz`.
 
 ## Decisions this spec adds to the contract (for review)
 
