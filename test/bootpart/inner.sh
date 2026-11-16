@@ -8,6 +8,7 @@
 # mismatches come from GLASSINE_BI_AFTER_SLOT / GLASSINE_BI_AFTER_SETFILE.
 # Part 1: the library. Part 2: glassine-bootimg on a directory as the boot
 # partition. Part 3 (privileged): a real FAT file system on a loop device.
+# shellcheck disable=SC2089,SC2090  # the hooks are code, eval'd by the library
 set -u
 D=/p/test/bootpart
 M="python3 $D/loader_model.py"
@@ -127,7 +128,7 @@ st() { $B status 2>/dev/null | sed -n "s/^$1=//p"; }
 rec() { $M get $BP "$1"; }
 boot() {    # boot ID: this boot runs set ID (its release the running kernel, its modules bound)
     echo "BOOT_IMAGE=vmlinuz panic=10 loglevel=4 glassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=$UU glassine.img=$1" > $W/cmdline
-    export GLASSINE_BI_UNAME=$(gs_kv $BI/$1.manifest release)
+    GLASSINE_BI_UNAME=$(gs_kv "$BI/$1.manifest" release); export GLASSINE_BI_UNAME
     echo "x /lib/modules/$GLASSINE_BI_UNAME x" > $W/mounts
 }
 mkrel() {   # mkrel REL: modules/REL with an x86 boot image of that release
@@ -296,7 +297,7 @@ if [ "${BP_PRIV:-}" = 1 ]; then
     mkdir -p $W/fm; mount -t vfat $LD $W/fm; mkdir -p $W/fm/glassine
     cp -a $BP/glassine/. $W/fm/glassine/; umount $W/fm
     export GLASSINE_BI_BOOTPART_DEV=$LD GLASSINE_BI_RUN_DIR=$W/rundir
-    boot $(kv current_img)
+    boot "$(kv current_img)"
     ok "FAT: install mounts the boot partition, writes the set, unmounts it" "$B install 7.1.0-b --initramfs c1@1 >/dev/null 2>$W/err && ! grep -q \"$W/rundir/boot-partition\" /proc/mounts"
     C3=$(kv candidate_img)
     mount -t vfat -o ro $LD $W/fm
