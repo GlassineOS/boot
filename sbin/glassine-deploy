@@ -1136,7 +1136,9 @@ boot_prune() {
         _bst=$(gs_kv "$_br" staged)
         case "$_bst" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
         *) echo "glassine-deploy: ${_br#"$SYSTEM_MNT"/} has no staged time; no boot/ file removed" >&2; return 0 ;; esac
-        [ "$_bst" \> "$_blast" ] && _blast=$_bst
+        # YYYYMMDDHHMMSS as a number: the order of the times
+        _bsn=$(printf '%s' "$_bst" | tr -d 'TZ:-')
+        [ "$_bsn" -gt "${_blast:-0}" ] && _blast=$_bsn
         _bk="$_bk$(gs_kv "$_br" dtb) $(gs_kv "$_br" initramfs) "
     done
     [ -n "$_blast" ] || return 0
@@ -1146,7 +1148,7 @@ boot_prune() {
         case "$_bk" in *" $_bn "*) continue ;; esac
         # a record from before the id names the initramfs by its bare commit
         case "$_bf" in */initramfs/*) case "$_bk" in *" ${_bn%@*} "*) continue ;; esac ;; esac
-        [ "$(date -u -r "$_bf" +%Y-%m-%dT%H:%M:%SZ)" \< "$_blast" ] || continue
+        [ "$(date -u -r "$_bf" +%Y%m%d%H%M%S)" -lt "$_blast" ] || continue
         # the manifest first: a cut removal leaves a file no record names, which
         # the next prune removes (never a manifest without its file)
         rm -f "${_bf%/*}/$_bn.manifest" && rm -f "$_bf" || { echo "glassine-deploy: cannot remove $_bf" >&2; continue; }

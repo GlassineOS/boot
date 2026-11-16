@@ -417,7 +417,7 @@ mkbf() {    # mkbf KIND LABEL CONTENT [MANIFEST-EXTRA]: a file named by its cont
 }
 nonew() { [ -z "$(find $SB -name '*.new' 2>/dev/null)" ]; }
 IR=$(mkbf initramfs 0123456789ab initramfs-one); IRN=$(basename $IR .cpio.gz)
-DT=$(mkbf dtb onyx-noteair dtb-one); DTN=$(basename $DT .dtb)
+DT=$(mkbf dtb example-board dtb-one); DTN=$(basename $DT .dtb)
 ok "receive --boot: an initramfs: boot/initramfs/, its file and manifest, nothing .new" "$G receive $IR --boot >$W/out && cmp -s $IR $SB/initramfs/$IRN.cpio.gz && cmp -s ${IR%.cpio.gz}.manifest $SB/initramfs/$IRN.manifest && grep -q 'received boot/initramfs/$IRN' $W/out && nonew"
 ok "receive --boot: a device tree: boot/dtb/" "$G receive $DT --boot --sha256 \$(sha256sum $DT | cut -d ' ' -f 1) >/dev/null && cmp -s $DT $SB/dtb/$DTN.dtb && cmp -s ${DT%.dtb}.manifest $SB/dtb/$DTN.manifest"
 ok "receive --boot: the same name again: a no-op, said" "$G receive $IR --boot >$W/out && grep -q 'is there already' $W/out"
@@ -432,7 +432,7 @@ ok "receive --boot: the name's id is not the content's: refused, nothing changed
 Z=$(mkbf initramfs 0123456789ab initramfs-two); sed -i 's/^sha256=.*/sha256=00/' ${Z%.cpio.gz}.manifest
 ok "receive --boot: the manifest's sha256 is not the file's: refused, nothing changed" "$G receive $Z --boot 2>$W/err; [ \$? = 1 ] && grep -q 'its manifest says 00' $W/err && same"
 V=$(mkbf dtb other-device dtb-two); VI=$(basename $V .dtb | cut -d@ -f2)
-mv $V $BW/onyx-noteair@$VI.dtb; mv $BW/other-device@$VI.manifest $BW/onyx-noteair@$VI.manifest; V=$BW/onyx-noteair@$VI.dtb
+mv $V $BW/example-board@$VI.dtb; mv $BW/other-device@$VI.manifest $BW/example-board@$VI.manifest; V=$BW/example-board@$VI.dtb
 ok "receive --boot: a device tree whose manifest names another device: refused" "$G receive $V --boot 2>$W/err; [ \$? = 1 ] && grep -q 'not the manifest.s device' $W/err && same"
 Q=$(mkbf initramfs 0123456789ab initramfs-three); rm ${Q%.cpio.gz}.manifest
 ok "receive --boot: no manifest beside it: refused" "$G receive $Q --boot 2>$W/err; [ \$? = 1 ] && grep -q 'no manifest' $W/err && same"
@@ -450,10 +450,10 @@ ok "receive --boot: a cut write (killed before the rename): .new left, no file, 
 ok "receive --boot: the next receive sweeps the cut .new and completes" "$G receive $I2 --boot >$W/out && grep -q 'a cut receive' $W/out && cmp -s $I2 $SB/initramfs/$I2N.cpio.gz && [ -e $SB/initramfs/$I2N.manifest ] && nonew"
 rm $SB/initramfs/$I2N.manifest
 ok "receive --boot: the file there without its manifest (cut after the file): the manifest is completed" "$G receive $I2 --boot >/dev/null && cmp -s ${I2%.cpio.gz}.manifest $SB/initramfs/$I2N.manifest && nonew"
-ok "receive --boot: a cut manifest write: the file stays, the manifest is not there, a receive again completes it" "GLASSINE_DEPLOY_AFTER_BOOTNEW='case \$1 in *.manifest.new) kill -9 \$\$ ;; esac' $G receive $(mkbf dtb onyx-noteair dtb-three) --boot 2>/dev/null; D3=\$(ls $SB/dtb/*.dtb | grep -v $DTN); [ -e \"\$D3\" ] && [ ! -e \"\${D3%.dtb}.manifest\" ] && $G receive $BW/\$(basename \$D3) --boot >/dev/null && [ -e \"\${D3%.dtb}.manifest\" ] && nonew"
+ok "receive --boot: a cut manifest write: the file stays, the manifest is not there, a receive again completes it" "GLASSINE_DEPLOY_AFTER_BOOTNEW='case \$1 in *.manifest.new) kill -9 \$\$ ;; esac' $G receive $(mkbf dtb example-board dtb-three) --boot 2>/dev/null; D3=\$(ls $SB/dtb/*.dtb | grep -v $DTN); [ -e \"\$D3\" ] && [ ! -e \"\${D3%.dtb}.manifest\" ] && $G receive $BW/\$(basename \$D3) --boot >/dev/null && [ -e \"\${D3%.dtb}.manifest\" ] && nonew"
 unset GLASSINE_DEPLOY_TEST
 printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/dev/null
-ok "receive --boot: hibernated: exit 4, nothing written" "$G receive $(mkbf dtb onyx-noteair dtb-four) --boot </dev/null 2>/dev/null; [ \$? = 4 ] && [ \$(ls $SB/dtb/*.dtb | wc -l) = 2 ]"
+ok "receive --boot: hibernated: exit 4, nothing written" "$G receive $(mkbf dtb example-board dtb-four) --boot </dev/null 2>/dev/null; [ \$? = 4 ] && [ \$(ls $SB/dtb/*.dtb | wc -l) = 2 ]"
 gs_invalidate_file $U/swap/hibernate
 
 echo "$fails failed"
