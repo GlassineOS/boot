@@ -61,6 +61,7 @@ differences:
 | `trial`, `trial_rec` | the trial set, as on a PC |
 | `recovery`, `recovery_rec` | not used: the recovery is the parent's own |
 | `probe` | `1`: write the probe report at this start; anything else, or empty: don't. Set and cleared by the running system; the loader never changes it |
+| `display` | `epd-fw`: draw the splash through the firmware's panel refresh when the firmware has an extended graphics output (below, "A display through the firmware's refresh"); anything else, or empty: headless. Set by the running system or the installer; the loader never changes it |
 | `deploys`, `deploy1` … | kept as read; a headless loader offers no list |
 
 The other keys (`format`, `seq`, `request`, `unmarked`, `started`, `started_why`) are
@@ -71,7 +72,32 @@ the same, with the same writers.
 A loader that runs headless (below) reads and writes nothing of the splash store: the
 images and the override stay as they are, for the stage of the machine that draws
 (named by the machine's own spec). Where no stage draws, the running system removes an
-override at its start (011 FR-015).
+override at its start (011 FR-015). A loader that draws through the firmware's refresh
+(`display=epd-fw`, below) uses the store as on a PC: the override is removed durably
+before it is drawn, and drawn only when made for the panel's mode.
+
+### A display through the firmware's refresh
+
+An optional display backend, off unless the record says `display=epd-fw` and the
+firmware has an extended graphics output ("Graphics outputs read raw"): one whose Mode
+is at +0x28 and whose refresh (+0x18) and `GetFrameBuffer` (+0x20) point into the image
+of its QueryMode, SetMode and Blt. With neither, the loader runs headless, as above.
+
+- `GetFrameBuffer(This, &Fb, &W, &H)` gives the panel's framebuffer and its native size.
+  The picture there is packed RGB565 from `Fb`, rows `W` pixels apart, `W` a multiple of
+  8, and must lie inside the framebuffer the Mode names; else the loader runs headless.
+- The loader draws in portrait: the mode it picks the picture for is `H`×`W`, and a
+  portrait pixel (u, v) goes to native (x, y) = (W − 1 − v, u). (The mapping is to be
+  confirmed on a device.)
+- It writes the whole picture, then calls `Refresh(This, Fb, 0, 0, W, H, W, 0)` once:
+  the whole panel, x and width multiples of 8. The call is synchronous and its status
+  says nothing (the panel does).
+- It draws only before it hands back, never after `ExitBootServices`, and never calls
+  `SetMode`, `Blt` or any power protocol of the display.
+- The key line and the list stay off: which key the person would press at power-on is
+  not defined for such a machine, and each change of the picture is one more full
+  refresh.
+
 
 ## The loader region
 
