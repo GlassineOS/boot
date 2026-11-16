@@ -1,0 +1,128 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-loader-mark: the running system's writes of the loader's start count
+# (`unmarked` in the loader record, docs/boot-partition.md "Keys", 010 FR-011,
+# FR-012, FR-023).
+#
+#   glassine-loader-mark has-record    exit 0 when this board's hand-off keeps a
+#                                      loader record, 3 when it keeps none
+#   glassine-loader-mark healthy       the healthy mark: unmarked=0 (run by
+#                                      glassine-deploy-accept on a healthy boot,
+#                                      and by glassine-hibernate after a resume)
+#   glassine-loader-mark shutdown      the shutdown step: one off unmarked, never
+#                                      below 0, when FR-012 allows it (run by the
+#                                      glassine-deploy-accept service as the
+#                                      system goes down)
+#
+# Where the record is comes from the board's hand-off (board.conf HANDOFF; the
+# backend in lib/glassine-bootpart.sh, gp_open): with uefi, the boot partition
+# (BOOT_PART), mounted for the one write and unmounted again. A hand-off without
+# a loader record has nothing to write: exit 0, nothing said. The write is the
+# library's (gp_write: the other slot, seq + 1, every other key kept, flushed and
+# read back); this tool never makes a record where there is none.
+#
+# The write holds the system partition's state lock ($SYSTEM_MNT/state/.lock),
+# the one glassine-bootimg holds for its own record writes, so the two never
+# write the same slot at once. Busy: tried again for up to LOCK_WAIT seconds
+# (healthy: ACCEPT_BUSY_S of deploy.conf, default 600; shutdown: 10).
+#
+# What this start did, in RUN_DIR (deploy.conf, default /run/glassine):
+#   loader-marked     the healthy mark was written in this start (by this tool)
+#   health-failed     a health check failed in this start (glassine-deploy-accept)
+#   booted            bare:* = a bare boot (the initramfs)
+# The shutdown step takes one off only when neither of the first two is there,
+# the start was no bare boot, the record's `started` is the set this boot runs
+# (glassine.img= on the command line) and `started_why` is default, limit or
+# choice.
+#
+# Exit: 0 written or nothing to write, 1 not written (said), 2 usage, 3
+# (has-record) no loader record, 6 busy (the state lock stayed held).
+# Test hooks: GLASSINE_DEPLOY_CONF, GLASSINE_BI_BOARD, GLASSINE_BI_CMDLINE,
+# GLASSINE_BI_LIB, GLASSINE_BI_SYSTEM, GLASSINE_BI_RUN_DIR, GLASSINE_BI_TMP, and
+# the library's (GLASSINE_BI_BOOTPART_DIR, GLASSINE_BI_BOOTPART_DEV, ...).
+set -u
+CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+BOARD=${GLASSINE_BI_BOARD:-/etc/glassine-bootimg/board.conf}
+GBLIB=${GLASSINE_BI_LIB:-/usr/lib/glassine-boot}
+RUN_DIR=/run/glassine SYSTEM_MNT=/run/glassine/system ACCEPT_BUSY_S=600
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+HANDOFF='' BOOT_PART=glassine-boot
+# shellcheck source=/dev/null
+[ -r "$BOARD" ] && . "$BOARD"
+# after board.conf: its CMDLINE is the set's base command line, not this file
+CMDLINE=${GLASSINE_BI_CMDLINE:-/proc/cmdline}
+SYS=${GLASSINE_BI_SYSTEM:-$SYSTEM_MNT}
+MNT=${GLASSINE_BI_RUN_DIR:-$RUN_DIR}/boot-partition
+
+say() {
+    echo "glassine-loader-mark: $*" >&2
+    { [ -w /dev/kmsg ] && echo "<5>glassine-loader-mark: $*" > /dev/kmsg; } 2>/dev/null
+    return 0
+}
+
+cmd=${1:-}
+case $cmd in has-record|healthy|shutdown) ;; *) echo "usage: glassine-loader-mark has-record|healthy|shutdown" >&2; exit 2 ;; esac
+[ $# = 1 ] || { echo "usage: glassine-loader-mark has-record|healthy|shutdown" >&2; exit 2; }
+# shellcheck source=../lib/glassine-bootpart.sh
+. "$GBLIB/glassine-bootpart.sh"
+# shellcheck disable=SC2034  # read by the library
+GP_TMP=${GLASSINE_BI_TMP:-/run}
+gp_has_record "$HANDOFF" || { [ "$cmd" = has-record ] && exit 3; exit 0; }
+[ "$cmd" = has-record ] && exit 0
+
+# the shutdown step's conditions that need no record (FR-012)
+if [ "$cmd" = shutdown ]; then
+    [ ! -e "$RUN_DIR/loader-marked" ] || exit 0
+    [ ! -e "$RUN_DIR/health-failed" ] || exit 0
+    case $(cat "$RUN_DIR/booted" 2>/dev/null) in bare:*) exit 0 ;; esac
+    run=$(tr ' ' '\n' < "$CMDLINE" | sed -n 's/^glassine\.img=//p' | head -n 1)
+    [ -n "$run" ] || exit 0
+    wait_s=${LOCK_WAIT:-10}
+else
+    wait_s=${LOCK_WAIT:-$ACCEPT_BUSY_S}
+fi
+
+[ -d "$SYS/state" ] || { say "the system partition's state is not at $SYS: nothing written"; exit 1; }
+exec 9>>"$SYS/state/.lock" || { say "cannot open $SYS/state/.lock: nothing written"; exit 1; }
+n=0
+until flock -n 9; do
+    [ $n -lt "$wait_s" ] || { say "busy: $SYS/state/.lock stayed held: nothing written"; exit 6; }
+    sleep 1; n=$((n + 1))
+done
+
+rc=0
+trap 'gp_close >/dev/null 2>&1; gp_clean' EXIT
+gp_open "$HANDOFF" "$CMDLINE" "$BOOT_PART" "$MNT" || { say "$GP_WHY: nothing written"; exit 1; }
+if ! gp_in_use "$GP_DIR"; then
+    say "$GP_WHY: nothing written"
+    exit 1
+fi
+count=$(gp_get "$GP_REC" unmarked)
+case $count in ''|*[!0-9]*) say "the record's unmarked is '$count', not a count: nothing written"; exit 1 ;; esac
+case $cmd in
+healthy)
+    if [ "$count" = 0 ]; then
+        : > "$RUN_DIR/loader-marked"
+        say "the healthy mark: unmarked is 0 already"
+    elif gp_write "$GP_DIR" unmarked=0; then
+        : > "$RUN_DIR/loader-marked"
+        say "the healthy mark written (unmarked $count -> 0)"
+    else
+        say "the healthy mark not written: $GP_WHY"; rc=1
+    fi
+    ;;
+shutdown)
+    started=$(gp_get "$GP_REC" started) why=$(gp_get "$GP_REC" started_why)
+    [ "$started" = "$run" ] || exit 0
+    case $why in default|limit|choice) ;; *) exit 0 ;; esac
+    [ "$count" != 0 ] || exit 0
+    if gp_write "$GP_DIR" unmarked=$((count - 1)); then
+        say "an orderly shutdown: this start taken out of the count (unmarked $count -> $((count - 1)))"
+    else
+        say "the shutdown step not written: $GP_WHY"; rc=1
+    fi
+    ;;
+esac
+gp_close || { say "$GP_WHY"; rc=1; }
+exit $rc

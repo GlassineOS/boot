@@ -5,7 +5,9 @@ with `HANDOFF=uefi` (install, reboot-test, accept, rollback, cancel, a failed tr
 retry, promote's finishing step, the first start's record of the installer's set) and
 its library `lib/glassine-bootpart.sh` are built and host-tested against the installer's
 golden bytes and a port of the loader's reader (`test/bootpart`); nothing has run on a
-real PC. Not built here: the healthy mark and the shutdown step (`unmarked`), the
+real PC. The healthy mark and the shutdown step (`unmarked`) are built too
+(`glassine-loader-mark`, run by `glassine-deploy-accept`, its service's stop and
+`glassine-hibernate`; host-tested in `test/bootpart`). Not built here: the
 `reboot recovery` request, the deployment list (`deploys`), the recovery's update, the
 repair, the splash store. This page is the contract between the three programs that read or write a PC's boot
 partition: the loader, the installer, and the running system's tools (`glassine-bootimg`,
@@ -117,7 +119,9 @@ write; the loader runs when no system does.
 
 - **The healthy mark** is the write of `unmarked=0`. The boot-success step makes it on
   every start that reaches the health conditions (010 FR-023), whichever set and
-  deployment started.
+  deployment started, also a start by request (010 FR-044), and again after a resume
+  of a session that had it. It is `glassine-loader-mark healthy`; a mark already at
+  `0` is not written again.
 - **The limit** is 3 in format 1. With no key pressed and no request, the loader starts,
   by the `unmarked` it reads: below 3 the default set; at 3 the previous set
   (`started_why=limit`); above 3, or at 3 with no previous set that checks, the recovery.
@@ -128,7 +132,13 @@ write; the loader runs when no system does.
 - **The shutdown step** takes one off `unmarked`, never below 0, when the system shuts
   down or restarts in an orderly way, the running set is `started`, `started_why` is
   `default`, `limit` or `choice`, no healthy mark was written in this start, the start
-  was no bare boot and no health check failed in it.
+  was no bare boot and no health check failed in it. It is `glassine-loader-mark
+  shutdown`, run by the stop of the `glassine-deploy-accept` service when OpenRC goes
+  down (`RC_GOINGDOWN`), before `localmount` takes the system partition away. The
+  running set is the one `glassine.img=` names on this boot's command line. What
+  this start did is in `/run/glassine`: `loader-marked` (the mark was written) and
+  `health-failed` (a health check failed, written by the boot-success step). Both
+  writes hold the system partition's state lock, as `glassine-bootimg`'s do.
 - **A request** is honoured only from a record read with both slots valid. The loader
   writes the record with `request` empty, and `started` and `started_why=request` for a
   trial, and only after that write is flushed and read back does it start the trial set

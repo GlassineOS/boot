@@ -428,6 +428,13 @@ ok "now, a kernel without hibernation: exit 3" "hn now; [ \$? = 3 ] && [ ! -s $H
 hpow; : > $W/wdlog; $W/wdbin/watchdog -t 5 -T 20 /dev/null & sleep 0.3
 ok "now: resumed (exit 0), the resume files, disk=shutdown, the watchdog stopped + started with its arguments" "hn now && sleep 0.5 && [ \"\$(cat $HP/resume_offset)\" = $HB ] && [ \"\$(cat $HP/resume)\" = $HMM ] && [ \"\$(cat $HP/disk)\" = shutdown ] && [ \"\$(cat $HP/state)\" = disk ] && [ \"\$(cat $W/wdlog | tr '\n' ' ')\" = 'start -t 5 -T 20 /dev/null stop start -t 5 -T 20 /dev/null ' ]"
 ok "now: the restarted watchdog does not hold the state lock" "flock -n $S/state/.lock true"
+# the healthy mark after the resume (glassine-loader-mark, a stub here)
+printf '#!/bin/sh\nflock -n %s/state/.lock true && echo "$1 unlocked" >> %s/markcalls\n' $S $W > $W/mark; chmod +x $W/mark
+hpow; : > $W/markcalls; rm -f $W/run/loader-marked
+ok "now, no healthy mark in this session: none after the resume" "GLASSINE_LOADER_MARK=$W/mark hn now && [ ! -s $W/markcalls ]"
+hpow; : > $W/run/loader-marked
+ok "now, the session had the healthy mark: written again after the resume, the state lock released" "GLASSINE_LOADER_MARK=$W/mark hn now && [ \"\$(cat $W/markcalls)\" = 'healthy unlocked' ]"
+rm -f $W/run/loader-marked
 pkill -f "$W/wdbin/watchdog" 2>/dev/null
 { gs_guard_mounts $UDEV; echo "deployment=$HD"; echo "krel=$(uname -r)"; echo "kver=$(uname -v)"; } > $W/guard-want
 ok "now: the guard as the initramfs reads it (rule 4 + 7), removed after the resume" "cmp -s $W/guard-seen $W/guard-want && [ ! -e $HS.guard ]"

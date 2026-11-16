@@ -4,7 +4,8 @@
 **Status:** spec, for review; built: the boot modules (FR-049, SC-017), the initramfs's
 side of FR-005 (the identities on the command line) and of FR-042 to FR-047 (the one-shot
 deployment request), and the running system's kernel hand-off (FR-025 to FR-028:
-`glassine-bootimg` with `HANDOFF=uefi`); nothing else
+`glassine-bootimg` with `HANDOFF=uefi`), the healthy mark and the shutdown step
+(FR-012, FR-023: `glassine-loader-mark`); nothing else
 **Builds on:** [001-deployments](../001-deployments/spec.md),
 [004-kernel-records](../004-kernel-records/spec.md),
 [008-recovery](../008-recovery/spec.md), [009-first-start](../009-first-start/spec.md) ·

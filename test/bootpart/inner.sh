@@ -290,6 +290,113 @@ printf "DEVNAME=vda2\nPARTN=2\nPARTNAME=glassine-system\nPARTUUID=$SU\n" > $SB/d
 printf 'DEVNAME=vda3\nPARTN=3\nPARTNAME=glassine-boot\n' > $W/u3; mkdir -p $SB/devices/vda/vda3; cp $W/u3 $SB/devices/vda/vda3/uevent
 ok "two partitions named glassine-boot on that disk: none" "! gk_ue_dev >/dev/null"
 
+# --- 2b. the healthy mark and the shutdown step (glassine-loader-mark) --------------
+# glassine-deploy-accept and glassine-loader-mark themselves, the boot partition a
+# directory; the loader's own count write (loader_model.py next) comes first, and
+# what they write is read by the loader's rules.
+MB=$W/markbp MR=$W/markrun MS=$W/marksys MH=$W/markhealth MW=$W/markbin
+mkdir -p $MB/glassine $MR $MS/state $MH $MW
+RUNSET=1abb421e678cbd3b OTHERSET=0123456789abcdef
+printf '#!/bin/sh\ncase $1 in\nstatus) printf "v\\tx\\n%%s\\n" "$(cat %s/status)" ;;\naccept) echo "accept $2" >> %s/calls ;;\nesac\n' $MW $MW > $MW/deploy; chmod +x $MW/deploy
+printf '#!/bin/sh\nexit 0\n' > $MW/rc-status; chmod +x $MW/rc-status
+printf 'type=status\tcandidate=\ttries=0\n' > $MW/status
+printf 'RUN_DIR=%s\nACCEPT_AFTER=0\nACCEPT_HEALTH_DIR=%s\n' $MR $MH > $MW/conf
+printf 'ROOT_LAYOUT=deployments\nHANDOFF=uefi\nCMDLINE="panic=10 loglevel=4"\n' > $MW/board.uefi
+printf 'ROOT_LAYOUT=deployments\nHANDOFF=blocklist\n' > $MW/board.bl
+echo '130.0 1.0' > $MW/uptime
+echo "BOOT_IMAGE=vmlinuz glassine.system=PARTUUID=$SU glassine.img=$RUNSET" > $MW/cmdline
+printf '#!/bin/sh\nexit 0\n' > $MH/10-ok; chmod +x $MH/10-ok
+# mstart [K=V...]: a fresh start: the golden record, then the loader's count (unmarked
+# 2, this set started by default) and an unknown key; nothing of the last start in RUN_DIR
+mstart() {
+    cp $D/golden/loader.a $D/golden/loader.b $MB/glassine/
+    $M next $MB unmarked=2 started=$RUNSET started_why=default zz_unknown=keep "$@"
+    rm -f $MR/loader-marked $MR/health-failed $MR/kernel-boot $MR/deploy-once; echo d1 > $MR/booted; : > $MW/calls
+    cp $MB/glassine/loader.a $W/ma; cp $MB/glassine/loader.b $W/mb
+}
+menv() { env ${MNODEV:+-u GLASSINE_BI_BOOTPART_DEV} PATH=$MW:$PATH GLASSINE_DEPLOY_CONF=$MW/conf GLASSINE_DEPLOY=$MW/deploy GLASSINE_ACCEPT_UPTIME=$MW/uptime \
+    GLASSINE_LOADER_MARK=/p/sbin/glassine-loader-mark GLASSINE_BI_LIB=/p/lib GLASSINE_BI_SYSTEM=$MS \
+    GLASSINE_BI_BOOTPART_DIR=${MBDIR-$MB} GLASSINE_BI_CMDLINE=$MW/cmdline GLASSINE_BI_BOARD=${MBOARD:-$MW/board.uefi} \
+    GLASSINE_BI_TMP=$W/run GLASSINE_BI_RUN_DIR=$MR ${MLOCK:+LOCK_WAIT=$MLOCK} ${MDEV:+GLASSINE_BI_BOOTPART_DEV=$MDEV} ${MSB:+GLASSINE_BI_SYSBLOCK=$MSB GLASSINE_BI_DEVDIR=/dev} "$@"; }
+macc() { menv sh /p/sbin/glassine-deploy-accept > $MW/out 2>&1; }
+mshut() { menv sh /p/sbin/glassine-loader-mark shutdown > $MW/out 2>&1; }
+same() { cmp -s $MB/glassine/loader.a $W/ma && cmp -s $MB/glassine/loader.b $W/mb; }
+mseq() { $M in-use $MB | head -n 1 | cut -d' ' -f2; }
+mstart
+ok "has-record: uefi 0, blocklist 3 (no loader record)" "menv sh /p/sbin/glassine-loader-mark has-record && MBOARD=$MW/board.bl menv sh /p/sbin/glassine-loader-mark has-record; [ \$? = 3 ]"
+S0=$(mseq)
+ok "accept, healthy, no candidate: the loader reads unmarked=0, seq one higher" "macc && [ \"\$($M get $MB unmarked)\" = 0 ] && [ \$(mseq) = \$((S0 + 1)) ] && [ -e $MR/loader-marked ] && grep -q 'healthy mark written (unmarked 2 -> 0)' $MW/out"
+ok "accept's mark: started, started_why, deploys, the default set and an unknown key kept" "[ \"\$($M get $MB started)\" = $RUNSET ] && [ \"\$($M get $MB started_why)\" = default ] && [ \"\$($M get $MB deploys)\" = 0 ] && [ \"\$($M get $MB default)\" = $RUNSET ] && [ \"\$($M get $MB zz_unknown)\" = keep ]"
+ok "accept's mark: nothing accepted (no candidate), the boot partition left unmounted" "[ ! -s $MW/calls ] && ! grep -q markrun /proc/mounts"
+mstart; printf 'type=status\tcandidate=d1\ttries=1\n' > $MW/status
+ok "accept, the booted candidate: accepted and marked" "macc && grep -qx 'accept d1' $MW/calls && [ \"\$($M get $MB unmarked)\" = 0 ]"
+printf 'type=status\tcandidate=\ttries=0\n' > $MW/status
+mstart; echo d1 > $MR/deploy-once
+ok "accept on a deploy-once start: no deployment accept; the healthy mark written (010 FR-044)" "macc && [ ! -s $MW/calls ] && grep -q 'runs by request for this start only' $MW/out && [ \"\$($M get $MB unmarked)\" = 0 ]"
+mstart; echo bare:b1 > $MR/booted
+ok "accept on a bare boot: nothing written" "macc && same"
+mstart; echo trial > $MR/kernel-boot
+ok "accept on a kernel trial boot: nothing written" "macc && same"
+mstart; echo finishing > $MR/kernel-boot
+ok "accept on a kernel finishing boot: no deployment accept, the mark written" "macc && [ ! -s $MW/calls ] && [ \"\$($M get $MB unmarked)\" = 0 ]"
+mstart; printf '#!/bin/sh\necho epdd not running\nexit 1\n' > $MH/20-bad; chmod +x $MH/20-bad
+ok "accept, a health check fails: nothing written, the failure noted for the shutdown step" "! macc && same && grep -q 'no healthy mark: epdd not running' $MW/out && grep -q 'epdd not running' $MR/health-failed"
+rm $MH/20-bad
+mstart
+ok "accept with a hand-off that keeps no loader record: nothing written" "MBOARD=$MW/board.bl macc && same && [ ! -e $MR/loader-marked ]"
+mstart; export GLASSINE_BI_AFTER_SLOT='n=$(cat /w/cnt); echo $((n - 1)) > /w/cnt; [ "$n" -le 0 ] || truncate -s 300 "$1"'; echo 2 > $W/cnt
+ok "the mark cut both times (read-back mismatch): accept goes on (0), logged, the loader reads the old count" "macc && grep -q 'healthy mark not written' $MW/out && [ \"\$($M get $MB unmarked)\" = 2 ] && [ ! -e $MR/loader-marked ]"
+mstart; echo 1 > $W/cnt
+ok "the mark cut once: the retry writes it, the loader reads unmarked=0" "macc && [ \"\$($M get $MB unmarked)\" = 0 ] && [ -e $MR/loader-marked ]"
+mstart; echo 0 > $W/cnt
+export GLASSINE_BI_AFTER_SLOT='printf Z | dd of="$1" bs=1 seek=40 conv=notrunc 2>/dev/null'
+ok "the mark's bytes don't read back (a flipped byte): not marked, the old count in use" "macc && [ \"\$($M get $MB unmarked)\" = 2 ] && [ ! -e $MR/loader-marked ]"
+unset GLASSINE_BI_AFTER_SLOT
+# a cut at any byte of the mark: the loader reads the old count or 0, never another record
+cut_ok=1; mstart; menv sh /p/sbin/glassine-loader-mark healthy 2>/dev/null
+cp $MB/glassine/loader.a $W/mna; cp $MB/glassine/loader.b $W/mnb
+for at in 0 1 100 500 4096 16383; do
+    cp $W/ma $MB/glassine/loader.a; cp $W/mb $MB/glassine/loader.b
+    if cmp -s $W/mna $W/ma; then nf=$W/mnb tf=$MB/glassine/loader.b of=$W/mb; else nf=$W/mna tf=$MB/glassine/loader.a of=$W/ma; fi
+    head -c $at $nf > $W/cut; tail -c +$((at + 1)) $of >> $W/cut; cp $W/cut $tf
+    u=$($M get $MB unmarked); case $u in 0|2) ;; *) cut_ok=0; echo "  cut at $at: unmarked '$u'" ;; esac
+done
+ok "the mark cut at any byte: the loader reads unmarked 2 or 0" "[ $cut_ok = 1 ]"
+mstart
+{ flock 8; MLOCK=1 menv sh /p/sbin/glassine-loader-mark healthy 2>/dev/null; lr=$?; flock -u 8; } 8>>$MS/state/.lock
+ok "the mark while the state lock is held (glassine-bootimg writing): busy (6), nothing written" "[ $lr = 6 ] && same"
+mstart; rm -rf "${MB:?}/glassine"; mkdir -p $MB/glassine
+ok "the mark with no loader record: 1, none made" "! menv sh /p/sbin/glassine-loader-mark healthy 2>/dev/null && [ -z \"\$(ls $MB/glassine)\" ]"
+# the shutdown step (010 FR-012)
+mstart
+ok "shutdown, this set started by default, no mark, no failure: one off (2 -> 1)" "mshut && [ \"\$($M get $MB unmarked)\" = 1 ] && [ \"\$($M get $MB zz_unknown)\" = keep ]"
+for w in limit choice; do
+    mstart started_why=$w
+    ok "shutdown, started_why=$w: one off" "mshut && [ \"\$($M get $MB unmarked)\" = 1 ]"
+done
+mstart started_why=request
+ok "shutdown, started_why=request (a trial): nothing" "mshut && same"
+mstart started=$OTHERSET
+ok "shutdown, the record's started is another set: nothing" "mshut && same"
+mstart; : > $MR/loader-marked
+ok "shutdown after the healthy mark in this start: nothing" "mshut && same"
+mstart; echo x > $MR/health-failed
+ok "shutdown after a failed health check: nothing" "mshut && same"
+mstart; echo bare:b1 > $MR/booted
+ok "shutdown on a bare boot: nothing" "mshut && same"
+mstart unmarked=0
+ok "shutdown with unmarked 0: never below 0, nothing written" "mshut && same"
+mstart
+ok "shutdown with a hand-off that keeps no loader record: nothing" "MBOARD=$MW/board.bl mshut && same"
+mstart; export GLASSINE_BI_AFTER_SLOT='n=$(cat /w/cnt); echo $((n - 1)) > /w/cnt; [ "$n" -le 0 ] || truncate -s 300 "$1"'; echo 2 > $W/cnt
+ok "shutdown cut both times (read-back mismatch): 1, the loader reads the old count" "! mshut && [ \"\$($M get $MB unmarked)\" = 2 ]"
+echo 0 > $W/cnt; mstart
+export GLASSINE_BI_AFTER_SLOT='printf Z | dd of="$1" bs=1 seek=40 conv=notrunc 2>/dev/null'
+ok "shutdown, its bytes don't read back: 1, the old count in use" "! mshut && [ \"\$($M get $MB unmarked)\" = 2 ]"
+unset GLASSINE_BI_AFTER_SLOT
+mstart
+ok "a start marked healthy, then shut down: the loader reads 0, no second write" "macc && S1=\$(mseq) && mshut && [ \"\$($M get $MB unmarked)\" = 0 ] && [ \$(mseq) = \$S1 ]"
+
 # --- 3. a real FAT file system (privileged) ----------------------------------------
 if [ "${BP_PRIV:-}" = 1 ]; then
     head -c 67108864 /dev/zero > $W/fat.img; mkfs.vfat -F 32 -n GLASSINE $W/fat.img >/dev/null 2>&1
@@ -305,6 +412,22 @@ if [ "${BP_PRIV:-}" = 1 ]; then
     ok "FAT: the set and the record by the loader's rules" "$M set-ok $W/fm $C3 \$(gs_kv $BI/$C3.manifest set_rec) && [ \"\$($M get $W/fm trial)\" = $C3 ] && [ \$(wc -c < $W/fm/glassine/loader.a) = 16384 ] && [ \$(wc -c < $W/fm/glassine/loader.b) = 16384 ]"
     umount $W/fm
     ok "FAT: status with nothing being written mounts nothing" "$B status >/dev/null && ! grep -q boot-partition /proc/mounts"
+    mount -t vfat $LD $W/fm; $M next $W/fm unmarked=2 started=$RUNSET started_why=default; umount $W/fm
+    MBDIR='' MDEV=$LD menv sh /p/sbin/glassine-loader-mark healthy 2>$W/err; lr=$?
+    mount -t vfat -o ro $LD $W/fm
+    ok "FAT: the healthy mark mounts the boot partition, writes unmarked=0, unmounts it" "[ $lr = 0 ] && [ \"\$($M get $W/fm unmarked)\" = 0 ] && [ \$(grep -c \" $W/fm \" /proc/mounts) = 1 ] && ! grep -q \"$MR/boot-partition\" /proc/mounts"
+    umount $W/fm
+    # found as on a PC: the partition named glassine-boot on the system partition's disk
+    # (a sysfs stand-in naming the loop device), no device or directory hook
+    MSB=$W/marksb; mkdir -p $MSB/devices/xd/xd1 $MSB/devices/xd/xd2
+    printf 'DEVNAME=%s\nPARTN=1\nPARTNAME=glassine-boot\n' "${LD#/dev/}" > $MSB/devices/xd/xd1/uevent
+    printf 'DEVNAME=xd2\nPARTN=2\nPARTNAME=glassine-system\nPARTUUID=%s\n' $SU > $MSB/devices/xd/xd2/uevent
+    ln -s devices/xd/xd1 $MSB/xd1; ln -s devices/xd/xd2 $MSB/xd2
+    mount -t vfat $LD $W/fm; $M next $W/fm unmarked=2; umount $W/fm
+    MBDIR='' MNODEV=1 MSB=$MSB menv sh /p/sbin/glassine-loader-mark healthy 2>$W/err; lr=$?
+    mount -t vfat -o ro $LD $W/fm
+    ok "FAT: the mark finds the boot partition on the system partition's disk (board.conf's CMDLINE set), writes unmarked=0" "[ $lr = 0 ] && [ \"\$($M get $W/fm unmarked)\" = 0 ]"
+    umount $W/fm
     $B cancel >/dev/null 2>&1
     # too little room: refused, nothing removed that a record names
     head -c 8388608 /dev/zero > $W/small.img; mkfs.vfat -n GLASSINE $W/small.img >/dev/null 2>&1
