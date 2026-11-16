@@ -21,6 +21,52 @@ The boot partition is `glassine-boot`: one FAT32 file system, volume label `GLAS
 created by the installer and owned whole by GlassineOS. The loader reads only the
 partition it was started from.
 
+## One rule, every device
+
+Every machine GlassineOS runs on has one boot partition, named `glassine-boot`, with this
+role: **it holds everything one start leaves for the next, and everything one system
+leaves for another.** That is:
+
+- the loader record (below);
+- the splash store with its one-time override (011), the hibernate preview being an
+  override;
+- the probe report of a loader run under a parent bootloader ([handback.md](handback.md));
+- the loader image, where a parent bootloader loads it from there;
+- the kernel sets and the recovery image, where the loader starts them itself (a PC).
+
+The block-list record of [blocklist.md](blocklist.md) sits today at the end of the
+GlassineOS slot's boot image partition, where that page puts it. It may move to a region
+of this partition later; until blocklist.md says so, it stays where it is.
+
+Nothing else goes there: nothing of the person's, no secret, no copy of the deployment
+state. The partition is not named after Android's `misc` (the bootloader message of the
+same dual-boot devices); the two are unrelated.
+
+## Two forms
+
+The partition has one of two forms. Both hold the same things, in the same formats; only
+how they are found differs.
+
+1. **The FAT form**, exactly as on a PC: the FAT32 file system and the layout below.
+   It is used wherever the firmware that reads the partition offers
+   `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` on it. It needs a partition large enough for FAT32
+   with 512-byte sectors (65,525 clusters at least, about 33 MiB); the installer's FAT32
+   writer refuses smaller volumes.
+2. **The raw form**, for a machine whose firmware (or parent bootloader) has no FAT
+   driver: no file system, a region table at the start, and one region per topic
+   ([below](#the-raw-form)). A new topic gets a region of its own with no change of
+   format.
+
+The installer picks the form from the machine's description. A reader tells them apart
+by the content: a FAT32 boot sector (the firmware then offers a file system on the
+partition) is the FAT form; the region table's magic is the raw form; anything else is a
+partition that holds nothing, which every reader treats as a partition never written.
+A loader started on the partition uses the FAT form when the firmware offers a file
+system on it, and the raw form otherwise. A PC is always the FAT form.
+
+The sections from Layout to the splash store describe the FAT form. The formats they
+define (the records, a kernel set, the image format) are the same in the raw form.
+
 ## Layout
 
 ```
@@ -457,6 +503,120 @@ to leave the screen. All numbers are little endian. The header is 64 bytes:
   display. When the loader owns more than one, it draws the splash on each and shows no
   override; the override is still used up (011 FR-010, FR-013).
 
+## The raw form
+
+The partition's bytes, with no file system. All numbers are little endian, all offsets
+are bytes from the partition's start, and CRC-32 is the one of the image format below
+(the UEFI boot service `CalculateCrc32` gives the same value).
+
+### The region table
+
+The table is 4096 bytes, written twice: the primary copy at offset 0 and a backup in the
+partition's last 4096 bytes. The two are identical.
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 8 | the bytes `GLREGION` |
+| 8 | 4 | format: 1 |
+| 12 | 4 | the number of entries, 1 to 62 |
+| 16 | 8 | the partition's size in bytes the table was made for |
+| 24 | 40 | zero |
+| 64 + 64 × i | 64 | entry i (below) |
+| … | … | zero up to byte 4092 |
+| 4092 | 4 | CRC-32 of bytes 0 to 4091 |
+
+An entry:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 32 | the region's name: 1 to 31 characters of `a`–`z`, `0`–`9` and `-`, then zero bytes |
+| 32 | 8 | offset of the region |
+| 40 | 8 | size of the region |
+| 48 | 4 | flags: 0 |
+| 52 | 4 | CRC-32 of the entry's bytes 0 to 51 |
+| 56 | 8 | zero |
+
+- **A table is valid** when its magic, format and CRC match, its size is the partition's
+  size, and every entry is valid: the entry's CRC matches, the name is well formed and
+  appears once, offset and size are multiples of 4096, the size is not zero, the region
+  starts at 4096 or later and ends at or before the backup's start, and no two regions
+  overlap. A table with one entry that isn't valid is not valid.
+- **Which copy:** the primary when it is valid, else the backup when it is valid, else
+  none: the partition holds nothing (as a partition never written). A reader that found
+  only the backup valid uses it and writes nothing to the table.
+- **A region's content** carries its own check (the record's check line, the loader
+  header's CRC, an image's CRCs). The table holds no CRC of the content, so writing a
+  region never writes the table. The entry's CRC covers the entry, not the region.
+- **Names** a reader doesn't know are ignored, and so are regions with a flag it doesn't
+  know.
+- **Writing the table** (the installer; a later release that adds a region): the backup
+  first, flushed and read back, then the primary, flushed and read back. A cut leaves a
+  valid primary (the old table) or a valid backup (the new one). Regions are added in
+  space no region uses; a region is never moved or shrunk while it holds content.
+
+### The regions
+
+| Name | Size at least | Holds | Written by |
+|---|---|---|---|
+| `record` | 32 KiB | the loader record: slot a at the region's start, slot b at 16 KiB | the loader; the running system; the recovery; the installer |
+| `probe` | 64 KiB | the probe report of [handback.md](handback.md#the-probe-report) | the loader, on request |
+| `loader` | 8 KiB | the loader image header (4096 bytes), then the loader image ([handback.md](handback.md#the-loader-region)) | the installer; the running system's loader update |
+| `splash-default` | 64 KiB | the release's splash: one image of the format below | the installer, the repair |
+| `splash` | 64 KiB | the splash the system set | the running system |
+| `override` | 64 KiB | the one-time override | the running system; removed by the stage that draws it |
+
+A region holds one item at its start. The bytes after the item's end (the end its own
+header gives) are ignored: a writer needn't clear them.
+
+**Writing a region** (all regions but `record`), with content of at most the region's
+size:
+
+1. write zero over the region's first 4096 bytes, flush, and read them back as zero;
+2. write the content's bytes from 4096 to its end (rounded up to whole blocks), flush;
+3. write the content's first 4096 bytes, flush;
+4. read the content back and compare.
+
+The first 4096 bytes hold every item's header, so between steps 1 and 3 the region holds
+no item, and a cut at any byte leaves the old item (before step 1 ends), no item, or the
+new one. A write that would not fit is refused before step 1. The record is written by
+slots instead, as on FAT: one slot whole, flushed, read back.
+
+**The splash store, raw.** The images of the regions `splash-default`, `splash` and
+`override` are files of the image format below, written as the region's content. A
+reader reads the 64-byte header first and takes the file's length from it (64 plus the
+payload length), within the region; a region whose first 8 bytes aren't `GLSPLASH` holds
+no image.
+
+- **Drawing:** as on FAT. The override is removed by writing zero over the region's first
+  4096 bytes, flushing and reading them back as zero; only then is it drawn. If that
+  fails, it is not drawn.
+- **Writing:** "Writing a region", above, for `.new`, sync and rename on FAT. An image
+  larger than its region is refused, with a message (011 FR-020).
+
+### Sizes
+
+The sizes are the table's: readers take them from it and assume none. For a 16 MiB
+partition (the Boox Note Air's proposal, taken from the end of its user data), one table
+that fits:
+
+| Region | Offset | Size |
+|---|---|---|
+| (table) | 0 | 4 KiB |
+| `record` | 64 KiB | 32 KiB |
+| `probe` | 128 KiB | 64 KiB |
+| `loader` | 1 MiB | 3 MiB |
+| `splash-default` | 4 MiB | 3 MiB |
+| `splash` | 7 MiB | 3 MiB |
+| `override` | 10 MiB | 3 MiB |
+| free for later regions | 13 MiB | 3 MiB less 4 KiB |
+| (backup table) | 16 MiB less 4 KiB | 4 KiB |
+
+What fits a 3 MiB image region: a run-length image of at most 3 MiB less 64 bytes, or a
+raw picture of at most 786,416 pixels (four bytes a pixel), such as 1024×600. A raw
+picture of a 1404×1872 panel is 10,513,216 bytes with its header and does not fit; it
+fits only run-length encoded to 3 MiB or less, which a mostly flat picture (a logo on a
+background) does and a dithered photograph may not.
+
 ## What a power cut leaves
 
 | Write | Cut during it | The next start |
@@ -470,3 +630,6 @@ to leave the screen. All numbers are little endian. The header is 64 bytes:
 | The recovery's update | as for a set | the old recovery; with no record, either of the two |
 | A splash or an override | a `.new` file, or no image | the old image, the default or none |
 | The override's removal by the loader | the override is still there, or gone | shown at that start, or never shown |
+| A region (raw form) | a region whose first 4096 bytes are zero, or the old item | no item there (the default splash, no report, the parent's baseline for `loader`), or the old item |
+| The region table (raw form) | a primary or a backup that isn't valid | the valid copy: the old table or the new one |
+| The override's removal (raw form) | the header still there, or zero | shown at that start, or never shown |
