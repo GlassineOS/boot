@@ -3,53 +3,49 @@
 Status: **agreed design; nothing has run on a device.** This page is the contract between
 the GlassineOS loader and a **parent bootloader**: a bootloader that a machine's firmware
 starts and that can't be replaced by the loader, but can start a UEFI program and act on
-its answer. What both sides do and why is [specs/012](../specs/012-handback/spec.md); this
-page gives the bytes. Changes go through this repository first.
+its answer. What both sides do and why is [specs/012](../specs/012-device-boot-partition/spec.md);
+this page gives the bytes. Changes go through this repository first.
 
 The first parent is the Boox Note Air's ABL
 ([GlassineOS/abl](https://github.com/GlassineOS/abl)), which starts the loader on the
 GlassineOS slot only. Nothing on this page depends on that device.
 
-In short: the parent reads the loader from a raw partition, starts it from memory with one
-load option, and gets an answer back through UEFI exit data. The loader keeps its record
-in two slots on the same raw partition, decides as 010 and
-[boot-partition.md](boot-partition.md) say, and starts no kernel. The parent boots what
-the answer names, and when anything goes wrong it boots what it boots today: its
-**baseline**.
+In short: the parent reads the loader from the boot partition, starts it from memory with
+one load option, and gets an answer back through UEFI exit data. The loader keeps its
+record on the same partition, decides as 010 and [boot-partition.md](boot-partition.md)
+say, and starts no kernel. The parent boots what the answer names, and when anything goes
+wrong it boots what it boots today: its **baseline**.
 
-## The hand-back partition
+## The boot partition under a parent
 
-One raw partition, without a file system, that GlassineOS owns whole. The parent and the
-loader agree on it; how the parent finds it is the parent's (the ABL: by its GPT name, `glassine-handback`; a parent that finds it by name uses that name).
-All offsets are bytes from the partition's start.
+The partition is the machine's boot partition, `glassine-boot`, in either form of
+[boot-partition.md](boot-partition.md#two-forms). How the parent finds it is the
+parent's; a parent that finds it by GPT name uses `glassine-boot`. Where each item is:
 
-| Offset | Size | What | Written by |
-|---|---|---|---|
-| 0 | 16384 | slot a of the loader record | the loader; the running system; the recovery; the installer |
-| 16384 | 16384 | slot b of the loader record | as slot a |
-| 32768 | 65536 | the probe area | the loader, only when the record asks (`probe=1`) |
-| 98304 | to 1 MiB | reserved: zero | nobody |
-| 1048576 | 4096 | the loader image header | the installer; the running system's loader update |
-| 1052672 | the header's size | the loader image (`loader.efi`, a PE32+ UEFI application for the parent's processor) | with the header |
+| Item | FAT form | Raw form (region) |
+|---|---|---|
+| the loader record | `\glassine\loader.a`, `\glassine\loader.b` | `record` |
+| the probe report | `\glassine\probe.txt` | `probe` |
+| the loader | `\EFI\glassine\loader.efi` | `loader`: header, then image ([below](#the-loader-region)) |
+| the splash store | `\glassine\splash\` | `splash-default`, `splash`, `override` |
 
-- The partition is at least 4 MiB. The loader image is at most 3 MiB less 4096 bytes, and
-  never reaches past the partition's end.
-- Every area starts at a multiple of 4096 bytes, so a block size of 512 or 4096 bytes
-  divides every offset and every size.
-- Nothing else is on the partition: nothing of the person's and no secret.
+A parent reads only the loader. A parent that has no FAT driver reads only the raw form,
+and on a partition in the FAT form it boots its baseline; a machine whose parent is such
+a one gets the raw form from the installer.
 
-### The loader record, raw
+### The loader record under a parent
 
 Each slot holds the same 16384 bytes a slot file holds on a PC
 ([boot-partition.md](boot-partition.md#slots)): the record, then newlines up to 16384
 bytes. The rules for valid slots, the record in use, writing the other slot and one valid
-slot are that page's, word for word. On the raw partition:
+slot are that page's, word for word. In the raw form:
 
 - A slot that is not a valid record (all zeros, an older image's bytes, a cut write) is
-  not valid. A partition never written holds no loader record.
+  not valid. A partition never written, or one whose region table isn't valid, holds no
+  loader record.
 - A write is one write of the 16384 bytes of the slot not in use, then a flush of the
   block device, then a read of the slot back. The write counts only when the bytes read
-  back are the bytes written. A block size that doesn't divide 16384, a medium that is
+  back are the bytes written. A block size that doesn't divide 4096, a medium that is
   read-only or a failed step is a loader that can't write (010 FR-009: it counts nothing
   and takes no request).
 - A power cut at any byte of a write leaves the slot in use as it was, and the other slot
@@ -70,16 +66,25 @@ differences:
 The other keys (`format`, `seq`, `request`, `unmarked`, `started`, `started_why`) are
 the same, with the same writers.
 
-## The loader image header
+### The splash store under a parent
 
-4096 bytes. Numbers are little endian.
+A loader that runs headless (below) reads and writes nothing of the splash store: the
+images and the override stay as they are, for the stage of the machine that draws
+(named by the machine's own spec). Where no stage draws, the running system removes an
+override at its start (011 FR-015).
+
+## The loader region
+
+In the raw form, the region `loader` holds a 4096-byte header and, directly after it, the
+loader image (`loader.efi`, a PE32+ UEFI application for the parent's processor).
+Numbers are little endian.
 
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 8 | the bytes `GLLOADER` |
 | 8 | 4 | format: 1 |
 | 12 | 4 | flags: 0 |
-| 16 | 8 | the image's size in bytes, 1 to 3141632 (3 MiB less 4096) |
+| 16 | 8 | the image's size in bytes, 1 to 3141632 (3 MiB less 4096), and at most the region's size less 4096 |
 | 24 | 4 | CRC-32 of the image |
 | 28 | 4 | CRC-32 of bytes 0 to 27 of the header |
 | 32 | 4064 | zero; a reader ignores them |
@@ -87,26 +92,33 @@ the same, with the same writers.
 CRC-32 is the one of zlib and Ethernet (the UEFI boot service `CalculateCrc32` gives the
 same value). The check is against a cut or partial write, not against an attacker.
 
-**Writing a new loader:** write the image, then the header, each flushed and read back.
-A cut leaves a header whose CRC of the image fails, or the old header naming a size or a
-CRC the new bytes don't have: either way the parent boots its baseline (below), and the
-next write puts it right.
+**Writing a new loader:** as any region ([boot-partition.md](boot-partition.md#the-regions)):
+the header zeroed first, then the image, then the header. A cut leaves no valid header,
+or the old one: the parent boots its baseline until the next write, or starts the old
+loader.
 
 ## Starting the loader (the parent's side)
 
-1. Read the header. It is accepted only when the magic, the format and the flags match,
-   the size is within its limits and inside the partition, and the header's CRC matches.
-2. Read the image into memory it allocated from the firmware, and compare its CRC-32.
-3. `LoadImage` from that memory, with no device path (`BootPolicy` false). If
+1. Find the loader. **Raw form:** read the region table (the primary, else the backup;
+   [boot-partition.md](boot-partition.md#the-region-table)), take the region `loader`,
+   and read its header. The header is accepted only when the magic, the format and the
+   flags match, the size is within its limits and inside the region, and the header's
+   CRC matches. Read the image into memory it allocated from the firmware and compare its
+   CRC-32. **FAT form:** read `\EFI\glassine\loader.efi` whole, at most 3 MiB less
+   4096 bytes, into memory it allocated.
+2. `LoadImage` from that memory, with no device path (`BootPolicy` false). If
    `LoadImage` returns a handle with an error (`EFI_SECURITY_VIOLATION`), unload it.
-4. In the child's `EFI_LOADED_IMAGE_PROTOCOL`: set `DeviceHandle` to the hand-back
+3. In the child's `EFI_LOADED_IMAGE_PROTOCOL`: set `DeviceHandle` to the boot
    partition's handle (the one with its `EFI_BLOCK_IO_PROTOCOL`) and `LoadOptions` to
    the UCS-2 text `glassine.handback=1`, with its terminating zero counted in
    `LoadOptionsSize`.
-5. If the parent can, arm the firmware's watchdog (`SetWatchdogTimer`) for 30 seconds
+4. If the parent can, arm the firmware's watchdog (`SetWatchdogTimer`) for 30 seconds
    before `StartImage`, and disarm it when `StartImage` returns.
-6. `StartImage`, with both exit-data arguments. Read the answer (below), then free the
+5. `StartImage`, with both exit-data arguments. Read the answer (below), then free the
    exit data with `FreePool`.
+
+Any failure on the way is the baseline: no table, no `loader` region, a header or image
+that fails its check, a file that is missing or too large.
 
 **Load options.** Words separated by single spaces. `glassine.handback=1` is required and
 puts the loader in hand-back mode; without it the loader runs as on a PC. A loader
@@ -118,8 +130,7 @@ ignores words it doesn't know. Defined now:
 | `glassine.log=serial` | the loader also writes its log through the firmware's serial I/O protocol. A parent whose serial line nobody reads leaves it out, and the loader then calls no serial protocol |
 | `glassine.pick=recovery` | *proposed, not built:* the person asked for the recovery at power-on (on the Note Air, a cover gesture). The loader treats it as the recovery picked in the list (boot-partition.md, 010 FR-032) |
 
-The parent passes no other state. It never writes the hand-back partition's record or
-probe areas.
+The parent passes no other state. It never writes the boot partition.
 
 ## The answer
 
@@ -173,22 +184,24 @@ it doesn't use. The loader never writes such an answer.
 The parent's baseline is the floor: no failure of the loader, its partition or its answer
 leads to anything but the boot the machine had before the loader existed. A parent never
 ends in a hang or in a mode the person didn't ask for because of the loader. A hang
-inside the loader itself is the one case the parent can't catch; the watchdog of step 5,
+inside the loader itself is the one case the parent can't catch; the watchdog of step 4,
 where the parent has one, ends it in a reset, and the parent's own escapes that run before
 the loader (on the Note Air, the cover at power-on) still work.
 
-## The probe area
+## The probe report
 
 When the record in use has `probe=1`, the loader writes, before it answers, a report of
-what the firmware offers it. It writes nothing else for the probe, and it makes no
-firmware call for it beyond listing handles and their protocols, reading the graphics
-output's modes (`QueryMode`) and reading the console's mode fields. It never sets a mode,
-draws, or touches hardware.
+what the firmware offers it: the file `\glassine\probe.txt` in the FAT form, the region
+`probe` in the raw form. It writes nothing else for the probe, and it makes no firmware
+call for it beyond listing handles and their protocols, reading the graphics output's
+modes (`QueryMode`) and reading the console's mode fields. It never sets a mode, draws,
+or touches hardware.
 
-The area is 65536 bytes: a text record of the same form as the loader record, its last
-line `check=<sha256>` over the bytes before it, then newlines up to 65536 bytes. One
-area, no slots: a cut write leaves a report whose check fails, which a reader treats as
-no report.
+The report is a text record of the same form as the loader record, its last line
+`check=<sha256>` over the bytes before it, at most 65536 bytes. In the raw form it is
+written as the region's content (boot-partition.md, "Writing a region"); on FAT as a
+file, written whole and flushed. A cut write leaves no report or one whose check fails,
+which a reader treats as no report.
 
 | Key | Value |
 |---|---|
@@ -204,11 +217,14 @@ no report.
 | `gop<n>.mode<m>` | `<width>x<height> <format> stride=<pixels>`, the format one of `rgb`, `bgr`, `bitmask`, `blt-only` |
 | `conin`, `conout`, `stderr` | `handle=<index or none> <guid> …`: the console handles of the system table and their protocols |
 | `conout.modes` | `max=<max> current=<mode>` of the text output, when there is one |
+| `boot_fs` | `1` when the firmware offers a file system (`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`) on the boot partition, so the loader uses the FAT form; `0` when not |
+| `fs_handles` | the number of handles with a file system, on any device: `0` means the firmware has no file system driver it has used, which decides that the machine needs the raw form |
+| `fs<n>` | `handle=<index> part=<GPT partition GUID or -> <partition number or ->`, one per handle with a file system |
 | `log<n>` | the loader's own log lines of this start, as far as room is left |
 
 A handle's index is its position in the handle database's list at that start; it is
 stable only within one report. Lines that don't fit are left out: `log` lines first, then
-`gop<n>.mode<m>` lines past the current mode, then `proto` lines; `truncated=1` says so.
+`gop<n>.mode<m>` lines past the current mode, then `fs<n>` lines, then `proto` lines; `truncated=1` says so.
 
 The loader knows these names: the protocols of the UEFI specification it uses or reports
 (graphics output, block I/O, disk I/O, device path, loaded image, simple text in and out,
@@ -224,5 +240,6 @@ block, limits, MDTP).
 |---|---|---|
 | The loader counts a start or clears a request | the other slot is not valid | as boot-partition.md says for the same write |
 | The running system writes the record | the other slot is not valid | the record as it was |
-| The probe report | a report whose check fails | no report; the start is unchanged |
-| A new loader image or header | the header's CRC or the image's CRC fails | the parent's baseline, until the next write |
+| The probe report | no report, or a report whose check fails | no report; the start is unchanged |
+| A new loader (raw form) | a header zeroed or not valid | the parent's baseline, until the next write |
+| A new loader (FAT form) | as a file on FAT (boot-partition.md) | the old loader, or the baseline |

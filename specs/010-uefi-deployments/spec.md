@@ -43,7 +43,7 @@ entry, however many deployments and kernels there are.
 
 | Term | Meaning |
 |---|---|
-| boot partition | The partition the installer creates for GlassineOS (`glassine-boot`): a FAT file system with long names that the firmware can read. GlassineOS owns all of it. |
+| boot partition | The partition the installer creates for GlassineOS (`glassine-boot`): a FAT file system with long names that the firmware can read. GlassineOS owns all of it. On a PC it is always this FAT form; machines whose firmware reads no FAT use the raw form of the same partition (`docs/boot-partition.md`, "Two forms"; 012). |
 | loader | The program the firmware starts from the boot partition. It starts a kernel set or the recovery. |
 | kernel set | A kernel, its initramfs and its command line. The unit that is tried, accepted and rolled back (one image record of 004). |
 | default set | The kernel set of the current kernel record. It starts when nothing else is asked for. |
