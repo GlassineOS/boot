@@ -166,6 +166,10 @@ The record in use already carries the loader's own writes for this start (the co
 | `boot=recovery` | takes its recovery path, as if its own recovery request were set |
 | `boot=set:<id>` | boots the set if it has a source for that id whose own checks pass (on the Note Air, the block-list record of [blocklist.md](blocklist.md) naming that image id); else, and on any failure on the way, its baseline |
 
+A parent checks at least what the table names. It may also refuse an answer that breaks
+the record's other rules (a key twice, a line without `=`); it need not check the keys
+it doesn't use. The loader never writes such an answer.
+
 The parent's baseline is the floor: no failure of the loader, its partition or its answer
 leads to anything but the boot the machine had before the loader existed. A parent never
 ends in a hang or in a mode the person didn't ask for because of the loader. A hang
