@@ -19,6 +19,7 @@
 # a slot's bytes are written and before they are read back ($1 = the slot file);
 # GLASSINE_BI_AFTER_SETFILE after a set file's bytes are written ($1 = the file).
 
+# shellcheck disable=SC2034  # GP_USE, GP_OTHER, GP_SEQ, GP_BOTH: read by the callers
 GP_SLOT_BYTES=16384
 GP_CMDLINE_MAX=1920
 GP_TMP=${TMP:-/run}
