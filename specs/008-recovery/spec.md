@@ -174,4 +174,5 @@ machine with a watchdog, a hang ends in a hardware reset.
   recovery without its screen, deployments and resets.
 - Where the recovery image lives is the machine's: on a device with one recovery
   partition, the recovery takes it, and such a device keeps no second recovery; on a PC
-  it is a file on the boot partition (010 FR-037, FR-038), and no partition is taken.
+  it is on the boot partition, in the form of a kernel set (010 FR-037, FR-038), and no
+  partition is taken.

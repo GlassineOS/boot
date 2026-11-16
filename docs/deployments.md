@@ -454,6 +454,12 @@ fallback), because the slot itself works. Without it the bootloader counts a try
 boot after a kernel update and in the end boots the other system. A bare boot does not
 mark it. A failing `glassine-slot` is logged and does not stop the accept.
 
+**The healthy mark** (`HANDOFF=uefi`): the same healthy boot also writes `unmarked=0`
+into the loader record on the boot partition
+([boot-partition.md](boot-partition.md#keys)), whichever deployment booted and also when
+there was no candidate. A bare boot and a kernel trial before its verdict write none.
+Without it the loader counts the start as one that never became healthy.
+
 **The recovery's keep marker:** every command that opens userdata read-write creates
 `.twrp-keep` in the prefix's top-level media directory (`media/glassine/.twrp-keep`
 for the default prefix). A recovery that honours it skips that directory when it wipes
