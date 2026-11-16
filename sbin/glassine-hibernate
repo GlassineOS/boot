@@ -15,6 +15,9 @@
 #                                    --reboot: the kernel reboots after writing
 #                                    the image instead of powering off (a failed
 #                                    resume then keeps pstore: for bring-up)
+#                                    After the resume, a session that had the
+#                                    loader's healthy mark writes it again
+#                                    (glassine-loader-mark healthy, 010 FR-023).
 #
 # Device steps (the board's adapter): executables in HIBERNATE_HOOKS (default
 # /etc/glassine/hibernate.d), run in name order with `pre` before anything is
@@ -47,6 +50,7 @@ CMDLINE=${GLASSINE_PROC_CMDLINE:-/proc/cmdline}
 SWAPS=${GLASSINE_PROC_SWAPS:-/proc/swaps}
 MOUNTS=${GLASSINE_PROC_MOUNTS:-/proc/mounts}
 BOARD=${GLASSINE_BOARD_CONF:-/etc/glassine-bootimg/board.conf}
+MARK_TOOL=${GLASSINE_LOADER_MARK:-/usr/sbin/glassine-loader-mark}
 DEVLIB=${LIB%/*}/glassine-device.sh
 SYSTEM_MNT=/run/glassine/system USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata
 USERDATA_PREFIX=media/glassine RUN_DIR=/run/glassine HIBERNATE_SIZE_MB='' HIBERNATE_RESERVE_MB=512
@@ -227,6 +231,13 @@ cmd_now() {
     wd_start
     if [ $rc = 0 ]; then undo resumed; else undo failed; die 1 "the kernel did not hibernate"; fi
     say "resumed $booted"
+    # the resume is a start the loader counted: a session that had the healthy
+    # mark (glassine-loader-mark's RUN_DIR/loader-marked) writes it again (010
+    # FR-023), after the state lock is released (the tool takes it itself)
+    exec 9>&-
+    if [ -e "$RUN_DIR/loader-marked" ] && [ -x "$MARK_TOOL" ]; then
+        "$MARK_TOOL" healthy || say "the healthy mark after the resume failed (exit $?)"
+    fi
 }
 
 case ${1:-} in

@@ -466,76 +466,25 @@ gk_deploy_trial() {
 }
 
 # --- the uefi hand-off (docs/boot-partition.md; lib/glassine-bootpart.sh) ------
-# gk_cmdpart KEY: the identity this boot's command line gives KEY
-# (KEY=PARTUUID=<uuid>, once), in lower case; 1 = none
-gk_cmdpart() {
-    _cq=$(tr ' ' '\n' < "$CMDLINE" | awk -v k="$1=" 'index($0, k) == 1 { n++; v = substr($0, length(k) + 1) } END { if (n == 1) print v }')
-    case $_cq in PARTUUID=*) _cq=$(echo "${_cq#PARTUUID=}" | tr A-F a-f) ;; *) return 1 ;; esac
-    echo "$_cq" | grep -qx '[0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}' || return 1
-    echo "$_cq"
-}
+# gk_cmdpart KEY, gk_ue_dev, gk_le, gk_part_uuid: this boot's identities and the
+# boot partition's device, as lib/glassine-bootpart.sh finds them (gp_cmdpart,
+# gp_boot_dev, gp_le, gp_part_uuid)
+gk_cmdpart() { gp_cmdpart "$1" "$CMDLINE"; }
+gk_ue_dev() { gp_boot_dev "$CMDLINE" "$BOOT_PART"; }
+gk_le() { gp_le "$@"; }
+gk_part_uuid() { gp_part_uuid "$1"; }
 
-# gk_ue_dev: the boot partition's device: the partition named BOOT_PART on the disk
-# that holds the system partition this boot names (glassine.system=PARTUUID=; its
-# identity from the kernel's uevent, else the disk's GPT, as the initramfs reads it),
-# and only one. 1 = not found (the reason printed).
-gk_ue_dev() {
-    [ -z "${GLASSINE_BI_BOOTPART_DEV:-}" ] || { echo "$GLASSINE_BI_BOOTPART_DEV"; return 0; }
-    _sb=${GLASSINE_BI_SYSBLOCK:-/sys/class/block}
-    _su=$(gk_cmdpart glassine.system) || { echo "this boot's command line names no system partition (glassine.system=PARTUUID=)"; return 1; }
-    _sd=''
-    for _u in "$_sb"/*/uevent; do
-        grep -q '^PARTN=' "$_u" 2>/dev/null || continue
-        [ "$(gk_part_uuid "${_u%/uevent}")" = "$_su" ] || continue
-        _sd=$(cd -P "${_u%/uevent}/.." && pwd -P) || continue
-    done
-    [ -n "$_sd" ] || { echo "no partition is the system partition $_su"; return 1; }
-    _bn=0 _bd=''
-    for _u in "$_sd"/*/uevent; do
-        grep -qx "PARTNAME=$BOOT_PART" "$_u" 2>/dev/null || continue
-        _bn=$((_bn + 1)) _bd=${GLASSINE_BI_DEVDIR:-/dev}/$(sed -n 's/^DEVNAME=//p' "$_u")
-    done
-    [ $_bn = 1 ] || { echo "$_bn partitions named $BOOT_PART on the system partition's disk"; return 1; }
-    echo "$_bd"
-}
-
-# gk_le DEV OFFSET N, gk_part_uuid DIR: as the initramfs's le and part_uuid
-gk_le() { od -An -v -tu1 -j "$2" -N "$3" "$1" 2>/dev/null | awk 'BEGIN { m = 1 } { for (i = 1; i <= NF; i++) { v += $i * m; m *= 256 } } END { if (m > 1) printf "%.0f\n", v }'; }
-gk_part_uuid() {
-    _qu=$(sed -n 's/^PARTUUID=//p' "$1/uevent" 2>/dev/null | head -n 1)
-    [ -z "$_qu" ] || { echo "$_qu" | tr A-F a-f; return 0; }
-    _pn=$(sed -n 's/^PARTN=//p' "$1/uevent" 2>/dev/null)
-    case $_pn in ''|*[!0-9]*) return 1 ;; esac
-    _pd=$(cd -P "$1/.." 2>/dev/null && pwd -P) || return 1
-    _dn=$(sed -n 's/^DEVNAME=//p' "$_pd/uevent" 2>/dev/null)
-    _dv=${GLASSINE_BI_DEVDIR:-/dev}/$_dn
-    [ -n "$_dn" ] && [ -r "$_dv" ] || return 1
-    _lb=$(cat "$_pd/queue/logical_block_size" 2>/dev/null); _lb=${_lb:-512}
-    [ "$(dd if="$_dv" bs=1 skip="$_lb" count=8 2>/dev/null)" = "EFI PART" ] || return 1
-    _el=$(gk_le "$_dv" $((_lb + 72)) 8) _en=$(gk_le "$_dv" $((_lb + 80)) 4) _es=$(gk_le "$_dv" $((_lb + 84)) 4)
-    [ -n "$_el" ] && [ -n "$_en" ] && [ -n "$_es" ] && [ "$_pn" -ge 1 ] && [ "$_pn" -le "$_en" ] && [ "$_es" -ge 128 ] || return 1
-    _eo=$((_el * _lb + (_pn - 1) * _es))
-    [ "$(gk_le "$_dv" $((_eo + 32)) 8)" = "$(( $(cat "$1/start" 2>/dev/null || echo -1) * 512 / _lb ))" ] || return 1
-    od -An -v -tx1 -j $((_eo + 16)) -N 16 "$_dv" 2>/dev/null | tr -s ' \n' ' ' | awk '{ if (NF != 16) exit 1
-        printf "%s%s%s%s-%s%s-%s%s-%s%s-%s%s%s%s%s%s\n", $4, $3, $2, $1, $6, $5, $8, $7, $9, $10, $11, $12, $13, $14, $15, $16 }'
-}
-
-# gk_ue_mount [ro]: the boot partition mounted for this command (FR-026); GK_BP its
-# top level. 1 = not mounted (logged).
+# gk_ue_mount [ro]: the boot partition mounted for this command (FR-026, gp_open);
+# GK_BP its top level. 1 = not mounted (logged).
 gk_ue_mount() {
     [ -z "$GK_BP" ] || return 0
-    if [ -n "${GLASSINE_BI_BOOTPART_DIR:-}" ]; then GK_BP=$GLASSINE_BI_BOOTPART_DIR; return 0; fi
-    _bd=$(gk_ue_dev) || { log "the boot partition: $_bd"; return 1; }
-    _bm=$GK_RUN/boot-partition
-    mkdir -p "$_bm" || { log "cannot create $_bm"; return 1; }
-    ! mountpoint -q "$_bm" || { log "$_bm is mounted already: another writer?"; return 1; }
-    mount -t vfat -o "${1:-rw},noatime" "$_bd" "$_bm" || { log "cannot mount the boot partition $_bd"; return 1; }
-    GK_BP=$_bm GK_BPMNTD=1
+    gp_open uefi "$CMDLINE" "$BOOT_PART" "$GK_RUN/boot-partition" "${1:-rw}" || { log "$GP_WHY"; return 1; }
+    GK_BP=$GP_DIR GK_BPMNTD=$GP_MNTD
 }
 gk_ue_umount() {
     [ -n "$GK_BPMNTD" ] || return 0
-    sync
-    umount "$GK_BP" || log "cannot unmount the boot partition at $GK_BP"
+    GP_DIR=$GK_BP GP_MNTD=1
+    gp_close || log "$GP_WHY"
     GK_BP='' GK_BPMNTD=''
 }
 

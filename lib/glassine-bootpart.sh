@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # glassine-bootpart.sh: the boot partition of a UEFI PC (docs/boot-partition.md,
 # format 1): its records, the loader record's two slots, a kernel set's files.
-# Sourced by glassine-bootimg (lib/glassine-kernel.sh, HANDOFF=uefi). busybox
-# ash, sed, awk, od and sha256sum only: the recovery runs it too (004 FR-016).
-# Nothing here mounts anything; every function works on a directory that is the
-# boot partition's top level (the caller mounts it, 010 FR-026).
+# Sourced by glassine-bootimg (lib/glassine-kernel.sh, HANDOFF=uefi) and
+# glassine-loader-mark. busybox ash, sed, awk, od and sha256sum only: the recovery
+# runs it too (004 FR-016). Every function but gp_open/gp_close (the end of this
+# file: where a hand-off keeps its record, mounted for one command, 010 FR-026)
+# works on a directory that is the boot partition's top level.
 #
 # The reading of a record is the installer's and the loader's (GlassineOS/installer
 # core/src/pc_boot.rs parse_record/read_slot/record_in_use, GlassineOS/loader
@@ -386,4 +387,93 @@ gp_sweep() {
     done
     find "$1/glassine" -name '*.new' 2>/dev/null | while read -r _wf; do rm -rf "${_wf:?}" && echo "${_wf#"$1"/}"; done
     sync
+}
+
+# --- where the record is: the hand-off's backend ----------------------------------
+# Everything above works on a directory holding glassine/loader.a and loader.b. A
+# hand-off whose loader keeps a record names where that directory comes from:
+#   uefi   the boot partition (boot-partition.md), the FAT partition named BOOT_PART
+#          on the disk of the system partition this boot names, mounted for the write
+# No other hand-off keeps a loader record yet (Note Air's hand-back partition,
+# specs/012, is a raw partition: its backend is not built).
+
+# gp_has_record HANDOFF: 0 when that hand-off's loader keeps a loader record
+gp_has_record() { case $1 in uefi) return 0 ;; esac; return 1; }
+
+# gp_open HANDOFF CMDLINE BOOTPART MNT [ro]: the loader record's directory opened;
+# GP_DIR its top level, GP_MNTD set when gp_open mounted it (at MNT). 1 = not
+# opened (GP_WHY). GLASSINE_BI_BOOTPART_DIR (tests) is the directory, unmounted.
+gp_open() {
+    GP_DIR='' GP_MNTD=''
+    gp_has_record "$1" || { GP_WHY="the hand-off '$1' keeps no loader record"; return 1; }
+    if [ -n "${GLASSINE_BI_BOOTPART_DIR:-}" ]; then GP_DIR=$GLASSINE_BI_BOOTPART_DIR; return 0; fi
+    _gp_od=$(gp_boot_dev "$2" "$3") || { GP_WHY="the boot partition: $_gp_od"; return 1; }
+    mkdir -p "$4" || { GP_WHY="cannot create $4"; return 1; }
+    ! mountpoint -q "$4" || { GP_WHY="$4 is mounted already: another writer?"; return 1; }
+    mount -t vfat -o "${5:-rw},noatime" "$_gp_od" "$4" || { GP_WHY="cannot mount the boot partition $_gp_od"; return 1; }
+    GP_DIR=$4 GP_MNTD=1
+}
+
+# gp_close: what gp_open mounted, synced and unmounted. 1 = not unmounted (GP_WHY)
+gp_close() {
+    [ -n "${GP_MNTD:-}" ] || return 0
+    sync
+    umount "$GP_DIR" || { GP_WHY="cannot unmount the boot partition at $GP_DIR"; return 1; }
+    GP_DIR='' GP_MNTD=''
+}
+
+# gp_cmdpart KEY CMDLINE: the identity the command line (a file) gives KEY
+# (KEY=PARTUUID=<uuid>, once), in lower case; 1 = none
+gp_cmdpart() {
+    _gp_cq=$(tr ' ' '\n' < "$2" | awk -v k="$1=" 'index($0, k) == 1 { n++; v = substr($0, length(k) + 1) } END { if (n == 1) print v }')
+    case $_gp_cq in PARTUUID=*) _gp_cq=$(echo "${_gp_cq#PARTUUID=}" | tr A-F a-f) ;; *) return 1 ;; esac
+    echo "$_gp_cq" | grep -qx '[0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}' || return 1
+    echo "$_gp_cq"
+}
+
+# gp_boot_dev CMDLINE NAME: the boot partition's device: the partition named NAME
+# on the disk that holds the system partition the command line names
+# (glassine.system=PARTUUID=; its identity from the kernel's uevent, else the
+# disk's GPT, as the initramfs reads it), and only one. 1 = not found (the reason
+# printed). Test hooks: GLASSINE_BI_BOOTPART_DEV, GLASSINE_BI_SYSBLOCK
+# (/sys/class/block), GLASSINE_BI_DEVDIR (/dev).
+gp_boot_dev() {
+    [ -z "${GLASSINE_BI_BOOTPART_DEV:-}" ] || { echo "$GLASSINE_BI_BOOTPART_DEV"; return 0; }
+    _gp_sb=${GLASSINE_BI_SYSBLOCK:-/sys/class/block}
+    _gp_su=$(gp_cmdpart glassine.system "$1") || { echo "this boot's command line names no system partition (glassine.system=PARTUUID=)"; return 1; }
+    _gp_sd=''
+    for _gp_u in "$_gp_sb"/*/uevent; do
+        grep -q '^PARTN=' "$_gp_u" 2>/dev/null || continue
+        [ "$(gp_part_uuid "${_gp_u%/uevent}")" = "$_gp_su" ] || continue
+        _gp_sd=$(cd -P "${_gp_u%/uevent}/.." && pwd -P) || continue
+    done
+    [ -n "$_gp_sd" ] || { echo "no partition is the system partition $_gp_su"; return 1; }
+    _gp_bn=0 _gp_bd=''
+    for _gp_u in "$_gp_sd"/*/uevent; do
+        grep -qx "PARTNAME=$2" "$_gp_u" 2>/dev/null || continue
+        _gp_bn=$((_gp_bn + 1)) _gp_bd=${GLASSINE_BI_DEVDIR:-/dev}/$(sed -n 's/^DEVNAME=//p' "$_gp_u")
+    done
+    [ $_gp_bn = 1 ] || { echo "$_gp_bn partitions named $2 on the system partition's disk"; return 1; }
+    echo "$_gp_bd"
+}
+
+# gp_le DEV OFFSET N, gp_part_uuid DIR: as the initramfs's le and part_uuid
+gp_le() { od -An -v -tu1 -j "$2" -N "$3" "$1" 2>/dev/null | awk 'BEGIN { m = 1 } { for (i = 1; i <= NF; i++) { v += $i * m; m *= 256 } } END { if (m > 1) printf "%.0f\n", v }'; }
+gp_part_uuid() {
+    _gp_qu=$(sed -n 's/^PARTUUID=//p' "$1/uevent" 2>/dev/null | head -n 1)
+    [ -z "$_gp_qu" ] || { echo "$_gp_qu" | tr A-F a-f; return 0; }
+    _gp_pn=$(sed -n 's/^PARTN=//p' "$1/uevent" 2>/dev/null)
+    case $_gp_pn in ''|*[!0-9]*) return 1 ;; esac
+    _gp_pd=$(cd -P "$1/.." 2>/dev/null && pwd -P) || return 1
+    _gp_dn=$(sed -n 's/^DEVNAME=//p' "$_gp_pd/uevent" 2>/dev/null)
+    _gp_dv=${GLASSINE_BI_DEVDIR:-/dev}/$_gp_dn
+    [ -n "$_gp_dn" ] && [ -r "$_gp_dv" ] || return 1
+    _gp_lb=$(cat "$_gp_pd/queue/logical_block_size" 2>/dev/null); _gp_lb=${_gp_lb:-512}
+    [ "$(dd if="$_gp_dv" bs=1 skip="$_gp_lb" count=8 2>/dev/null)" = "EFI PART" ] || return 1
+    _gp_el=$(gp_le "$_gp_dv" $((_gp_lb + 72)) 8) _gp_en=$(gp_le "$_gp_dv" $((_gp_lb + 80)) 4) _gp_es=$(gp_le "$_gp_dv" $((_gp_lb + 84)) 4)
+    [ -n "$_gp_el" ] && [ -n "$_gp_en" ] && [ -n "$_gp_es" ] && [ "$_gp_pn" -ge 1 ] && [ "$_gp_pn" -le "$_gp_en" ] && [ "$_gp_es" -ge 128 ] || return 1
+    _gp_eo=$((_gp_el * _gp_lb + (_gp_pn - 1) * _gp_es))
+    [ "$(gp_le "$_gp_dv" $((_gp_eo + 32)) 8)" = "$(( $(cat "$1/start" 2>/dev/null || echo -1) * 512 / _gp_lb ))" ] || return 1
+    od -An -v -tx1 -j $((_gp_eo + 16)) -N 16 "$_gp_dv" 2>/dev/null | tr -s ' \n' ' ' | awk '{ if (NF != 16) exit 1
+        printf "%s%s%s%s-%s%s-%s%s-%s%s-%s%s%s%s%s%s\n", $4, $3, $2, $1, $6, $5, $8, $7, $9, $10, $11, $12, $13, $14, $15, $16 }'
 }

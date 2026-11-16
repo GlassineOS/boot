@@ -20,16 +20,25 @@
 # Without that the bootloader counts a try per boot after a kernel update and
 # ends up in the other system. A bare boot (userdata broken) does not mark it.
 #
+# The healthy mark (a hand-off whose loader keeps a loader record, HANDOFF=uefi;
+# MARK_TOOL = glassine-loader-mark): a healthy boot also writes unmarked=0 into the
+# loader record (010 FR-023), whichever deployment booted and also with no
+# candidate, also on a start by request. Not on a bare boot, a kernel trial boot,
+# or a boot that fails a health check; that failure is noted in
+# /run/glassine/health-failed for the shutdown step (FR-012). A failing write is
+# logged and does not stop the accept.
+#
 # Not on a kernel trial or finishing boot (/run/glassine/kernel-boot, from the
 # initramfs): that boot runs the current deployment, and glassine-bootimg-promote
-# judges it. Nothing is accepted on a start of a deployment by request
-# (/run/glassine/deploy-once, 010 FR-044).
+# judges it; a finishing boot still writes the healthy mark. Nothing is accepted
+# on a start of a deployment by request (/run/glassine/deploy-once, 010 FR-044).
 #
 # Exit: 0 accepted or nothing to accept, 1 not accepted (logged).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 DEPLOY=${GLASSINE_DEPLOY:-/usr/sbin/glassine-deploy}
 UPTIME=${GLASSINE_ACCEPT_UPTIME:-/proc/uptime}
+MARK_TOOL=${GLASSINE_LOADER_MARK:-/usr/sbin/glassine-loader-mark}
 RUN_DIR=/run/glassine ACCEPT_AFTER=120 ACCEPT_HEALTH_DIR=/etc/glassine-bootimg/health.d SLOT_TOOL=
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
@@ -54,15 +63,22 @@ case $booted in ''|bare:*) exit 0 ;; esac
 # a kernel trial or finishing boot (the initramfs says so, FR-012): the boot
 # is the kernel's to judge (glassine-bootimg-promote), not the deployment's
 kboot=$(cat "$RUN_DIR/kernel-boot" 2>/dev/null)
-case $kboot in trial|finishing) say "a kernel $kboot boot: no deployment accept"; exit 0 ;; esac
-cand=0 slot=0
+case $kboot in trial) say "a kernel trial boot: no deployment accept"; exit 0 ;; esac
+cand=0 slot=0 mark=0
+# the healthy mark, when this board's hand-off keeps a loader record
+[ -x "$MARK_TOOL" ] && "$MARK_TOOL" has-record && mark=1
+if [ "$kboot" = finishing ]; then
+    say "a kernel finishing boot: no deployment accept"
 # a deployment started by request for this start only (glassine.deploy.once=,
 # /run/glassine/deploy-once): it is no candidate here, whatever state/deploy says
-if [ -n "$(cat "$RUN_DIR/deploy-once" 2>/dev/null)" ]; then
+elif [ -n "$(cat "$RUN_DIR/deploy-once" 2>/dev/null)" ]; then
     say "$booted runs by request for this start only: no deployment accept"
-elif [ "$booted" = "$(field candidate)" ]; then cand=1; fi
-slot_todo && slot=1
-[ $cand = 1 ] || [ $slot = 1 ] || exit 0
+    slot_todo && slot=1
+else
+    [ "$booted" = "$(field candidate)" ] && cand=1
+    slot_todo && slot=1
+fi
+[ $cand = 1 ] || [ $slot = 1 ] || [ $mark = 1 ] || exit 0
 
 while [ "$(cut -d. -f1 "$UPTIME")" -lt "$ACCEPT_AFTER" ]; do sleep 5; done
 
@@ -77,10 +93,13 @@ for h in "$ACCEPT_HEALTH_DIR"/*; do
     bad="$bad${bad:+; }${why:-${h##*/}}"
 done
 if [ -n "$bad" ]; then
+    echo "$bad" > "$RUN_DIR/health-failed" 2>/dev/null
     if [ $cand = 1 ]; then
         say "$booted not accepted: $bad (tries left: $(field tries))"
-    else
+    elif [ $slot = 1 ]; then
         say "boot slot not marked successful: $bad"
+    else
+        say "no healthy mark: $bad"
     fi
     exit 1
 fi
@@ -90,6 +109,10 @@ if [ $slot = 1 ]; then
     else
         say "marking the boot slot successful failed (exit $?)"
     fi
+fi
+# in its own process: its state lock is gone before glassine-deploy accept takes it
+if [ $mark = 1 ]; then
+    "$MARK_TOOL" healthy || say "the healthy mark failed (exit $?)"
 fi
 [ $cand = 1 ] || exit 0
 # busy (exit 6: another writer, or a hibernate holding the state lock across
