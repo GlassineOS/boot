@@ -13,7 +13,9 @@ healthy limit start (`glassine-bootimg rollback --limit`, 010 FR-013). Not built
 repair, the splash store's writer on FAT. The raw form's writer is built too
 (`glassine-boot-raw`: the region table, the loader region, the splash regions; the
 loader record by slots through `glassine-loader-mark` with `BOOT_FORM=raw`), host-tested
-in `test/bootraw` against the loader's golden bytes and a port of its reader; nothing
+in `test/bootraw` against the loader's golden bytes and a port of its reader, and so is
+the running system's loader update (`glassine-loader-update`, run by the accept step
+after its healthy mark); nothing
 has run on a device ("The running system's writer", below). This page is the contract between the three programs that read or write a PC's boot
 partition: the loader, the installer, and the running system's tools (`glassine-bootimg`,
 `glassine-deploy`, the boot-success step, the recovery). What they do and why is
@@ -636,8 +638,8 @@ An entry:
 |---|---|---|---|
 | `record` | 32 KiB | the loader record: slot a at the region's start, slot b at 16 KiB | the loader; the running system; the recovery; the installer |
 | `probe` | 64 KiB | the probe report of [handback.md](handback.md#the-probe-report) | the loader, on request |
-| `loader` | 8 KiB | the loader image header (4096 bytes), then the loader image ([handback.md](handback.md#the-loader-region)) | the installer; the running system's loader update (`glassine-boot-raw loader`) |
-| `splash-default` | 64 KiB | the release's splash: one image of the format below | the installer, the repair (`glassine-boot-raw splash-default`) |
+| `loader` | 8 KiB | the loader image header (4096 bytes), then the loader image ([handback.md](handback.md#the-loader-region)) | the installer; the running system's loader update (`glassine-loader-update`, by `glassine-boot-raw loader`) |
+| `splash-default` | 64 KiB | the release's splash: one image of the format below | the installer, the repair, the running system's loader update (`glassine-boot-raw splash-default`) |
 | `splash` | 64 KiB | the splash the system set | the running system (`glassine-boot-raw splash`) |
 | `override` | 64 KiB | the one-time override | the running system (`glassine-boot-raw override`, `clear`); removed by the stage that draws it |
 
@@ -682,7 +684,27 @@ The raw form is written from the running system by `glassine-boot-raw` and
 | `glassine-boot-raw clear DEV REGION` | the region's first 4096 bytes zero, read back (the override's removal by a running system, 011 FR-015) |
 | `glassine-boot-raw table DEV`, `read DEV REGION`, `find [NAME]` | nothing: the table in use, a region's item as its reader takes it, the device of the partition of that GPT name |
 
-Every refusal comes before the first write. `init` makes no loader record: an empty
+Every refusal comes before the first write.
+
+**The loader update** (`glassine-loader-update`, 012 FR-026) puts the loader and the
+default splash a package ships (`/usr/share/glassine/loader/loader.efi` and
+`splash-default.gspl`; a board's loader package fills the directory, pinned to a loader
+release) into the regions `loader` and `splash-default`. It runs on a board with
+`BOOT_FORM=raw` only, never with `HANDOFF=uefi` (a PC's installer owns its FAT), and the
+accept step (`glassine-deploy-accept`) runs it only after it wrote the healthy mark in
+that start, and on a candidate only once the candidate is accepted: the system that arms
+the loader is one that marks its starts healthy on the raw form, so `unmarked` can't
+climb to the limit under it. For each region, the splash first and the loader last: the
+item it holds, read as its reader takes it, is compared with the file; the same bytes:
+nothing written. Else the file is written as "Writing a region" says, read back and
+compared; a write that fails or doesn't read back leaves the region emptied (for
+`loader` the parent's baseline) and nothing more is written. A partition with no valid
+table, no partition of that name or two are reported and nothing is written: the update
+never makes a table. A loader a later package brings is written at the next healthy
+start. It is never run from a package's install script (an image build runs those on the
+build host).
+
+`init` makes no loader record: an empty
 `record` region holds none, and the running system's writers never make one (012
 FR-020); the installer writes the first.
 

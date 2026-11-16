@@ -9,7 +9,8 @@
 # at every byte of every write sequence is judged by replaying the writes the
 # library made (GLASSINE_BI_RAW_TRACE); real cuts (GLASSINE_BI_RAW_CUT: the process
 # killed inside a write) are checked against the replay. Part 1: the table. Part 2:
-# the regions. Part 3: the loader record. Part 4: the cuts. Part 5 (privileged): a
+# the regions. Part 3: the loader record. Part 3b: the loader update
+# (glassine-loader-update, alone and from glassine-deploy-accept). Part 4: the cuts. Part 5 (privileged): a
 # loop device.
 # shellcheck disable=SC2089,SC2090,SC2034  # the hooks are code, eval'd by the library
 set -u
@@ -283,6 +284,76 @@ ok "no partition named glassine-boot: shutdown 1, said, nothing written" "! MDEV
 mstart; fresh $MI; cp $MI $W/m0
 ok "a boot partition of zeros (no table): accept 0, the candidate accepted, the mark's failure said, still all zeros" "acc && grep -qx 'accept d1' $W/deploy.calls && grep -q 'holds nothing: nothing written' $W/out && grep -q 'the healthy mark failed (exit 1)' $W/out && grep -q 'd1 accepted' $W/out && [ ! -e $MR/loader-marked ] && cmp -s $MI $W/m0"
 ok "a boot partition of zeros: shutdown 1, said, still all zeros" "! mark shutdown 2>$W/err && grep -q 'holds nothing' $W/err && cmp -s $MI $W/m0"
+mstart
+
+# --- 3b. the loader update (glassine-loader-update, 012 FR-026) -----------------------
+# the package's files (LOADER_DIR), the writer through a wrapper (the repository's
+# glassine-boot-raw is not executable), the board, the partition by GLASSINE_BI_BOOTPART_DEV
+LU=$W/lu; mkdir -p $LU/pkg $LU/none
+cp $W/l5000 $LU/pkg/loader.efi; cp $W/s1.gspl $LU/pkg/splash-default.gspl
+printf '#!/bin/sh\nexec sh /p/sbin/glassine-boot-raw "$@"\n' > $LU/raw; chmod +x $LU/raw
+printf '#!/bin/sh\nexec sh /p/sbin/glassine-loader-update "$@"\n' > $LU/update; chmod +x $LU/update
+# a writer whose loader write succeeds but whose region then reads back other bytes
+# (a medium that changed them after the writer's own check)
+cat > $LU/raw.flip <<'EOT'
+#!/bin/sh
+sh /p/sbin/glassine-boot-raw "$@" || exit $?
+[ "$1" = loader ] && printf Z | dd of="$2" bs=1 seek=$((1048576 + 4200)) conv=notrunc 2>/dev/null
+exit 0
+EOT
+chmod +x $LU/raw.flip
+upd() { env GLASSINE_LOADER_DIR=${LDIR:-$LU/pkg} GLASSINE_BOOT_RAW=${LRAW:-$LU/raw} GLASSINE_BI_BOARD=${MBOARD:-$MW/board.raw} \
+    GLASSINE_BI_CMDLINE=$MW/cmdline ${MDEV-GLASSINE_BI_BOOTPART_DEV=$MI} sh /p/sbin/glassine-loader-update; }
+items_are() {   # items_are LOADER SPLASH: the parent's and the loader's readers take these
+    $M item $MI loader > $LU/got.l && cmp -s $LU/got.l "$1" && $M item $MI splash-default > $LU/got.s && cmp -s $LU/got.s "$2"
+}
+fresh $MI; cp $MI $W/m0
+ok "update: no table (a partition never written): 3, said, every byte as it was" "upd 2>$W/err; [ \$? = 3 ] && grep -q 'holds nothing' $W/err && grep -q 'nothing written' $W/err && cmp -s $MI $W/m0"
+ok "update: no partition named glassine-boot: 3, said, nothing written" "MDEV='' MSB='' GLASSINE_BI_SYSBLOCK=$W/sb0 GLASSINE_BI_DEVDIR=$W/dev upd 2>$W/err; [ \$? = 3 ] && grep -q '0 partitions named glassine-boot: nothing written' $W/err"
+mstart
+ok "update: HANDOFF=uefi (a PC, FAT): 0, nothing written" "MBOARD=$MW/board.rawuefi upd 2>$W/err && [ ! -s $W/err ] && cmp -s $MI $W/m0"
+ok "update: no BOOT_FORM (no raw boot partition): 0, nothing written" "MBOARD=$MW/board.none upd 2>$W/err && [ ! -s $W/err ] && cmp -s $MI $W/m0"
+ok "update: no files in LOADER_DIR: 0, nothing written" "LDIR=$LU/none upd 2>$W/err && [ ! -s $W/err ] && cmp -s $MI $W/m0"
+ok "update: a table with an empty loader region: 0, the splash and the loader written and read back" "upd 2>$W/err && items_are $LU/pkg/loader.efi $LU/pkg/splash-default.gspl && grep -q 'loader written and read back' $W/err && grep -q 'splash-default written and read back' $W/err"
+ok "update: the record untouched (the loader reads the same count)" "[ \"\$(rec unmarked)\" = 2 ] && [ \"\$(slot)\" = 'b 2 1' ]"
+cp $MI $W/m1
+rm -rf $W/trace; mkdir -p $W/trace
+ok "update: the same loader and splash: 0, no block written, every byte as it was" "GLASSINE_BI_RAW_TRACE=$W/trace upd 2>$W/err && [ -z \"\$(ls $W/trace)\" ] && cmp -s $MI $W/m1 && [ \"\$(grep -c 'already' $W/err)\" = 2 ]"
+cp $W/l20000 $LU/pkg/loader.efi
+ok "update: a different loader: 0, the new one written, the splash left as it was" "upd 2>$W/err && items_are $W/l20000 $LU/pkg/splash-default.gspl && grep -q 'splash-default holds' $W/err && grep -q 'loader written and read back' $W/err"
+cp $MI $W/m1
+export GLASSINE_BI_AFTER_PUT='[ "$2" != 1048576 ] || [ "$3" = 4096 -a "$(od -An -tu1 -N1 -j 1048576 "$1" | tr -d " ")" = 0 ] || printf Z | dd of="$1" bs=1 seek=$((1048576 + 4200)) conv=notrunc 2>/dev/null'
+cp $W/l5000 $LU/pkg/loader.efi
+ok "update: the loader doesn't read back in the writer (a flipped byte): 1, the region emptied, no loader for the parent" "upd 2>$W/err; [ \$? = 1 ] && grep -q 'the region emptied' $W/err && ! $M item $MI loader && [ -z \"\$(dd if=$MI bs=4096 skip=256 count=1 2>/dev/null | od -An -v -tu1 | tr -d ' 0\\n')\" ]"
+unset GLASSINE_BI_AFTER_PUT
+cp $W/m1 $MI
+ok "update: the writer said written, but the region reads back other bytes: 1, the region emptied, no loader" "LRAW=$LU/raw.flip upd 2>$W/err; [ \$? = 1 ] && grep -q \"doesn't read back as written\" $W/err && grep -q 'the region emptied' $W/err && ! $M item $MI loader"
+ok "update: after a failed write, the next run writes the loader again" "upd 2>/dev/null && items_are $W/l5000 $LU/pkg/splash-default.gspl"
+cp $MI $W/m1
+head -c 5000 /dev/urandom > $LU/bad.gspl; mkdir -p $LU/bad; cp $LU/bad.gspl $LU/bad/splash-default.gspl; cp $W/l20000 $LU/bad/loader.efi
+ok "update: a splash the writer refuses: 3, said, nothing written (not the loader either)" "LDIR=$LU/bad upd 2>$W/err; [ \$? = 3 ] && grep -q 'nothing more written' $W/err && cmp -s $MI $W/m1"
+mkdir -p $LU/bad2; cp $W/l20000 $LU/bad2/loader.efi
+{ flock 8; LDIR=$LU/bad2 upd 2>$W/err; lr=$?; flock -u 8; } 8<$MI
+ok "update: the device locked by another writer: 6 after waiting, nothing written" "[ $lr = 6 ] && grep -q 'locked by another writer' $W/err && cmp -s $MI $W/m1"
+# the accept step runs it only after a healthy mark it wrote, and a candidate once accepted
+cp $W/l20000 $LU/pkg/loader.efi
+uacc() { menv env GLASSINE_LOADER_UPDATE=$LU/update GLASSINE_LOADER_DIR=$LU/pkg GLASSINE_BOOT_RAW=$LU/raw GLASSINE_DEPLOY=${MDEPLOY:-$MW/deploy} sh /p/sbin/glassine-deploy-accept > $W/out 2>&1; }
+mstart
+ok "accept (no candidate): the healthy mark, then the loader update writes the loader and the splash" "uacc && [ \"\$(rec unmarked)\" = 0 ] && items_are $W/l20000 $LU/pkg/splash-default.gspl && grep -q 'loader written and read back' $W/out"
+rm -f $W/deploy.calls; mstart
+ok "accept of a candidate: accepted first, then the loader written" "MDEPLOY=$MW/deploy.cand uacc && grep -qx 'accept d1' $W/deploy.calls && items_are $W/l20000 $LU/pkg/splash-default.gspl && [ \"\$(grep -n 'd1 accepted' $W/out | cut -d: -f1)\" -lt \"\$(grep -n 'loader written' $W/out | cut -d: -f1)\" ]"
+cat > $MW/deploy.fail <<EOT
+#!/bin/sh
+case \$1 in status) printf 'v\tx\ntype=status\tcandidate=d1\ttries=1\n' ;; accept) exit 1 ;; esac
+EOT
+chmod +x $MW/deploy.fail
+mstart
+ok "accept of a candidate that fails: no loader written" "! MDEPLOY=$MW/deploy.fail uacc && [ \"\$(rec unmarked)\" = 0 ] && ! $M item $MI loader && ! grep -q 'glassine-loader-update' $W/out"
+fresh $MI; $R init $MI 2>/dev/null; cp $MI $W/m0
+ok "accept where the mark can't be written (a table, no record): no loader written" "uacc && grep -q 'the healthy mark failed' $W/out && ! grep -q 'glassine-loader-update' $W/out && cmp -s $MI $W/m0"
+mstart; echo '' > $W/markhealth/zz-bad; printf '#!/bin/sh\necho bad\nexit 1\n' > $W/markhealth/zz-bad; chmod +x $W/markhealth/zz-bad
+ok "accept of an unhealthy start: no mark, no loader" "! uacc && ! $M item $MI loader && cmp -s $MI $W/m0"
+rm -f $W/markhealth/zz-bad
 mstart
 
 # --- 4. cuts at every byte of every write ------------------------------------------------

@@ -472,7 +472,12 @@ there is no candidate and no slot to mark. When the healthy start is the loader'
 start of the previous kernel set for its limit (`glassine-loader-mark` leaves
 `/run/glassine/limit-start`), the accept then runs `glassine-bootimg rollback --limit`
 (010 FR-013, [boot-partition.md](boot-partition.md#keys)): that set becomes the default
-kernel and the one that failed is listed as failed (`GLASSINE_BOOTIMG` in tests).
+kernel and the one that failed is listed as failed (`GLASSINE_BOOTIMG` in tests). Once
+the mark is written in this start (and a candidate accepted), the accept runs the loader
+update (`glassine-loader-update`, `GLASSINE_LOADER_UPDATE` in tests; with `BOOT_FORM=raw`
+only, [boot-partition.md](boot-partition.md#the-running-systems-writer)): the packaged
+loader and default splash are written where the boot partition holds other ones; a
+failure is logged and does not change the accept's result.
 
 **The recovery's keep marker:** every command that opens userdata read-write creates
 `.twrp-keep` in the prefix's top-level media directory (`media/glassine/.twrp-keep`
