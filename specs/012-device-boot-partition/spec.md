@@ -146,8 +146,8 @@ systems to the boot partition, reading only, and then answers as it would have w
   shows no message, and calls no serial protocol unless the load options ask for it
   (`glassine.log=serial`). With the display of FR-006 it draws the picture of 011 (one
   full refresh, before it answers) and, when `request=menu` asks for it or the last
-  start wasn't marked healthy, the start menu: 010's list, picked by touch or keys, its
-  picks answered as hand-back answers
+  start wasn't marked healthy, the start menu: 010's list, picked by touch (no menu without a tap
+  source: the default at once), its picks answered as hand-back answers
   ([handback.md](../../docs/handback.md#the-start-menu)); no key line and no message. It
   draws only after a durable write has counted the start and set `drew=1`, and clears
   `drew` in one more write after its last refresh returned, before it answers; it draws
