@@ -15,6 +15,8 @@ the deployment's layers on userdata) and manages them with `glassine-deploy`:
 - [docs/deployments.md](docs/deployments.md): on-disk format, state, `glassine-deploy`
   interface, porcelain and exit codes (the owning reference)
 - [docs/boot.md](docs/boot.md): the initramfs's root layouts and the hibernation step
+- [docs/boot-partition.md](docs/boot-partition.md): a UEFI PC's boot partition: its
+  layout, the loader record, a kernel set, the splash store (agreed, not built)
 - [docs/testing.md](docs/testing.md): what the host tests prove and what is proven on
   hardware
 - [specs/001-deployments/spec.md](specs/001-deployments/spec.md): requirements and

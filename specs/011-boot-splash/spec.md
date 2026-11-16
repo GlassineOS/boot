@@ -140,7 +140,8 @@ and an override that says to leave the screen,
 ### Safety of the store
 
 - **FR-019** An image is written under a temporary name, synced, checked by reading it
-  back, and only then given its name in one step. A cut write leaves the old image or
+  back, and only then given its name. Where the store can't replace a file in one step,
+  the old image is removed first. A cut write leaves the old image, the new one or
   none, never a half one. FR-005 catches what is left.
 - **FR-020** A write to the store follows the store's own rules on the machine (on a PC:
   010 FR-026 to FR-029). The store's size includes room for one splash and one override
@@ -157,15 +158,17 @@ and an override that says to leave the screen,
 ## Key entities
 
 - **The splash store**: the machine's place for these images, with its format version.
-- **An image**: header and picture (FR-004).
-- **The override**: an image with one picture per display, or the instruction to leave
-  the screen.
+- **An image**: header and picture (FR-004). One image holds one picture.
+- **The override**: an image for each display it was made for, or the instruction to
+  leave the screen. Format 1 of the store holds one image, so an override is made for
+  one display.
 
 ## Contracts
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
-| The store's image format and names | owned (new); read by each machine's earliest stage | `format=1` | to be added to `docs/boot.md` |
+| The store's image format | owned (new); read by each machine's earliest stage | `format=1` | `docs/boot-partition.md`, "The image format" |
+| The store's names on a PC | owned (new) | part of the boot partition's layout | `docs/boot-partition.md`, "The splash store" |
 | The command that sets and removes the splash and the override | owned (new); used by the settings, the session and the hibernate step | — | to be added to `docs/boot.md` |
 | The earliest stage's display mode, readable by the running system | owned (new) | — | to be added to `docs/boot.md` |
 | The earliest stage on a PC | owned | — | 010 FR-048 |

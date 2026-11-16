@@ -100,8 +100,14 @@ except:
   The distribution's release string carries its package revision, so two builds of the
   package don't share one. There is no `<cfg6>`: nothing is configured or compiled, and
   the tree is the package's files as it installed them (modules, depmod's files), with
-  only the image renamed and `build`/`source` links removed. So everything in
-  `modules/<release>/` still follows from the release (the package at that version).
+  only the image renamed and `build`/`source` links removed.
+- **Its firmware and microcode move only with it.** The release doesn't name the
+  firmware, so the build keeps the rule itself: the firmware and microcode packages are
+  locked with the kernel package, and their versions change only in the same step that
+  changes the kernel package's version. A build whose tree would differ from one
+  already published under the same release fails. So everything in
+  `modules/<release>/` still follows from the release, and a device never sees two
+  trees under one name (`receive --modules` refuses a name that exists).
 - **`source=<distribution>:<package>=<version>`** (`source=alpine:linux-lts=6.18.63-r0`)
   in `kernel.manifest`, in place of `URL@COMMIT`. `builder`, `layout` and
   `config_sha256` are empty.
@@ -109,8 +115,16 @@ except:
   UEFI firmware starts as an application. A hand-off kind takes only the image it can
   start: the kinds with a packed boot image take `Image.gz` and refuse another, the
   `uefi` kind takes an EFI stub ([004](../specs/004-kernel-records/spec.md), FR-018).
-- **Its firmware is empty** until a firmware choice exists for PCs (`firmware=`, an empty
-  `firmware/`).
+- **Its firmware is the distribution's firmware packages**, as the build installed them
+  at their locked versions: `firmware/` holds their files, with the license files of
+  their source beside them, and `firmware=` lists every one. A package's symbolic links
+  become hard links to their targets, because a kernel's tree holds only files and
+  directories; each name is a file of its own in the lists.
+- **Its CPU microcode is in `microcode/`**: the early microcode archives of the
+  distribution's packages (`intel-ucode.img`, `amd-ucode.img`), uncompressed, with their
+  licenses. The kernel loads microcode only early, so a kernel set puts them first in
+  its initramfs ([boot-partition.md](boot-partition.md#files)). Nothing binds
+  `microcode/` in the booted system. Its files are in the modules list.
 - **Its storage and file-system drivers are modules**, so its kernel sets carry its
   boot modules ([boot.md](boot.md#boot-modules)).
 
@@ -121,6 +135,8 @@ system partition (btrfs, top level)
 ├── modules/<release>/            read-only subvolume, received
 │   ├── kernel/ …, modules.*      modules_install output, stripped; depmod run at build (-b)
 │   ├── firmware/                 redistributable firmware this kernel needs (below)
+│   ├── microcode/                early CPU microcode archives, where the kernel ships
+│   │                             them (a distribution's kernel)
 │   ├── Image.gz                  gzip -n, so its checksum is stable (or the
 │   │                             image the record's `image` names: `vmlinuz`)
 │   └── kernel.manifest
@@ -313,7 +329,8 @@ through `gs_write` under `state/.lock`:
 
 ```
 state/kernel                 the device's kernel state (keys below)
-state/bootimg/<id>.img       a packed image, where the hand-off needs one
+state/bootimg/<id>.img       a packed image, where the hand-off needs one (on `uefi`:
+                             the kernel set's assembled initramfs)
 state/bootimg/<id>.manifest  its record (below)
 ```
 
@@ -418,6 +435,7 @@ tree or initramfs for the running kernel).
 |---|---|---|
 | `bootpart-test` | the candidate's image written to a one-shot test slot, the default slot written on accept (today's `glassine-bootimg`) | boards with a spare slot; never the recovery partition (`install` refuses a `TEST_DEV` named `recovery`) |
 | `blocklist` | a cold boot of a kernel file whose storage blocks the bootloader reads | the Note Air (planned; [blocklist.md](blocklist.md), [hub#53](https://github.com/GlassineOS/hub/issues/53)) |
+| `uefi` | the candidate's kernel set written to the boot partition next to the default set, a one-shot request in the loader record, the default set changed by one write of that record ([boot-partition.md](boot-partition.md)) | a PC that starts from UEFI ([010](../specs/010-uefi-deployments/spec.md)) |
 | `kexec`, `hardboot` | from a minimal loader / a warm reset into a staged image | not specified here |
 | empty | none: `install` refuses ("kernel updates are paused") | the Note Air today |
 
@@ -442,7 +460,7 @@ Every record is `key=value`, one per line, the format of the state files
 | `config_sha256` | of the final `.config` |
 | `image_sha256` | of the image (`Image.gz`, or the one `image` names) |
 | `modules_sha256` | of the modules list (below) |
-| `firmware` | space-separated `name@sha256-16` of the files under `firmware/`, `name` relative to `firmware/`, sorted by bytes |
+| `firmware` | space-separated `name@sha256-16` of the files under `firmware/`, `name` relative to `firmware/`, sorted by bytes. In a `name`, a `%` is written `%25` and a space `%20` (in that order; a reader undoes `%20`, then `%25`), so a name never holds a space |
 | `provides` | features built in, from this repository's table (below) |
 | `features` | the version of that table used |
 
@@ -451,7 +469,9 @@ The **modules list** is one line `<path> <sha256>` per regular file under
 `firmware/` (those have their own keys); `<path>` is relative to `modules/<release>/`,
 without a leading `./`; lines sorted by bytes (`LC_ALL=C sort`), each ended by a newline.
 The tree holds no symlinks or other special files (the build removes `modules_install`'s
-`build` and `source` links); finding one fails the build.
+`build` and `source` links, and turns a firmware package's links into hard links);
+finding one fails the build. Hard links are regular files: each name has its own line
+in the modules list or its own entry in `firmware`.
 
 A kernel record says nothing about device trees. Which tree a device boots with which
 kernel is named by the device's update (below, "Build outputs"), so a tree for a new
@@ -529,12 +549,15 @@ with header fields from `board.conf`.
 the packer takes the kernel from `modules/<release>/Image.gz` and the device tree and
 initramfs from `boot/`, not from the base.
 
-Where a kernel builds boot-time drivers as modules, its image (a kernel set, 010) holds
-the initramfs from `boot/` followed by that kernel's boot-modules archive, made from
-`modules/<release>/` with `build-boot-modules.sh` ([boot.md](boot.md#boot-modules)). The
-archive is a function of the kernel's tree and this repository's list, so it has no
-record of its own: the image record's checksum covers it. The initramfs file in `boot/`
-is the same for every kernel.
+On `uefi` the image is a kernel set, and nothing is packed into a boot image: the set's
+initramfs is one file made of the kernel's microcode archives
+(`modules/<release>/microcode/`), the initramfs from `boot/`, the board's configuration
+and, where the kernel builds boot-time drivers as modules, that kernel's boot-modules
+archive, made from `modules/<release>/` with `build-boot-modules.sh`
+([boot.md](boot.md#boot-modules)), in that order
+([boot-partition.md](boot-partition.md#a-kernel-set)). The parts have no record of their
+own: the image record's checksum covers the assembled file, which is kept as
+`state/bootimg/<id>.img`. The initramfs file in `boot/` is the same for every kernel.
 
 ## Order on the device
 
@@ -633,5 +656,7 @@ device doesn't have, then runs `glassine-bootimg install <kernel> --dtb <dtb> --
 
 ## Not covered here
 
+- The boot partition of a PC: its layout, the loader record, a kernel set's files and
+  the splash store are in [boot-partition.md](boot-partition.md).
 - The kexec loader (it consumes the same layout and records).
 - How `images` builds these, signing and publishing.
