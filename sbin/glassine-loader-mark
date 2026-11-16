@@ -43,7 +43,6 @@
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 BOARD=${GLASSINE_BI_BOARD:-/etc/glassine-bootimg/board.conf}
-CMDLINE=${GLASSINE_BI_CMDLINE:-/proc/cmdline}
 GBLIB=${GLASSINE_BI_LIB:-/usr/lib/glassine-boot}
 RUN_DIR=/run/glassine SYSTEM_MNT=/run/glassine/system ACCEPT_BUSY_S=600
 # shellcheck source=/dev/null
@@ -51,6 +50,8 @@ RUN_DIR=/run/glassine SYSTEM_MNT=/run/glassine/system ACCEPT_BUSY_S=600
 HANDOFF='' BOOT_PART=glassine-boot
 # shellcheck source=/dev/null
 [ -r "$BOARD" ] && . "$BOARD"
+# after board.conf: its CMDLINE is the set's base command line, not this file
+CMDLINE=${GLASSINE_BI_CMDLINE:-/proc/cmdline}
 SYS=${GLASSINE_BI_SYSTEM:-$SYSTEM_MNT}
 MNT=${GLASSINE_BI_RUN_DIR:-$RUN_DIR}/boot-partition
 

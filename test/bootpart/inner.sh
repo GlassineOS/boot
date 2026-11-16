@@ -301,7 +301,7 @@ printf '#!/bin/sh\ncase $1 in\nstatus) printf "v\\tx\\n%%s\\n" "$(cat %s/status)
 printf '#!/bin/sh\nexit 0\n' > $MW/rc-status; chmod +x $MW/rc-status
 printf 'type=status\tcandidate=\ttries=0\n' > $MW/status
 printf 'RUN_DIR=%s\nACCEPT_AFTER=0\nACCEPT_HEALTH_DIR=%s\n' $MR $MH > $MW/conf
-printf 'ROOT_LAYOUT=deployments\nHANDOFF=uefi\n' > $MW/board.uefi
+printf 'ROOT_LAYOUT=deployments\nHANDOFF=uefi\nCMDLINE="panic=10 loglevel=4"\n' > $MW/board.uefi
 printf 'ROOT_LAYOUT=deployments\nHANDOFF=blocklist\n' > $MW/board.bl
 echo '130.0 1.0' > $MW/uptime
 echo "BOOT_IMAGE=vmlinuz glassine.system=PARTUUID=$SU glassine.img=$RUNSET" > $MW/cmdline
@@ -314,10 +314,10 @@ mstart() {
     rm -f $MR/loader-marked $MR/health-failed $MR/kernel-boot $MR/deploy-once; echo d1 > $MR/booted; : > $MW/calls
     cp $MB/glassine/loader.a $W/ma; cp $MB/glassine/loader.b $W/mb
 }
-menv() { env PATH=$MW:$PATH GLASSINE_DEPLOY_CONF=$MW/conf GLASSINE_DEPLOY=$MW/deploy GLASSINE_ACCEPT_UPTIME=$MW/uptime \
+menv() { env ${MNODEV:+-u GLASSINE_BI_BOOTPART_DEV} PATH=$MW:$PATH GLASSINE_DEPLOY_CONF=$MW/conf GLASSINE_DEPLOY=$MW/deploy GLASSINE_ACCEPT_UPTIME=$MW/uptime \
     GLASSINE_LOADER_MARK=/p/sbin/glassine-loader-mark GLASSINE_BI_LIB=/p/lib GLASSINE_BI_SYSTEM=$MS \
     GLASSINE_BI_BOOTPART_DIR=${MBDIR-$MB} GLASSINE_BI_CMDLINE=$MW/cmdline GLASSINE_BI_BOARD=${MBOARD:-$MW/board.uefi} \
-    GLASSINE_BI_TMP=$W/run GLASSINE_BI_RUN_DIR=$MR ${MLOCK:+LOCK_WAIT=$MLOCK} ${MDEV:+GLASSINE_BI_BOOTPART_DEV=$MDEV} "$@"; }
+    GLASSINE_BI_TMP=$W/run GLASSINE_BI_RUN_DIR=$MR ${MLOCK:+LOCK_WAIT=$MLOCK} ${MDEV:+GLASSINE_BI_BOOTPART_DEV=$MDEV} ${MSB:+GLASSINE_BI_SYSBLOCK=$MSB GLASSINE_BI_DEVDIR=/dev} "$@"; }
 macc() { menv sh /p/sbin/glassine-deploy-accept > $MW/out 2>&1; }
 mshut() { menv sh /p/sbin/glassine-loader-mark shutdown > $MW/out 2>&1; }
 same() { cmp -s $MB/glassine/loader.a $W/ma && cmp -s $MB/glassine/loader.b $W/mb; }
@@ -416,6 +416,17 @@ if [ "${BP_PRIV:-}" = 1 ]; then
     MBDIR='' MDEV=$LD menv sh /p/sbin/glassine-loader-mark healthy 2>$W/err; lr=$?
     mount -t vfat -o ro $LD $W/fm
     ok "FAT: the healthy mark mounts the boot partition, writes unmarked=0, unmounts it" "[ $lr = 0 ] && [ \"\$($M get $W/fm unmarked)\" = 0 ] && [ \$(grep -c \" $W/fm \" /proc/mounts) = 1 ] && ! grep -q \"$MR/boot-partition\" /proc/mounts"
+    umount $W/fm
+    # found as on a PC: the partition named glassine-boot on the system partition's disk
+    # (a sysfs stand-in naming the loop device), no device or directory hook
+    MSB=$W/marksb; mkdir -p $MSB/devices/xd/xd1 $MSB/devices/xd/xd2
+    printf 'DEVNAME=%s\nPARTN=1\nPARTNAME=glassine-boot\n' "${LD#/dev/}" > $MSB/devices/xd/xd1/uevent
+    printf 'DEVNAME=xd2\nPARTN=2\nPARTNAME=glassine-system\nPARTUUID=%s\n' $SU > $MSB/devices/xd/xd2/uevent
+    ln -s devices/xd/xd1 $MSB/xd1; ln -s devices/xd/xd2 $MSB/xd2
+    mount -t vfat $LD $W/fm; $M next $W/fm unmarked=2; umount $W/fm
+    MBDIR='' MNODEV=1 MSB=$MSB menv sh /p/sbin/glassine-loader-mark healthy 2>$W/err; lr=$?
+    mount -t vfat -o ro $LD $W/fm
+    ok "FAT: the mark finds the boot partition on the system partition's disk (board.conf's CMDLINE set), writes unmarked=0" "[ $lr = 0 ] && [ \"\$($M get $W/fm unmarked)\" = 0 ]"
     umount $W/fm
     $B cancel >/dev/null 2>&1
     # too little room: refused, nothing removed that a record names
