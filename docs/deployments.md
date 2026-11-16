@@ -458,8 +458,15 @@ mark it. A failing `glassine-slot` is logged and does not stop the accept.
 **The healthy mark** (`HANDOFF=uefi`): the same healthy boot also writes `unmarked=0`
 into the loader record on the boot partition
 ([boot-partition.md](boot-partition.md#keys)), whichever deployment booted and also when
-there was no candidate. A bare boot and a kernel trial before its verdict write none.
-Without it the loader counts the start as one that never became healthy.
+there was no candidate, and also on a start by request (`deploy-once`: no deployment
+accept, but the mark, 010 FR-044) and on a kernel finishing boot. A bare boot, a kernel
+trial boot and a boot that fails a health check write none; the failure is noted in
+`/run/glassine/health-failed` for the shutdown step. Without the mark the loader counts
+the start as one that never became healthy. The write is `glassine-loader-mark healthy`
+(`GLASSINE_LOADER_MARK` in tests), in its own process, before the deployment accept; a
+failing write is logged and does not stop the accept. On a hand-off without a loader
+record (`bootpart-test`, `blocklist`, empty) nothing changes: the accept doesn't even wait when
+there is no candidate and no slot to mark.
 
 **The recovery's keep marker:** every command that opens userdata read-write creates
 `.twrp-keep` in the prefix's top-level media directory (`media/glassine/.twrp-keep`
