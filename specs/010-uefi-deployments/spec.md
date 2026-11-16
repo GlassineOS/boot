@@ -1,7 +1,9 @@
 # Feature Specification: Deployments on UEFI PCs
 
 **Feature branch:** `uefi-deployments`
-**Status:** spec, for review; built: the boot modules (FR-049, SC-017), nothing else
+**Status:** spec, for review; built: the boot modules (FR-049, SC-017), and the
+initramfs's side of FR-005 (the identities on the command line) and of FR-042 to FR-047
+(the one-shot deployment request); nothing else
 **Builds on:** [001-deployments](../001-deployments/spec.md),
 [004-kernel-records](../004-kernel-records/spec.md),
 [008-recovery](../008-recovery/spec.md), [009-first-start](../009-first-start/spec.md) ·
