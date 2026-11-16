@@ -107,7 +107,8 @@ systems to the boot partition, reading only, and then answers as it would have w
   [handback.md](../../docs/handback.md#starting-the-loader-the-parents-side) says: in
   the raw form through the region table (both copies tried, the table's and the entry's
   CRC checked), the region `loader`'s header and image checked; in the FAT form the file
-  `\EFI\glassine\loader.efi`. Started from memory, the partition's handle as
+  `\EFI\glassine\loader.efi`. Started from memory with the partition's device path,
+  the partition's handle as
   `DeviceHandle`, the load option `glassine.handback=1`. A parent reads no other region
   or file.
 - **FR-003** It acts only on an answer that passes every check of
