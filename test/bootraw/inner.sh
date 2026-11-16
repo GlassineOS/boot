@@ -264,6 +264,26 @@ ok "found by GPT name (the one partition named glassine-boot): the mark written 
 ok "find: the device of the partition named glassine-boot" "[ \"\$(GLASSINE_BI_SYSBLOCK=$W/sb GLASSINE_BI_DEVDIR=$W/dev $R find)\" = $W/dev/xd1 ]"
 printf 'DEVNAME=xd2\nPARTN=2\nPARTNAME=glassine-boot\n' > $W/sb/devices/xd/xd2/uevent
 ok "two partitions named glassine-boot: not found, nothing written" "cp $W/dev/xd1 $W/x1 && ! MDEV='' MSB=$W/sb mark healthy 2>$W/err && grep -q '2 partitions named glassine-boot' $W/err && cmp -s $W/dev/xd1 $W/x1 && ! GLASSINE_BI_SYSBLOCK=$W/sb GLASSINE_BI_DEVDIR=$W/dev $R find 2>/dev/null"
+# a raw board whose boot partition is absent (no partition named glassine-boot) or holds
+# nothing (all zeros, no table): the accept goes on (the candidate accepted, exit 0), the
+# mark's failure is said, nothing is written; the shutdown step writes nothing either
+mkdir -p $W/sb0/devices/xd/xd2
+printf 'DEVNAME=xd2\nPARTN=2\nPARTNAME=userdata\n' > $W/sb0/devices/xd/xd2/uevent
+ln -sf devices/xd/xd2 $W/sb0/xd2
+cat > $MW/deploy.cand <<EOT
+#!/bin/sh
+echo "\$*" >> $W/deploy.calls
+case \$1 in status) printf 'v\tx\ntype=status\tcandidate=d1\ttries=1\n' ;; esac
+EOT
+chmod +x $MW/deploy.cand
+acc() { rm -f $W/deploy.calls; menv env GLASSINE_DEPLOY=$MW/deploy.cand sh /p/sbin/glassine-deploy-accept > $W/out 2>&1; }
+mstart; cp $W/dev/xd1 $W/x1
+ok "no partition named glassine-boot: accept 0, the candidate accepted, the mark's failure said, nothing written" "MDEV='' MSB=$W/sb0 acc && grep -qx 'accept d1' $W/deploy.calls && grep -q '0 partitions named glassine-boot: nothing written' $W/out && grep -q 'the healthy mark failed (exit 1)' $W/out && grep -q 'd1 accepted' $W/out && [ ! -e $MR/loader-marked ] && cmp -s $MI $W/m0 && cmp -s $W/dev/xd1 $W/x1"
+ok "no partition named glassine-boot: shutdown 1, said, nothing written" "! MDEV='' MSB=$W/sb0 mark shutdown 2>$W/err && grep -q '0 partitions named glassine-boot' $W/err && cmp -s $MI $W/m0 && cmp -s $W/dev/xd1 $W/x1"
+mstart; fresh $MI; cp $MI $W/m0
+ok "a boot partition of zeros (no table): accept 0, the candidate accepted, the mark's failure said, still all zeros" "acc && grep -qx 'accept d1' $W/deploy.calls && grep -q 'holds nothing: nothing written' $W/out && grep -q 'the healthy mark failed (exit 1)' $W/out && grep -q 'd1 accepted' $W/out && [ ! -e $MR/loader-marked ] && cmp -s $MI $W/m0"
+ok "a boot partition of zeros: shutdown 1, said, still all zeros" "! mark shutdown 2>$W/err && grep -q 'holds nothing' $W/err && cmp -s $MI $W/m0"
+mstart
 
 # --- 4. cuts at every byte of every write ------------------------------------------------
 # replay IMG0 NAME CMD...: CMD run once with the trace on, over a copy of IMG0 (as $T);
