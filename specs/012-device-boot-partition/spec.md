@@ -234,7 +234,8 @@ systems to the boot partition, reading only, and then answers as it would have w
   the loader and default splash a package ships, pinned to a loader release, go into
   the regions `loader` and `splash-default` when they hold other bytes or nothing, the
   splash first, the loader last. Only with `BOOT_FORM=raw`, never with `HANDOFF=uefi`;
-  only after the boot-success step wrote the healthy mark in that start, and on a
+  only after the boot-success step's healthy mark succeeded in that start (written, or
+  the count was 0 already), and on a
   candidate only once it is accepted, so a loader is armed only by a system that marks
   its starts healthy on the raw form. A region whose item has the same bytes is not
   written. Each write is read back; one that fails or doesn't read back leaves its

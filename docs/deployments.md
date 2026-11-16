@@ -473,7 +473,8 @@ start of the previous kernel set for its limit (`glassine-loader-mark` leaves
 `/run/glassine/limit-start`), the accept then runs `glassine-bootimg rollback --limit`
 (010 FR-013, [boot-partition.md](boot-partition.md#keys)): that set becomes the default
 kernel and the one that failed is listed as failed (`GLASSINE_BOOTIMG` in tests). Once
-the mark is written in this start (and a candidate accepted), the accept runs the loader
+the mark succeeded in this start (written, or `unmarked` was 0 already; and a candidate
+accepted), the accept runs the loader
 update (`glassine-loader-update`, `GLASSINE_LOADER_UPDATE` in tests; with `BOOT_FORM=raw`
 only, [boot-partition.md](boot-partition.md#the-running-systems-writer)): the packaged
 loader and default splash are written where the boot partition holds other ones; a

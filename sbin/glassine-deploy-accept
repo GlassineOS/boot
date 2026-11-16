@@ -33,7 +33,8 @@
 # set becomes the default kernel, the one that failed is listed as failed.
 #
 # The loader update (BOOT_FORM=raw; LOADER_UPDATE = glassine-loader-update, specs/012
-# FR-026): only after this start wrote the healthy mark itself (so the deployment
+# FR-026): only after this start's healthy mark succeeded (written, or the count
+# was 0 already; so the deployment
 # that arms the loader is one that marks its starts healthy on the raw form), and on
 # a candidate only once it is accepted (a candidate that is never accepted can't
 # leave an armed loader to an older deployment that can't mark). It writes the

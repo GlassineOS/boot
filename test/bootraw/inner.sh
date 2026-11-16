@@ -340,6 +340,8 @@ cp $W/l20000 $LU/pkg/loader.efi
 uacc() { menv env GLASSINE_LOADER_UPDATE=$LU/update GLASSINE_LOADER_DIR=$LU/pkg GLASSINE_BOOT_RAW=$LU/raw GLASSINE_DEPLOY=${MDEPLOY:-$MW/deploy} sh /p/sbin/glassine-deploy-accept > $W/out 2>&1; }
 mstart
 ok "accept (no candidate): the healthy mark, then the loader update writes the loader and the splash" "uacc && [ \"\$(rec unmarked)\" = 0 ] && items_are $W/l20000 $LU/pkg/splash-default.gspl && grep -q 'loader written and read back' $W/out"
+$R clear $MI loader 2>/dev/null; cp $MI $W/m1
+ok "accept with unmarked=0 already (the mark writes nothing, but succeeds): the loader written" "uacc && [ \"\$(rec unmarked)\" = 0 ] && items_are $W/l20000 $LU/pkg/splash-default.gspl && grep -q 'loader written and read back' $W/out && grep -q 'splash-default holds' $W/out"
 rm -f $W/deploy.calls; mstart
 ok "accept of a candidate: accepted first, then the loader written" "MDEPLOY=$MW/deploy.cand uacc && grep -qx 'accept d1' $W/deploy.calls && items_are $W/l20000 $LU/pkg/splash-default.gspl && [ \"\$(grep -n 'd1 accepted' $W/out | cut -d: -f1)\" -lt \"\$(grep -n 'loader written' $W/out | cut -d: -f1)\" ]"
 cat > $MW/deploy.fail <<EOT
