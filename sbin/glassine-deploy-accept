@@ -26,7 +26,10 @@
 # candidate, also on a start by request. Not on a bare boot, a kernel trial boot,
 # or a boot that fails a health check; that failure is noted in
 # /run/glassine/health-failed for the shutdown step (FR-012). A failing write is
-# logged and does not stop the accept.
+# logged and does not stop the accept. A healthy start the loader made on the
+# previous set because its count reached the limit (glassine-loader-mark's
+# RUN_DIR/limit-start) then runs glassine-bootimg rollback --limit (FR-013): that
+# set becomes the default kernel, the one that failed is listed as failed.
 #
 # Not on a kernel trial or finishing boot (/run/glassine/kernel-boot, from the
 # initramfs): that boot runs the current deployment, and glassine-bootimg-promote
@@ -39,6 +42,7 @@ CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 DEPLOY=${GLASSINE_DEPLOY:-/usr/sbin/glassine-deploy}
 UPTIME=${GLASSINE_ACCEPT_UPTIME:-/proc/uptime}
 MARK_TOOL=${GLASSINE_LOADER_MARK:-/usr/sbin/glassine-loader-mark}
+BOOTIMG=${GLASSINE_BOOTIMG:-/usr/sbin/glassine-bootimg}
 RUN_DIR=/run/glassine ACCEPT_AFTER=120 ACCEPT_HEALTH_DIR=/etc/glassine-bootimg/health.d SLOT_TOOL=
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
@@ -113,6 +117,17 @@ fi
 # in its own process: its state lock is gone before glassine-deploy accept takes it
 if [ $mark = 1 ]; then
     "$MARK_TOOL" healthy || say "the healthy mark failed (exit $?)"
+    # a healthy start the limit caused (the loader started the previous set):
+    # that set becomes the default by the kernel rollback (010 FR-013)
+    if [ -e "$RUN_DIR/limit-start" ]; then
+        n=0
+        while :; do
+            "$BOOTIMG" rollback --limit && break
+            rc=$?
+            [ $rc = 6 ] && [ $n -lt "${ACCEPT_BUSY_S:-600}" ] || { say "the rollback after the limit failed (exit $rc)"; break; }
+            sleep 5; n=$((n + 5))
+        done
+    fi
 fi
 [ $cand = 1 ] || exit 0
 # busy (exit 6: another writer, or a hibernate holding the state lock across
