@@ -1,0 +1,244 @@
+# Feature Specification: The loader under a parent bootloader (hand-back)
+
+**Feature branch:** `handback`
+**Created:** 2026-11-16 · **Status:** spec, for review; nothing built
+**Builds on:** [010-uefi-deployments](../010-uefi-deployments/spec.md),
+[004-kernel-records](../004-kernel-records/spec.md),
+[005-blocklist-handoff](../005-blocklist-handoff/spec.md) · **Interfaces:**
+[docs/handback.md](../../docs/handback.md) (the hand-back partition, the start, the
+answer, the probe), [docs/boot-partition.md](../../docs/boot-partition.md) (the loader
+record), [docs/blocklist.md](../../docs/blocklist.md) (a kernel set the parent can read)
+· **Ticket:** [hub#53](https://github.com/GlassineOS/hub/issues/53) (the selection
+layer of the block-list hand-off)
+
+## Summary
+
+Some machines start a bootloader of their own that GlassineOS keeps: on the Boox
+Note Air, Qualcomm's ABL in GlassineOS's build. Such a **parent bootloader** chooses
+nothing for GlassineOS beyond its slot, so it has no trial, no count of failed starts and
+no way into the recovery that the running system can ask for.
+
+The hand-back gives it 010's choices without moving them into the parent. On the
+GlassineOS slot, the parent starts the GlassineOS loader as a UEFI program, from a raw
+partition. The loader reads its record there, counts the start and picks the default,
+previous or trial set, a one-shot request or the recovery, exactly as on a PC. It starts
+no kernel: it hands its answer back through UEFI exit data, and the parent boots what the
+answer names. When anything goes wrong, the parent boots what it boots today.
+
+010 is the PC's spec and stays so. This spec adds a second way to run the same loader,
+with the same record and the same decisions, for a machine whose firmware the loader
+can't replace.
+
+## Terms
+
+| Term | Meaning |
+|---|---|
+| parent | the bootloader that starts the loader and acts on its answer |
+| baseline | what the parent boots on its GlassineOS slot without the loader (on the Note Air, the boot partition of its GlassineOS slot) |
+| hand-back partition | the raw partition with the loader record, the probe area and the loader image ([handback.md](../../docs/handback.md#the-hand-back-partition)) |
+| answer | what the loader hands back: `baseline`, `recovery` or a kernel set by id |
+| headless | the loader draws nothing, waits for no key and shows no list |
+
+## User scenarios
+
+### Scenario 1 – An ordinary start (P1)
+
+**Given** a machine whose parent starts the loader, and a record with no request and a
+count below the limit,
+**When** it starts,
+**Then** the loader counts the start and answers `baseline`, and the parent boots its
+baseline. The start takes no longer than reading the loader and its record.
+
+### Scenario 2 – Starts that never become healthy (P1)
+
+**Given** three counted starts with no healthy mark,
+**When** the machine starts again,
+**Then** the loader answers the previous set when the parent can boot one, and the
+recovery when it can't (010 FR-011); the parent takes its recovery path.
+
+### Scenario 3 – The recovery on request (P1)
+
+**Given** `reboot recovery` in the running system, which writes `request=recovery`,
+**When** the machine restarts,
+**Then** the loader clears the request durably and answers `recovery`, and the parent
+starts its recovery once. The start after it is the ordinary one.
+
+### Scenario 4 – A kernel trial (P2)
+
+**Given** a trial set the parent can read (on the Note Air, a block-list set of 005) and
+`request=trial`,
+**When** the machine restarts,
+**Then** the loader clears the request before it answers `set:<trial id>`, and the parent
+boots that set once. A parent that can't read the set boots its baseline, and 004 fails
+the trial.
+
+### Scenario 5 – The loader can't help (P1)
+
+**Given** a hand-back partition that is missing, never written, or holds a damaged
+loader, or a loader that fails, returns garbage or names an answer the parent doesn't
+know,
+**When** the machine starts,
+**Then** the parent boots its baseline, as it did before the loader existed.
+
+### Scenario 6 – What the firmware offers (P3)
+
+**Given** `probe=1` in the record,
+**When** the machine starts,
+**Then** the loader writes a report of the firmware's protocols, displays and consoles to
+the probe area, reading only, and then answers as it would have without it.
+
+## Requirements
+
+### The parent
+
+- **FR-001** The parent starts the loader only on its GlassineOS slot, and only where it
+  would boot that slot's baseline: after its own ways into its own modes (on the Note
+  Air: the fastboot key, the closed cover at power-on, a recovery request in `misc` or in
+  the reboot reason), which keep working as before, whatever is on the hand-back
+  partition.
+- **FR-002** It reads the loader from the hand-back partition and starts it as
+  [handback.md](../../docs/handback.md#starting-the-loader-the-parents-side) says: header
+  and image checked, started from memory, the partition's handle as `DeviceHandle`, the
+  load option `glassine.handback=1`.
+- **FR-003** It acts only on an answer that passes every check of
+  [handback.md](../../docs/handback.md#what-the-parent-does-with-it). Every other
+  outcome is its baseline: no hand-back partition, a header or image that fails its
+  CRC, `LoadImage` or `StartImage` failing, no exit data, an answer that fails its
+  check, an answer it doesn't know, a set it can't boot or whose source fails its own
+  checks. None of these ends in a hang, in a mode the person didn't ask for, or in a
+  retry.
+- **FR-004** The answer changes only which image the parent boots and, for
+  `cmdline_add`, its command line. The parent's own state (slot attributes, its
+  recovery request, its verified-boot steps) is handled as for a baseline boot.
+- **FR-005** The parent writes nothing on the hand-back partition and keeps no state of
+  the loader's.
+- **FR-006** A parent with no display the firmware can draw on starts the loader without
+  one: the loader runs headless. A parent never asks the loader to draw.
+- **FR-007** Where the parent can arm a watchdog through the firmware, it does so for the
+  loader's run (handback.md, step 5), so a loader that hangs ends in a reset.
+
+### The loader
+
+- **FR-008** With `glassine.handback=1` in its load options, the loader runs in hand-back
+  mode: it reads and writes its record through the block I/O of the partition of
+  `DeviceHandle`, at the offsets of handback.md, and never through a file system. Without
+  it, the loader runs as on a PC (loader spec 001), unchanged.
+- **FR-009** In hand-back mode it draws nothing, opens no display, waits for no key,
+  shows no message, and calls no serial protocol unless the load options ask for it
+  (`glassine.log=serial`).
+- **FR-010** It decides as 010 and boot-partition.md say, with the record keys of
+  [handback.md](../../docs/handback.md#the-loader-record-raw): a request taken only from
+  a record read with both slots valid and cleared durably before the answer; the count
+  raised before the answer for the default and the previous set; the recovery not
+  counted. It makes the same writes it makes on a PC, and no others (the probe report
+  aside).
+- **FR-011** It answers `baseline` for the default set when the record names none, and
+  `set:<id>` with its `_rec` value when it names one. It answers the previous or trial
+  set as `set:<id>`, and the recovery as `recovery`. It checks no set itself: the files
+  of a set are the parent's to read and check.
+- **FR-012** With no loader record (a partition never written, or both slots not valid),
+  it answers `baseline` and writes nothing. A PC's loader starts the recovery in that
+  case (010 FR-008); a parent has a baseline, which is the better floor.
+- **FR-013** A record it can't write (010 FR-009) makes it answer `baseline`, uncounted,
+  with no request taken.
+- **FR-014** It ends with `Exit`, the answer in the exit data, every protocol it opened
+  closed. A panic ends in `Exit` without exit data, which the parent reads as no
+  answer.
+- **FR-015** It opens every protocol with `GetProtocol`, never exclusively, so that no
+  driver of the firmware is disconnected for the parent's later use.
+
+### The probe
+
+- **FR-016** With `probe=1` in the record in use, the loader writes the report of
+  [handback.md](../../docs/handback.md#the-probe-area) to the probe area, flushed, before
+  it answers, and only there. Without it, it writes nothing there.
+- **FR-017** The probe is read-only towards the firmware: listing handles and their
+  protocols, `QueryMode` of the graphics output, reading the text console's mode fields.
+  No mode is set, nothing is drawn, no other protocol function is called, no hardware is
+  touched.
+- **FR-018** A probe that fails (the write, the report too large) is logged and changes
+  nothing else: the answer is the one the loader would have given without it.
+- **FR-019** The loader never changes `probe`; the running system clears it once it has
+  read the report.
+
+### The running system's side
+
+- **FR-020** The writers of the loader record are those of boot-partition.md, writing the
+  raw slots instead of files, under the same rules. On a machine with a parent, the
+  running system writes no record until the parent's recovery clears the count as 010
+  FR-014 says: a recovery that doesn't would be started again at every start once the
+  limit is reached.
+- **FR-021** `reboot recovery` on such a machine writes `request=recovery` when a record
+  exists, and uses the parent's own recovery request when none does.
+
+## Key entities
+
+- **The hand-back partition**: raw, owned whole by GlassineOS, at least 4 MiB; the record
+  slots, the probe area, the loader image and its header.
+- **The answer**: `format`, `boot`, `set_rec`, `cmdline_add`, `why`, its CRC line; in
+  UEFI exit data after a fixed UCS-2 prefix.
+- **The probe report**: format, firmware identity, protocols with counts, graphics
+  output modes, console handles, the loader's log; one area with its own check.
+
+## Contracts
+
+| Contract | Owned / consumed | Version | Spec location |
+|---|---|---|---|
+| The hand-back partition's layout and the loader image header | owned (new); consumed by the parent, the loader, the installer and the running system | `format=1` | `docs/handback.md` |
+| The load options and the answer in exit data | owned (new); between a parent and the loader | `format=1` | `docs/handback.md`, "Starting the loader", "The answer" |
+| The probe report | owned (new); written by the loader, read by the running system and by people | `format=1` | `docs/handback.md`, "The probe area" |
+| The loader record | owned (unchanged); its slots raw on this partition | `format=1` | `docs/boot-partition.md` |
+| A block-list set | consumed by the parent | format 1 | `docs/blocklist.md` |
+| UEFI `LoadImage`, `StartImage`, `Exit` with exit data | consumed (firmware) | UEFI 2.x | the UEFI specification, "Image Services" |
+
+## Device scope and risk
+
+- **Writes:** the loader writes one record slot per start and, on request, the probe
+  area, both on the hand-back partition. The parent writes nothing new.
+- **Never written:** every other partition; firmware variables.
+- **Escape:** every failure of the loader or its partition ends in the parent's baseline,
+  which is the boot of today. The parent's own ways in (fastboot, its recovery) come
+  before the loader and don't depend on it. A hang inside the loader is ended by the
+  parent's watchdog where there is one; else it needs a long press, and the escapes that
+  come before the loader still work at the next start.
+- **Unverified on hardware:** that the firmware the parent runs on hands exit data back
+  from `StartImage` as edk2 does. Until that is shown on the device, every answer may
+  arrive as no answer, which is the baseline: safe, but the hand-back does nothing.
+
+## Edge cases
+
+- **A loader that answers `recovery` at every start** (a bug, or a record stuck at the
+  limit): the parent's recovery starts each time; the recovery clears the count (FR-020)
+  or writes the partition. The parent's own ways in still work.
+- **A parent without a block-list reader:** `set:` answers boot the baseline; trials
+  fail as never started (004), which the running system reports.
+- **The hand-back partition removed or renamed:** the baseline, every start.
+- **The GlassineOS slot not bootable in the parent's own slot logic:** the parent's slot
+  fallback runs as before; the loader is only started on a start that boots the
+  GlassineOS slot.
+- **A probe at every start** (`probe=1` left set): one more write of 64 KiB per start,
+  no other effect.
+
+## Success criteria
+
+- **SC-001** In QEMU with AAVMF, a stand-in parent that starts the loader as handback.md
+  says gets the answers of Scenarios 1 to 4 from the records of each, and the loader
+  record afterwards has the writes 010 names.
+- **SC-002** In the same run, with the loader image missing, its CRC broken, a program in
+  its place that returns garbage, one that returns an answer with a wrong CRC, and one
+  that names an unknown `boot`: the stand-in parent boots its baseline each time.
+- **SC-003** With `probe=1`, the probe area holds a report whose check passes and that
+  lists the graphics output modes QEMU offers; without it, the area is unchanged.
+- **SC-004** A host test cuts a raw slot write at every byte and reads the old or the new
+  record back.
+- **SC-005** On the device, with the person's go and a gate written: a parent build with
+  no hand-back partition on the table boots exactly as before (the floor), and with one,
+  Scenarios 1, 3 and 5.
+
+## Out of scope
+
+- The block-list reader in the parent (005, hub#55).
+- Writing the hand-back partition from the running system and the installer (a later
+  feature), and the partition-table change that adds it.
+- A gesture at power-on that picks the recovery (`glassine.pick=recovery` is reserved).
+- Drawing on displays the firmware can't drive (e-ink).
