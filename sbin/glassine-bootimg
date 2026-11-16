@@ -41,6 +41,9 @@
 #   glassine-bootimg retry          the candidate's (or the failed one's) image back on the test slot, tries=1
 #   glassine-bootimg accept         the trial boot's candidate becomes the default kernel
 #   glassine-bootimg rollback       the previous kernel's image back as the default
+#   glassine-bootimg rollback --limit
+#                                   the same, on a healthy start the loader made on the
+#                                   previous set for its limit (uefi, 010 FR-013)
 #   glassine-bootimg promote        finish a cut write, the verdict, a deferred install (glassine-bootimg-promote)
 set -u
 ST=${GLASSINE_BI_STATE:-/var/lib/glassine-bootimg}

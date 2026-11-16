@@ -1203,6 +1203,39 @@ gk_rollback() {
     echo "glassine-bootimg: the default kernel is ${_p:-the previous one} ($_pi) again; reboot to use it"
 }
 
+# gk_limit_rollback (rollback --limit, uefi; 010 FR-013): this boot is a healthy
+# start the loader made on the previous set because the count of unmarked starts
+# reached the limit (the record in use: started = this boot's glassine.img=,
+# started_why=limit; state/kernel: previous_img = that set, current_img = the
+# record's default). The previous set becomes the default by the rollback, in the
+# same state write the kernel that failed is listed as failed (failed, failed_img;
+# `retry` gives it a trial again) and a kernel candidate is cancelled, and the
+# person is told (the notice). Run by glassine-deploy-accept after the healthy
+# mark. Anything else: nothing, exit 0 (said when the record and the state
+# disagree).
+gk_limit_rollback() {
+    [ "$HANDOFF" = uefi ] || return 0
+    gk_open rw
+    [ -z "$(k writing)" ] || { log "rollback --limit: a write of the default slot is unfinished (image $(k writing)): promote completes it first"; return 0; }
+    _run=$(run_id)
+    gk_ue_mount || exit 1
+    gk_ue_in_use "rollback --limit"
+    [ "$(gp_get "$GP_REC" started_why)" = limit ] && [ -n "$_run" ] && [ "$(gp_get "$GP_REC" started)" = "$_run" ] || return 0
+    _pi=$(k previous_img) _ci=$(k current_img) _p=$(k previous) _c=$(k current)
+    if [ "$_pi" != "$_run" ] || [ "$(gp_get "$GP_REC" default)" != "$_ci" ] || [ -z "$_ci" ]; then
+        log "rollback --limit: the loader started set $_run for the limit, but the state's previous image is '${_pi}' and its current '${_ci}' (the record's default: $(gp_get "$GP_REC" default)): nothing rolled back"
+        return 0
+    fi
+    gk_img_ok "$_pi" || { log "rollback --limit: $BI/$_pi.img is gone or damaged: nothing rolled back"; return 0; }
+    _cc=$(gs_kernel_candidate "$K")
+    gk_write_default "$_pi" rollback "failed=$_c" "failed_img=$_ci" candidate= candidate_img= tries= requested= || exit 1
+    [ -z "$_cc" ] || log "rollback --limit: the kernel candidate $_cc is cancelled"
+    gk_complete || exit 1
+    log "rollback --limit: kernel ${_c:-$_ci} ($_ci) never reached a healthy system; the default is ${_p:-the previous kernel} ($_pi) again"
+    echo "Kernel ${_c:-$_ci} did not start to a working system. The previous kernel${_p:+ $_p} is the default again." > "$TMP/glassine-bootimg.notice" 2>/dev/null
+    echo "glassine-bootimg: kernel ${_c:-$_ci} failed (the loader's limit); the default kernel is ${_p:-the previous one} ($_pi) again"
+}
+
 # --- promote (FR-012) ------------------------------------------------------------
 # 1. writing (FR-010): whatever this boot's glassine.img=, the default slot
 # is checked against `writing`'s record; written again when it doesn't hold
@@ -1371,6 +1404,7 @@ gk_main() {
     retry:0) gk_retry ;;
     accept:0) gk_accept ;;
     rollback:0) gk_rollback ;;
+    rollback:1) [ "$1" = --limit ] || gk_usage; gk_limit_rollback ;;
     promote:0) gk_promote ;;
     *) gk_usage ;;
     esac
