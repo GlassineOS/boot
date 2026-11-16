@@ -20,7 +20,8 @@
 # Without that the bootloader counts a try per boot after a kernel update and
 # ends up in the other system. A bare boot (userdata broken) does not mark it.
 #
-# The healthy mark (a hand-off whose loader keeps a loader record, HANDOFF=uefi;
+# The healthy mark (a board whose loader keeps a loader record, HANDOFF=uefi or
+# BOOT_FORM=raw;
 # MARK_TOOL = glassine-loader-mark): a healthy boot also writes unmarked=0 into the
 # loader record (010 FR-023), whichever deployment booted and also with no
 # candidate, also on a start by request. Not on a bare boot, a kernel trial boot,

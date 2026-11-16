@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-# glassine-bootpart.sh: the boot partition of a UEFI PC (docs/boot-partition.md,
-# format 1): its records, the loader record's two slots, a kernel set's files.
-# Sourced by glassine-bootimg (lib/glassine-kernel.sh, HANDOFF=uefi) and
-# glassine-loader-mark. busybox ash, sed, awk, od and sha256sum only: the recovery
-# runs it too (004 FR-016). Every function but gp_open/gp_close (the end of this
-# file: where a hand-off keeps its record, mounted for one command, 010 FR-026)
-# works on a directory that is the boot partition's top level.
+# glassine-bootpart.sh: the boot partition, glassine-boot (docs/boot-partition.md,
+# format 1): its records, the loader record's two slots, a kernel set's files; and
+# its raw form (the gr_ functions at the end: the region table, the regions).
+# Sourced by glassine-bootimg (lib/glassine-kernel.sh, HANDOFF=uefi),
+# glassine-loader-mark and glassine-boot-raw. busybox ash, sed, awk, od, gzip and
+# sha256sum only: the recovery runs it too (004 FR-016). Every gp_ function but
+# gp_open/gp_close (where a board keeps its record, mounted or read for one command,
+# 010 FR-026) works on a directory that is the boot partition's top level.
 #
 # The reading of a record is the installer's and the loader's (GlassineOS/installer
 # core/src/pc_boot.rs parse_record/read_slot/record_in_use, GlassineOS/loader
@@ -94,8 +95,11 @@ gp_get() { sed '$d' "$1" | awk -v k="$2" 'index($0, k "=") == 1 { print substr($
 gp_slot() {
     rm -f "$2"
     [ -r "$1" ] || return 1
-    if gp_nul "$1"; then return 2; fi
+    # what no valid slot can be, NUL bytes or not: the last byte not a newline (a
+    # region never written, a slot cut over zeros), the first line not format=1
     [ "$(tail -c 1 "$1" | od -An -tx1 | tr -d ' ')" = 0a ] || return 1
+    [ "$(head -c 9 "$1" | od -An -tx1 | tr -d ' \n')" = 666f726d61743d310a ] || return 1
+    if gp_nul "$1"; then return 2; fi
     # the record: every line up to the last that isn't empty (only newlines follow it)
     awk '{ l[NR] = $0 } $0 != "" { last = NR } END { for (i = 1; i <= last; i++) print l[i] }' "$1" > "$2" || { rm -f "$2"; return 1; }
     gp_rec_ok "$2" || { rm -f "$2"; return 1; }
@@ -123,6 +127,7 @@ gp_gt() {
 # written.
 gp_in_use() {
     GP_REC=$GP_TMP/glassine-bootpart.rec.$$ GP_OREC=$GP_TMP/glassine-bootpart.orec.$$ GP_WHY=''
+    [ -z "${GP_RAW:-}" ] || gp_raw_pull "$1"
     _gp_ga=$GP_TMP/glassine-bootpart.a.$$ _gp_gb=$GP_TMP/glassine-bootpart.b.$$
     _gp_sa=$(gp_slot "$1/glassine/loader.a" "$_gp_ga"); _gp_ra=$?
     _gp_sb=$(gp_slot "$1/glassine/loader.b" "$_gp_gb"); _gp_rb=$?
@@ -142,7 +147,7 @@ gp_in_use() {
     return 1
 }
 
-gp_clean() { rm -f "$GP_TMP"/glassine-bootpart.*."$$"; }
+gp_clean() { rm -rf "$GP_TMP"/glassine-bootpart.*."$$"; }
 
 # gp_record_text OUT REC KEY=VALUE...: REC with each KEY set to VALUE where it is
 # (or added after the last line, in the order given), every other line kept as
@@ -185,6 +190,15 @@ gp_write() {
     { cat "$_gp_gn"; head -c $((GP_SLOT_BYTES - _gp_gz)) /dev/zero | tr '\000' '\n'; } > "$_gp_gn.slot"
     _gp_gt=$_gp_gd/glassine/loader.$GP_OTHER
     for _gp_gtry in 1 2; do
+        if [ -n "${GP_RAW:-}" ]; then
+            # the raw form: the slot's 16384 bytes in the region record, flushed, read back
+            if gr_put_check $((GP_RAW_REC + $([ "$GP_OTHER" = a ] && echo 0 || echo $GP_SLOT_BYTES))) "$_gp_gn.slot"; then
+                rm -f "$_gp_gn" "$_gp_gn.slot"
+                return 0
+            fi
+            GP_WHY="slot $GP_OTHER: the write or its read-back failed (try $_gp_gtry)"
+            continue
+        fi
         if [ -f "$_gp_gt" ]; then
             dd if="$_gp_gn.slot" of="$_gp_gt" bs=$GP_SLOT_BYTES count=1 conv=notrunc,fsync 2>/dev/null
         else
@@ -389,24 +403,56 @@ gp_sweep() {
     sync
 }
 
-# --- where the record is: the hand-off's backend ----------------------------------
-# Everything above works on a directory holding glassine/loader.a and loader.b. A
-# hand-off whose loader keeps a record names where that directory comes from:
-#   uefi   the boot partition (boot-partition.md), the FAT partition named BOOT_PART
-#          on the disk of the system partition this boot names, mounted for the write
-# No other hand-off keeps a loader record here yet (a device boot partition in the
-# raw form, specs/012 and docs/boot-partition.md "The raw form": its backend is not
-# built).
+# --- where the record is: the boot partition's form -------------------------------
+# Everything above works on a directory holding glassine/loader.a and loader.b. Where
+# that directory comes from is the board's (gp_kind: board.conf HANDOFF and
+# BOOT_FORM):
+#   uefi   the FAT form (a PC, HANDOFF=uefi): the FAT partition named BOOT_PART on
+#          the disk of the system partition this boot names, mounted for the write
+#   raw    the raw form (BOOT_FORM=raw: a machine whose parent bootloader starts the
+#          loader, specs/012): the partition named BOOT_PART, its region table read,
+#          the two slots of the region record copied into a directory of GP_TMP for
+#          reading; a write goes to the slot's place on the device (gp_write), and
+#          every gp_in_use reads both slots from the device again
 
-# gp_has_record HANDOFF: 0 when that hand-off's loader keeps a loader record
-gp_has_record() { case $1 in uefi) return 0 ;; esac; return 1; }
+# gp_kind HANDOFF BOOT_FORM: where this board's loader record is: uefi, raw, or
+# nothing (1: the board keeps no loader record). 2 = a combination that is wrong
+# (said on stderr): a PC's boot partition is always FAT
+gp_kind() {
+    case $2 in
+    '') [ "$1" = uefi ] && { echo uefi; return 0; }; return 1 ;;
+    raw) [ "$1" != uefi ] || { echo "BOOT_FORM=raw with HANDOFF=uefi: a PC's boot partition is FAT" >&2; return 2; }; echo raw ;;
+    *) echo "unknown BOOT_FORM '$2'" >&2; return 2 ;;
+    esac
+}
 
-# gp_open HANDOFF CMDLINE BOOTPART MNT [ro]: the loader record's directory opened;
-# GP_DIR its top level, GP_MNTD set when gp_open mounted it (at MNT). 1 = not
-# opened (GP_WHY). GLASSINE_BI_BOOTPART_DIR (tests) is the directory, unmounted.
+# gp_has_record KIND: 0 when a board of that kind (gp_kind) keeps a loader record
+gp_has_record() { case $1 in uefi|raw) return 0 ;; esac; return 1; }
+
+# gp_open KIND CMDLINE BOOTPART MNT [ro]: the loader record's directory opened;
+# GP_DIR its top level, GP_MNTD set when gp_open mounted it (at MNT), GP_RAW the
+# device in the raw form (GP_RAW_REC: the offset of its region record). 1 = not
+# opened (GP_WHY). GLASSINE_BI_BOOTPART_DIR (tests) is the directory of the FAT
+# form, unmounted; GLASSINE_BI_BOOTPART_DEV the device of either form.
 gp_open() {
-    GP_DIR='' GP_MNTD=''
+    GP_DIR='' GP_MNTD='' GP_RAW=''
     gp_has_record "$1" || { GP_WHY="the hand-off '$1' keeps no loader record"; return 1; }
+    if [ "$1" = raw ]; then
+        _gp_od=$(gp_raw_dev "$2" "$3") || { GP_WHY="the boot partition: $_gp_od"; return 1; }
+        # the device's lock, the one glassine-boot-raw holds for its writes (fd 8)
+        exec 8<"$_gp_od" || { GP_WHY="cannot open the boot partition $_gp_od"; return 1; }
+        _gp_on=0
+        until flock -n 8; do
+            [ $_gp_on -lt 10 ] || { GP_WHY="the boot partition $_gp_od is locked by another writer"; return 1; }
+            sleep 1; _gp_on=$((_gp_on + 1))
+        done
+        gr_open "$_gp_od" || { GP_WHY="the boot partition $_gp_od: $GR_WHY"; return 1; }
+        gr_region record && [ "$GR_RSIZE" -ge $((2 * GP_SLOT_BYTES)) ] || { GP_WHY="the boot partition $_gp_od has no region record of 32 KiB"; return 1; }
+        GP_DIR=$GP_TMP/glassine-bootpart.raw.$$
+        mkdir -p "$GP_DIR/glassine" || { GP_WHY="cannot create $GP_DIR"; GP_DIR=''; return 1; }
+        GP_RAW=$_gp_od GP_RAW_REC=$GR_ROFF
+        return 0
+    fi
     if [ -n "${GLASSINE_BI_BOOTPART_DIR:-}" ]; then GP_DIR=$GLASSINE_BI_BOOTPART_DIR; return 0; fi
     _gp_od=$(gp_boot_dev "$2" "$3") || { GP_WHY="the boot partition: $_gp_od"; return 1; }
     mkdir -p "$4" || { GP_WHY="cannot create $4"; return 1; }
@@ -417,10 +463,41 @@ gp_open() {
 
 # gp_close: what gp_open mounted, synced and unmounted. 1 = not unmounted (GP_WHY)
 gp_close() {
+    if [ -n "${GP_RAW:-}" ]; then
+        rm -rf "${GP_DIR:?}"; GP_DIR='' GP_RAW=''
+        exec 8<&-
+        return 0
+    fi
     [ -n "${GP_MNTD:-}" ] || return 0
     sync
     umount "$GP_DIR" || { GP_WHY="cannot unmount the boot partition at $GP_DIR"; return 1; }
     GP_DIR='' GP_MNTD=''
+}
+
+# gp_raw_pull DIR: both slots of the device's region record into DIR/glassine
+# (loader.a, loader.b); a slot that can't be read is left out (not valid)
+gp_raw_pull() {
+    rm -f "$1/glassine/loader.a" "$1/glassine/loader.b"
+    gr_get "$GP_RAW_REC" $GP_SLOT_BYTES > "$1/glassine/loader.a.r" && [ "$(wc -c < "$1/glassine/loader.a.r")" = $GP_SLOT_BYTES ] && mv -f "$1/glassine/loader.a.r" "$1/glassine/loader.a"
+    gr_get $((GP_RAW_REC + GP_SLOT_BYTES)) $GP_SLOT_BYTES > "$1/glassine/loader.b.r" && [ "$(wc -c < "$1/glassine/loader.b.r")" = $GP_SLOT_BYTES ] && mv -f "$1/glassine/loader.b.r" "$1/glassine/loader.b"
+    rm -f "$1/glassine/loader.a.r" "$1/glassine/loader.b.r"
+}
+
+# gp_raw_dev CMDLINE NAME: the raw boot partition's device: with a system partition
+# on the command line (glassine.system=PARTUUID=), the one gp_boot_dev finds; else
+# the one partition named NAME on any disk (a device with one disk passes no
+# identities, docs/boot.md). 1 = not found, or more than one (the reason printed).
+# Test hooks: as gp_boot_dev's.
+gp_raw_dev() {
+    [ -z "${GLASSINE_BI_BOOTPART_DEV:-}" ] || { echo "$GLASSINE_BI_BOOTPART_DEV"; return 0; }
+    if gp_cmdpart glassine.system "$1" >/dev/null; then gp_boot_dev "$1" "$2"; return; fi
+    _gp_rn=0 _gp_rd=''
+    for _gp_u in "${GLASSINE_BI_SYSBLOCK:-/sys/class/block}"/*/uevent; do
+        grep -qx "PARTNAME=$2" "$_gp_u" 2>/dev/null || continue
+        _gp_rn=$((_gp_rn + 1)) _gp_rd=${GLASSINE_BI_DEVDIR:-/dev}/$(sed -n 's/^DEVNAME=//p' "$_gp_u")
+    done
+    [ $_gp_rn = 1 ] || { echo "$_gp_rn partitions named $2"; return 1; }
+    echo "$_gp_rd"
 }
 
 # gp_cmdpart KEY CMDLINE: the identity the command line (a file) gives KEY
@@ -477,4 +554,311 @@ gp_part_uuid() {
     [ "$(gp_le "$_gp_dv" $((_gp_eo + 32)) 8)" = "$(( $(cat "$1/start" 2>/dev/null || echo -1) * 512 / _gp_lb ))" ] || return 1
     od -An -v -tx1 -j $((_gp_eo + 16)) -N 16 "$_gp_dv" 2>/dev/null | tr -s ' \n' ' ' | awk '{ if (NF != 16) exit 1
         printf "%s%s%s%s-%s%s-%s%s-%s%s-%s%s%s%s%s%s\n", $4, $3, $2, $1, $6, $5, $8, $7, $9, $10, $11, $12, $13, $14, $15, $16 }'
+}
+
+# --- the raw form (docs/boot-partition.md, "The raw form") ----------------------------
+# A boot partition with no file system: a region table (GLREGION, the primary at 0, the
+# backup in the last 4096 bytes) and named regions. gr_open reads the table of a device
+# (a block device or, for tests, a file); the other gr_ functions work on that device
+# (GR_DEV). Every write is whole 4096-byte blocks at 4096-byte offsets, flushed, and
+# read back where the format asks for it. CRC-32 is zlib's, taken from gzip's trailer
+# (busybox has no CRC-32 tool). Read and written byte for byte as the loader's
+# core/src/raw.rs (GlassineOS/loader) reads and writes them.
+# Test hooks (only with GLASSINE_BI_TEST=1): GLASSINE_BI_RAW_TRACE, a directory: each
+# block write is also kept there as <n>.off (its offset) and <n>.bin (its bytes), in
+# the order made; GLASSINE_BI_RAW_CUT, a file holding a number of bytes: the writes
+# stop after that many (the last one cut inside, at that byte) and the process is
+# killed, as by a power cut; GLASSINE_BI_AFTER_PUT is eval'd after a block write
+# ($1 = the device, $2 = the offset, $3 = the length).
+
+GR_TABLE=4096 GR_HEAD=4096 GR_ENTRIES=62 GR_LOADER_MAX=3141632 GR_LAYOUT_MIN=16777216
+# the table of "Sizes" (16 MiB), used for every partition of 16 MiB or more:
+# name, offset, size
+GR_LAYOUT='record 65536 32768
+probe 131072 65536
+loader 1048576 3145728
+splash-default 4194304 3145728
+splash 7340032 3145728
+override 10485760 3145728'
+
+# gr_crc: the CRC-32 of stdin, 8 hex digits
+gr_crc() { gzip -1 -c | tail -c 8 | od -An -N4 -tu1 | awk '{ printf "%02x%02x%02x%02x\n", $4, $3, $2, $1 }'; }
+
+# gr_le N VALUE: VALUE (decimal, 0 to 2^63-1) as N bytes, little endian
+gr_le() {
+    _gr_lv=$2 _gr_ls='' _gr_li=0
+    while [ $_gr_li -lt "$1" ]; do
+        _gr_ls="$_gr_ls\\$(printf %03o $((_gr_lv & 255)))"; _gr_lv=$((_gr_lv >> 8)); _gr_li=$((_gr_li + 1))
+    done
+    # shellcheck disable=SC2059  # octal escapes only
+    printf "$_gr_ls"
+}
+
+# gr_u FILE OFFSET N: the little-endian number at OFFSET (N bytes), decimal; a value
+# of 2^63 or more prints negative, which every caller refuses
+gr_u() {
+    _gr_ur=0 _gr_um=0
+    for _gr_ub in $(od -An -v -tu1 -j "$2" -N "$3" "$1"); do
+        _gr_ur=$((_gr_ur | (_gr_ub << _gr_um))); _gr_um=$((_gr_um + 8))
+    done
+    echo $_gr_ur
+}
+
+# gr_hex32 FILE OFFSET: the 32-bit number there as 8 hex digits (a stored CRC)
+gr_hex32() { printf '%08x\n' "$(gr_u "$1" "$2" 4)"; }
+
+# gr_part FILE OFFSET N: bytes OFFSET to OFFSET+N of FILE
+gr_part() { tail -c +$(($2 + 1)) "$1" | head -c "$3"; }
+
+# gr_zero FILE OFFSET N: those bytes of FILE are all zero
+gr_zero() { [ "$(gr_part "$1" "$2" "$3" | tr -d '\000' | wc -c)" = 0 ]; }
+
+# gr_get OFFSET LEN: LEN bytes of GR_DEV from OFFSET (a multiple of 512), read with
+# O_DIRECT where the device can, to stdout
+gr_get() {
+    _gr_gb=4096; [ $(($1 % 4096)) = 0 ] || _gr_gb=512
+    if dd if="$GR_DEV" of=/dev/null bs=$_gr_gb skip=$(($1 / _gr_gb)) count=1 iflag=direct 2>/dev/null; then
+        dd if="$GR_DEV" bs=$_gr_gb skip=$(($1 / _gr_gb)) count=$((($2 + _gr_gb - 1) / _gr_gb)) iflag=direct 2>/dev/null | head -c "$2"
+    else
+        dd if="$GR_DEV" bs=$_gr_gb skip=$(($1 / _gr_gb)) count=$((($2 + _gr_gb - 1) / _gr_gb)) 2>/dev/null | head -c "$2"
+    fi
+}
+
+# gr_flush: the device's writes on the medium and its cached blocks dropped
+gr_flush() { sync; [ ! -b "$GR_DEV" ] || blockdev --flushbufs "$GR_DEV" 2>/dev/null; return 0; }
+
+# gr_pad FILE: zeros onto FILE up to a multiple of 4096
+gr_pad() { head -c $(((4096 - $(wc -c < "$1") % 4096) % 4096)) /dev/zero >> "$1"; }
+
+# gr_put OFFSET FILE: FILE (whole blocks) written at OFFSET of GR_DEV and flushed.
+# 1 = the write failed
+gr_put() {
+    _gr_pn=$(wc -c < "$2")
+    if [ "${GLASSINE_BI_TEST:-}" = 1 ]; then
+        if [ -n "${GLASSINE_BI_RAW_TRACE:-}" ]; then
+            _gr_pt=$(($(find "$GLASSINE_BI_RAW_TRACE" -name '*.off' | wc -l) + 1))
+            echo "$1" > "$GLASSINE_BI_RAW_TRACE/$_gr_pt.off"; cp "$2" "$GLASSINE_BI_RAW_TRACE/$_gr_pt.bin"
+        fi
+        if [ -n "${GLASSINE_BI_RAW_CUT:-}" ]; then
+            _gr_pc=$(cat "$GLASSINE_BI_RAW_CUT")
+            if [ "$_gr_pc" -lt "$_gr_pn" ]; then
+                head -c "$_gr_pc" "$2" | dd of="$GR_DEV" bs=4096 seek=$(($1 / 4096)) conv=notrunc iflag=fullblock 2>/dev/null
+                sync
+                kill -KILL $$
+            fi
+            echo $((_gr_pc - _gr_pn)) > "$GLASSINE_BI_RAW_CUT"
+        fi
+    fi
+    dd if="$2" of="$GR_DEV" bs=4096 seek=$(($1 / 4096)) conv=notrunc,fsync 2>/dev/null || return 1
+    gr_flush
+    if [ "${GLASSINE_BI_TEST:-}" = 1 ] && [ -n "${GLASSINE_BI_AFTER_PUT:-}" ]; then
+        set -- "$GR_DEV" "$1" "$_gr_pn"
+        eval "$GLASSINE_BI_AFTER_PUT"
+    fi
+    return 0
+}
+
+# gr_put_check OFFSET FILE: gr_put, then FILE's bytes read back. 1 = not written or
+# not read back as written
+gr_put_check() {
+    gr_put "$1" "$2" || return 1
+    [ "$(gr_get "$1" "$(wc -c < "$2")" | sha256sum | cut -d' ' -f1)" = "$(gp_sha "$2")" ]
+}
+
+# gr_dev_size DEV: the device's size in bytes; 1 when its block size doesn't divide 4096
+gr_dev_size() {
+    if [ -b "$1" ]; then
+        _gr_ds=$(blockdev --getss "$1" 2>/dev/null) || return 1
+        [ "$_gr_ds" -gt 0 ] && [ $((4096 % _gr_ds)) = 0 ] || return 1
+        blockdev --getsize64 "$1"
+    else
+        [ -f "$1" ] || return 1
+        stat -c %s "$1"
+    fi
+}
+
+# gr_table_check FILE PART: FILE's first 4096 bytes are a valid table for a partition
+# of PART bytes ("The region table"); its entries go to stdout as "name offset size
+# flags" lines. 1 = not valid (GR_WHY)
+gr_table_check() {
+    _gr_tf=$1 _gr_tp=$2
+    [ "$(wc -c < "$_gr_tf")" -ge $GR_TABLE ] || { GR_WHY="short"; return 1; }
+    [ "$(head -c 8 "$_gr_tf")" = GLREGION ] || { GR_WHY="no GLREGION"; return 1; }
+    [ "$(head -c 4092 "$_gr_tf" | gr_crc)" = "$(gr_hex32 "$_gr_tf" 4092)" ] || { GR_WHY="its CRC doesn't match"; return 1; }
+    [ "$(gr_u "$_gr_tf" 8 4)" = 1 ] || { GR_WHY="format $(gr_u "$_gr_tf" 8 4)"; return 1; }
+    [ "$(gr_u "$_gr_tf" 16 8)" = "$_gr_tp" ] && [ "$_gr_tp" -ge $((2 * GR_TABLE)) ] || { GR_WHY="made for a partition of $(gr_u "$_gr_tf" 16 8) bytes, this one has $_gr_tp"; return 1; }
+    _gr_tn=$(gr_u "$_gr_tf" 12 4)
+    [ "$_gr_tn" -ge 1 ] && [ "$_gr_tn" -le $GR_ENTRIES ] || { GR_WHY="$_gr_tn entries"; return 1; }
+    gr_zero "$_gr_tf" 24 40 && gr_zero "$_gr_tf" $((64 + 64 * _gr_tn)) $((4092 - 64 - 64 * _gr_tn)) || { GR_WHY="bytes that must be zero aren't"; return 1; }
+    _gr_te=$GP_TMP/glassine-bootpart.entry.$$ _gr_tl=$GP_TMP/glassine-bootpart.entries.$$
+    : > "$_gr_tl"
+    _gr_ti=0
+    while [ $_gr_ti -lt "$_gr_tn" ]; do
+        gr_part "$_gr_tf" $((64 + 64 * _gr_ti)) 64 > "$_gr_te"
+        GR_WHY="entry $_gr_ti is not valid"
+        [ "$(head -c 52 "$_gr_te" | gr_crc)" = "$(gr_hex32 "$_gr_te" 52)" ] && gr_zero "$_gr_te" 56 8 || { rm -f "$_gr_te" "$_gr_tl"; return 1; }
+        # the name: 1 to 31 of a-z 0-9 -, then zeros only
+        od -An -v -tu1 -N 32 "$_gr_te" | awk '
+            { for (i = 1; i <= NF; i++) b[n++] = $i + 0 }
+            END { for (l = 0; l < n && b[l] != 0; l++) if (!((b[l] >= 97 && b[l] <= 122) || (b[l] >= 48 && b[l] <= 57) || b[l] == 45)) exit 1
+                  if (l < 1 || l > 31) exit 1
+                  for (i = l; i < n; i++) if (b[i] != 0) exit 1 }' || { rm -f "$_gr_te" "$_gr_tl"; return 1; }
+        _gr_tnm=$(head -c 32 "$_gr_te" | tr -d '\000')
+        _gr_to=$(gr_u "$_gr_te" 32 8) _gr_tz=$(gr_u "$_gr_te" 40 8) _gr_tg=$(gr_u "$_gr_te" 48 4)
+        [ "$_gr_to" -ge $GR_TABLE ] && [ "$_gr_tz" -gt 0 ] && [ $((_gr_to % 4096)) = 0 ] && [ $((_gr_tz % 4096)) = 0 ] &&
+            [ "$_gr_tz" -le $((_gr_tp - GR_TABLE - _gr_to)) ] || { rm -f "$_gr_te" "$_gr_tl"; return 1; }
+        # once, and no overlap
+        if awk -v n="$_gr_tnm" -v o="$_gr_to" -v z="$_gr_tz" '$1 == n || (o < $2 + $3 && $2 < o + z) { bad = 1 } END { exit bad ? 0 : 1 }' "$_gr_tl"; then
+            rm -f "$_gr_te" "$_gr_tl"; return 1
+        fi
+        echo "$_gr_tnm $_gr_to $_gr_tz $_gr_tg" >> "$_gr_tl"
+        _gr_ti=$((_gr_ti + 1))
+    done
+    cat "$_gr_tl"; rm -f "$_gr_te" "$_gr_tl"
+    GR_WHY=''
+}
+
+# gr_open DEV: the raw form of DEV read: GR_DEV, GR_PART (its size), GR_COPY
+# (primary or backup: the copy in use) and GR_REGS (a file: "name offset size flags"
+# per region). 1 = not opened (GR_WHY): a device that can't be used, or no valid
+# table (the partition holds nothing)
+gr_open() {
+    GR_DEV=$1 GR_COPY='' GR_REGS=$GP_TMP/glassine-bootpart.regions.$$ GR_WHY=''
+    GR_PART=$(gr_dev_size "$1") || { GR_WHY="$1: no device, or a block size that doesn't divide 4096"; return 1; }
+    [ "$GR_PART" -ge $((2 * GR_TABLE)) ] || { GR_WHY="$1 is too small for the two copies of a region table"; return 1; }
+    _gr_ot=$GP_TMP/glassine-bootpart.table.$$
+    for _gr_oc in primary backup; do
+        _gr_oo=0; [ $_gr_oc = primary ] || _gr_oo=$((GR_PART - GR_TABLE))
+        gr_get $_gr_oo $GR_TABLE > "$_gr_ot" 2>/dev/null || continue
+        if gr_table_check "$_gr_ot" "$GR_PART" > "$GR_REGS"; then GR_COPY=$_gr_oc; rm -f "$_gr_ot"; return 0; fi
+        eval "_gr_why_$_gr_oc=\$GR_WHY"
+    done
+    rm -f "$_gr_ot" "$GR_REGS"
+    # shellcheck disable=SC2154  # set by the eval above
+    GR_WHY="no valid region table (primary: $_gr_why_primary; backup: $_gr_why_backup): the partition holds nothing"
+    return 1
+}
+
+# gr_region NAME: GR_ROFF, GR_RSIZE of the region NAME with no flag set. 1 = none
+gr_region() {
+    _gr_rl=$(awk -v n="$1" '$1 == n && $4 == 0 { print $2, $3; exit }' "$GR_REGS" 2>/dev/null)
+    [ -n "$_gr_rl" ] || return 1
+    GR_ROFF=${_gr_rl% *} GR_RSIZE=${_gr_rl#* }
+}
+
+# gr_clear NAME: the region's first 4096 bytes zero, flushed and read back as zero:
+# it holds no item. 1 = not done (GR_WHY)
+gr_clear() {
+    gr_region "$1" || { GR_WHY="the table has no region $1"; return 1; }
+    head -c $GR_HEAD /dev/zero > "$GP_TMP/glassine-bootpart.zero.$$"
+    gr_put_check "$GR_ROFF" "$GP_TMP/glassine-bootpart.zero.$$" || { rm -f "$GP_TMP/glassine-bootpart.zero.$$"; GR_WHY="$1: zeroing its head failed or didn't read back"; return 1; }
+    rm -f "$GP_TMP/glassine-bootpart.zero.$$"
+}
+
+# gr_write_region NAME FILE: FILE as the region's content ("Writing a region"): the
+# head zeroed (read back), the bytes from 4096 on, then the first 4096 bytes, then all
+# of it read back. A content that is empty or larger than the region is refused
+# before anything is written (2). 1 = a step failed (GR_WHY); the region then holds
+# no item, or the new one.
+gr_write_region() {
+    gr_region "$1" || { GR_WHY="the table has no region $1"; return 2; }
+    _gr_wn=$(wc -c < "$2")
+    [ "$_gr_wn" -gt 0 ] || { GR_WHY="$2 is empty"; return 2; }
+    [ "$_gr_wn" -le "$GR_RSIZE" ] || { GR_WHY="$2 is $_gr_wn bytes, the region $1 holds $GR_RSIZE: not written"; return 2; }
+    _gr_wo=$GR_ROFF _gr_wt=$GP_TMP/glassine-bootpart.part.$$
+    gr_clear "$1" || return 1
+    if [ "$_gr_wn" -gt $GR_HEAD ]; then
+        tail -c +$((GR_HEAD + 1)) "$2" > "$_gr_wt"; gr_pad "$_gr_wt"
+        gr_put $((_gr_wo + GR_HEAD)) "$_gr_wt" || { rm -f "$_gr_wt"; GR_WHY="$1: writing its content failed"; return 1; }
+    fi
+    head -c $GR_HEAD "$2" > "$_gr_wt"; gr_pad "$_gr_wt"
+    gr_put "$_gr_wo" "$_gr_wt" || { rm -f "$_gr_wt"; GR_WHY="$1: writing its head failed"; return 1; }
+    rm -f "$_gr_wt"
+    [ "$(gr_get "$_gr_wo" "$_gr_wn" | sha256sum | cut -d' ' -f1)" = "$(gp_sha "$2")" ] || { GR_WHY="$1: the content doesn't read back as written"; return 1; }
+}
+
+# gr_table_bytes PART OUT: the table of GR_LAYOUT for a partition of PART bytes
+gr_table_bytes() {
+    _gr_bn=$(echo "$GR_LAYOUT" | wc -l) _gr_be=$GP_TMP/glassine-bootpart.mkentry.$$
+    {
+        printf GLREGION; gr_le 4 1; gr_le 4 "$_gr_bn"; gr_le 8 "$1"; head -c 40 /dev/zero
+        echo "$GR_LAYOUT" | while read -r _gr_bm _gr_bo _gr_bz; do     # no write in it
+            { printf %s "$_gr_bm"; head -c $((32 - ${#_gr_bm})) /dev/zero; gr_le 8 "$_gr_bo"; gr_le 8 "$_gr_bz"; gr_le 4 0; } > "$_gr_be"
+            cat "$_gr_be"; gr_le 4 $((0x$(gr_crc < "$_gr_be"))); head -c 8 /dev/zero
+        done
+        head -c $((4092 - 64 - 64 * _gr_bn)) /dev/zero
+    } > "$2.body"
+    { cat "$2.body"; gr_le 4 $((0x$(gr_crc < "$2.body"))); } > "$2"
+    rm -f "$2.body" "$_gr_be"
+}
+
+# gr_loader_content IMAGE OUT: the region loader's content for IMAGE: the 4096-byte
+# header (docs/handback.md, "The loader region"), then the image
+gr_loader_content() {
+    {
+        printf GLLOADER; gr_le 4 1; gr_le 4 0; gr_le 8 "$(wc -c < "$1")"; gr_le 4 $((0x$(gr_crc < "$1")))
+    } > "$2.h"
+    { cat "$2.h"; gr_le 4 $((0x$(gr_crc < "$2.h"))); head -c 4064 /dev/zero; cat "$1"; } > "$2"
+    rm -f "$2.h"
+}
+
+# gr_splash_ok FILE REGION: FILE is a format-2 image a reader takes (the header's
+# checks in the reader's order, the payload's CRC, an uncompressed payload's length;
+# the decoding itself is the reader's); leave the screen (kind 1) only as the
+# override. 1 = not (GR_WHY)
+gr_splash_ok() {
+    _gr_sn=$(wc -c < "$1")
+    [ "$_gr_sn" -ge 64 ] || { GR_WHY="shorter than its 64-byte header"; return 1; }
+    [ "$(head -c 8 "$1")" = GLSPLASH ] || { GR_WHY="not a splash image (no GLSPLASH)"; return 1; }
+    [ "$(head -c 52 "$1" | gr_crc)" = "$(gr_hex32 "$1" 52)" ] || { GR_WHY="its header's CRC doesn't match"; return 1; }
+    [ "$(gr_u "$1" 8 2)" = 2 ] || { GR_WHY="format $(gr_u "$1" 8 2), not 2"; return 1; }
+    case $(gr_u "$1" 10 2) in
+    0) ;;
+    1)  [ "$2" = override ] || { GR_WHY="'leave the screen' is valid only as the override"; return 1; }
+        gr_zero "$1" 12 40 && [ "$_gr_sn" = 64 ] || { GR_WHY="'leave the screen' with picture fields or a payload"; return 1; }
+        return 0 ;;
+    *) GR_WHY="kind $(gr_u "$1" 10 2)"; return 1 ;;
+    esac
+    [ "$(gr_u "$1" 40 8)" = $((_gr_sn - 64)) ] || { GR_WHY="its payload length isn't the file's length less 64"; return 1; }
+    _gr_sw=$(gr_u "$1" 12 4) _gr_sh=$(gr_u "$1" 16 4)
+    [ "$_gr_sw" -ge 1 ] && [ "$_gr_sw" -le 16384 ] && [ "$_gr_sh" -ge 1 ] && [ "$_gr_sh" -le 16384 ] &&
+        [ $((_gr_sw * _gr_sh)) -le 8388608 ] && [ "$_gr_sn" -le $((33554432 + 64)) ] || { GR_WHY="outside the limits"; return 1; }
+    case $(gr_u "$1" 28 4) in 1) _gr_sp=4 ;; 2) _gr_sp=3 ;; 3) _gr_sp=1 ;; *) GR_WHY="pixel layout $(gr_u "$1" 28 4)"; return 1 ;; esac
+    _gr_sc=$(gr_u "$1" 36 2)
+    [ "$_gr_sc" -le 2 ] && [ "$(gr_u "$1" 38 2)" -le 1 ] || { GR_WHY="an unknown compression or filter"; return 1; }
+    [ "$(tail -c +65 "$1" | gr_crc)" = "$(gr_hex32 "$1" 48)" ] || { GR_WHY="its payload's CRC doesn't match"; return 1; }
+    [ "$_gr_sc" != 0 ] || [ $((_gr_sn - 64)) = $((_gr_sw * _gr_sh * _gr_sp)) ] || { GR_WHY="an uncompressed payload of the wrong length"; return 1; }
+}
+
+# gr_item NAME OUT: the item of a region, as its reader takes it: loader: the image
+# (its header and CRC checked as a parent checks them); splash-default, splash,
+# override: the image file (its length from its header, within the region; the
+# file's own checks are gr_splash_ok's); probe: the report up to its check line.
+# 1 = the region holds no item (GR_WHY)
+gr_item() {
+    gr_region "$1" || { GR_WHY="the table has no region $1"; return 1; }
+    _gr_ih=$GP_TMP/glassine-bootpart.head.$$
+    gr_get "$GR_ROFF" $GR_HEAD > "$_gr_ih"
+    case $1 in
+    loader)
+        _gr_iz=$(gr_u "$_gr_ih" 16 8)
+        [ "$(head -c 8 "$_gr_ih")" = GLLOADER ] && [ "$(head -c 28 "$_gr_ih" | gr_crc)" = "$(gr_hex32 "$_gr_ih" 28)" ] &&
+            [ "$(gr_u "$_gr_ih" 8 4)" = 1 ] && [ "$(gr_u "$_gr_ih" 12 4)" = 0 ] &&
+            [ "$_gr_iz" -ge 1 ] && [ "$_gr_iz" -le $GR_LOADER_MAX ] && [ "$_gr_iz" -le $((GR_RSIZE - GR_HEAD)) ] || { rm -f "$_gr_ih"; GR_WHY="no valid loader header"; return 1; }
+        gr_get "$GR_ROFF" $((GR_HEAD + _gr_iz)) | tail -c +$((GR_HEAD + 1)) > "$2"
+        [ "$(gr_crc < "$2")" = "$(gr_hex32 "$_gr_ih" 24)" ] || { rm -f "$_gr_ih" "$2"; GR_WHY="the loader image doesn't match its CRC"; return 1; }
+        ;;
+    splash-default|splash|override)
+        _gr_iz=$(($(gr_u "$_gr_ih" 40 8) + 64))
+        [ "$(head -c 8 "$_gr_ih")" = GLSPLASH ] || { rm -f "$_gr_ih"; GR_WHY="no image"; return 1; }
+        [ "$_gr_iz" -ge 64 ] && [ "$_gr_iz" -le "$GR_RSIZE" ] || { rm -f "$_gr_ih"; GR_WHY="an image longer than its region"; return 1; }
+        gr_get "$GR_ROFF" "$_gr_iz" > "$2"
+        ;;
+    probe)
+        gr_get "$GR_ROFF" "$((GR_RSIZE < 65536 ? GR_RSIZE : 65536))" | tr -d '\000' | sed -n '1,/^check=/p' > "$2"
+        gp_rec_ok "$2" || { rm -f "$_gr_ih" "$2"; GR_WHY="no report, or one whose check fails"; return 1; }
+        ;;
+    *) rm -f "$_gr_ih"; GR_WHY="no item reader for the region $1"; return 1 ;;
+    esac
+    rm -f "$_gr_ih"
 }

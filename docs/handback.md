@@ -1,6 +1,8 @@
 # The loader under a parent bootloader (hand-back)
 
-Status: **agreed design; nothing has run on a device.** This page is the contract between
+Status: **agreed design; nothing has run on a device.** The running system's writer of
+the raw form (the loader region, the record's slots) is built and host-tested
+([boot-partition.md](boot-partition.md#the-running-systems-writer)). This page is the contract between
 the GlassineOS loader and a **parent bootloader**: a bootloader that a machine's firmware
 starts and that can't be replaced by the loader, but can start a UEFI program and act on
 its answer. What both sides do and why is [specs/012](../specs/012-device-boot-partition/spec.md);
@@ -67,7 +69,9 @@ differences:
 | `deploys`, `deploy1` … | kept as read; a headless loader offers no list |
 
 The other keys (`format`, `seq`, `request`, `unmarked`, `started`, `started_why`) are
-the same, with the same writers.
+the same, with the same writers. With `default` empty, the loader's count writes
+`started` empty and `started_why=default`: the parent's baseline was started, which is
+how the shutdown step knows the start as this boot's ([boot-partition.md](boot-partition.md#keys)).
 
 ### The splash store under a parent
 

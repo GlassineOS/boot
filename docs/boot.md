@@ -21,6 +21,8 @@ image):
 | `USERDATA_PART` | — | GPT name of userdata (deployments) |
 | `USERDATA_PREFIX` | `media/glassine` | the directory on userdata, the same value as deploy.conf's |
 | `HANDOFF` | empty | how a new kernel reaches the bootloader in the deployments layout: `bootpart-test`, `blocklist` (no board sets it yet: [blocklist.md](blocklist.md#board-keys)), `uefi` (a PC: [boot-partition.md](boot-partition.md)), empty = kernel updates paused ([kernel-artifacts.md](kernel-artifacts.md)) |
+| `BOOT_FORM` | empty | where the loader record is: empty, the FAT boot partition with `HANDOFF=uefi` and none otherwise; `raw`, the raw boot partition of a machine whose parent bootloader starts the loader ([boot-partition.md](boot-partition.md#the-running-systems-writer), specs/012); never with `HANDOFF=uefi` |
+| `BOOT_PART` | `glassine-boot` | the GPT name of the boot partition |
 | `BLOCKLIST_RECORD_PART`, `BLOCKLIST_REBOOT_REASON`, `BLOCKLIST_ABL_PART`, `BLOCKLIST_ABL_SHA256` | — | the `blocklist` hand-off ([blocklist.md](blocklist.md#board-keys)) |
 | `DEVICE` | — | the device name of the board's device trees (`<device>@<id>`), for `glassine-bootimg install` |
 | `DEVMODE_ADDR`, `DEVMODE_NETMASK`, `DEVMODE_DHCP_START`, `DEVMODE_DHCP_END`, `USB_VENDOR`, `USB_PRODUCT`, `USB_MANUFACTURER` | — | developer mode (`glassine.devmode=usb` only): the USB network's address and developer range, in the initramfs (telnet, HTTP) and in the booted system (`glassine-devmode`: SSH with the developer folder's keys; README, "Developer mode") |
