@@ -63,13 +63,15 @@ differences:
 | `trial`, `trial_rec` | the trial set, as on a PC |
 | `recovery`, `recovery_rec` | not used: the recovery is the parent's own |
 | `probe` | `1`: write the probe report at this start; anything else, or empty: don't. Set and cleared by the running system; the loader never changes it |
-| `display` | `epd-fw`: draw the splash through the firmware's panel refresh when the firmware has an extended graphics output (below, "A display through the firmware's refresh"); anything else, or empty: headless. Set by the running system or the installer; the loader never changes it |
-| `drew` | `1`: the start that wrote it drew through the firmware's refresh; empty otherwise. Written by the loader only (below) |
+| `display` | `epd-fw`: draw the splash through the firmware's panel refresh when the firmware has an extended graphics output (below, "A display through the firmware's refresh"), and show the start menu when it is asked for ("The start menu"); anything else, or empty: headless. Set by the running system or the installer; the loader never changes it |
+| `display_partial` | `0`: every refresh of the start menu is the whole panel; `1` or empty: only the changed rectangles ("The start menu"). Set by the running system or the installer; the loader never changes it |
+| `drew` | `1`: a start drew through the firmware's refresh and its last refresh hasn't returned (yet); empty otherwise. Written by the loader only (below) |
 | `display_failed` | set (the count it was set at): a start that drew was never marked healthy, so the loader no longer draws, whatever `unmarked` says. Written by the loader; cleared only by the person's retry, `glassine-loader-mark display-retry`, never by a healthy mark |
-| `deploys`, `deploy1` … | kept as read; a headless loader offers no list |
+| `request` | also `menu`: open the start menu at this start (below); cleared by the loader in its first write of the start, whether the menu opens or not |
+| `deploys`, `deploy1` … | kept as read; the start menu offers them, a headless loader offers no list |
 
-The other keys (`format`, `seq`, `request`, `unmarked`, `started`, `started_why`) are
-the same, with the same writers. With `default` empty, the loader's count writes
+The other keys (`format`, `seq`, `unmarked`, `started`, `started_why`) are the same,
+with the same writers. With `default` empty, the loader's count writes
 `started` empty and `started_why=default`: the parent's baseline was started, which is
 how the shutdown step knows the start as this boot's ([boot-partition.md](boot-partition.md#keys)).
 
@@ -111,18 +113,83 @@ of its QueryMode, SetMode and Blt. With neither, the loader runs headless, as ab
 - It draws only before it hands back, never after `ExitBootServices`, and never calls
   `SetMode`, `Blt` or any power protocol of the display.
 - The order is normative, against a refresh that never returns: the loader decides and
-  writes the record first (the count raised, durably), then draws, then answers.
-  - It draws only on a start that write counted (`default`, written), only when
-    `unmarked` was 0 when it read the record, and only when `display_failed` is not set;
-    that counting write sets `drew=1`. A hang inside the refresh is then a failed,
-    counted start (the parent's watchdog or a power cycle ends it), and the limit leads
-    on to the previous set or the recovery as without a display.
-  - A start that finds `unmarked` above 0 and `drew=1` doesn't draw and sets
-    `display_failed=<unmarked>` in its write; a start that doesn't draw clears `drew`.
+  writes the record first (the count raised, durably), then draws, then writes once more
+  and answers.
+  - It draws the splash alone only on a start that write counted (`default`, written),
+    only when `unmarked` was 0 when it read the record, and only when `display_failed`
+    is not set; that counting write sets `drew=1`. After the refresh returned, before it
+    answers, it writes the record once more with `drew` cleared (a failure of that write
+    is logged and changes nothing else). So `drew=1` at entry means a draw that never
+    returned: a hang inside the refresh is a failed, counted start (the parent's watchdog
+    or a power cycle ends it), and the limit leads on to the previous set or the
+    recovery as without a display.
+  - A start that finds `unmarked` above 0 and `drew=1` draws nothing (no splash, no
+    menu) and sets `display_failed=<unmarked>` in its write; a start that doesn't draw
+    clears `drew`.
   - While `display_failed` is set, no start draws. A healthy mark doesn't clear it, so a
     draw that hung once doesn't come back after every healthy boot. The person clears it
     on purpose with `glassine-loader-mark display-retry` (it also clears `drew`); the
     next start with `unmarked` 0 draws again.
+
+### The start menu
+
+With the display above, the loader can show the list of 010 FR-039 and FR-040 as a menu
+the person taps on the panel (or moves through with the machine's keys), and answer the
+pick. There is no key to press at power-on on such a machine, so it opens only when
+asked:
+
+- **When it opens:** `display=epd-fw` and an extended graphics output that passes the
+  checks above; `display_failed` not set; not `drew=1` with `unmarked` above 0; no
+  `glassine.pick=recovery` in the load options; and either `request=menu` in a record
+  read with both slots valid (written by the running system's "reboot to the start
+  menu"), or `unmarked` above 0 (the last start wasn't marked healthy). Else the start
+  is as above: no wait and no refresh but the splash's. A `request=menu` the loader
+  doesn't open the menu for is cleared in the start's first write.
+- **The menu write**, durable before the first refresh: `request` cleared (when it was
+  `menu`), `unmarked` one more than read, `drew=1`. A hang anywhere in the menu is then a
+  counted start that left `drew=1`. When the write fails, no menu opens and the start
+  goes on as with a record the loader can't write (010 FR-009).
+- **The entries** are the list 010 FR-039 and FR-040 give, from the record read at
+  entry: GlassineOS, the previous deployment, "More deployments" (the candidate, the
+  last failed and the kept ones, then "Back"), the previous kernel when `previous` is
+  set, the recovery. Nothing else: no firmware set-up, no other system.
+- **The picks.** Each pick's write is the one the same choice makes at a start without
+  the menu, computed from the record read at entry and written over the menu write,
+  with `unmarked` written explicitly and `drew` cleared:
+
+  | Pick | Answer | The pick's write |
+  |---|---|---|
+  | GlassineOS | as a start without the menu: by the request or the count (`baseline` when `default` is empty, the previous set or the recovery at the limit) | that start's: `unmarked` one more, `started`, `started_why` (`default` or `limit`); a request taken as there |
+  | a deployment (the previous one, or one under "More") | the same, with `cmdline_add=glassine.deploy.once=<id>` | the same as GlassineOS |
+  | the previous kernel (offered only when `previous` is set) | `set:<previous>`, `why=choice` | `unmarked` one more, `started=<previous>`, `started_why=choice` |
+  | the recovery | `recovery`, `why=choice` | not counted: `unmarked` as read; a `request=recovery` cleared |
+
+  No input for 60 seconds is the GlassineOS pick. When the pick's write fails, the
+  answer is the recovery for the recovery pick, else `baseline` (`why=not-written`);
+  the start stays counted by the menu write.
+- **The order:** the menu write; the menu's refreshes; the splash (the override used up
+  as above, one whole-panel refresh); the pick's write; the answer. No refresh comes
+  after the write that clears `drew`.
+- **Refreshes.** The menu is drawn in portrait as the splash is. The first refresh is
+  the whole panel. Each later one covers the rectangles that changed, mapped to the
+  panel's native landscape (portrait (u, v, w, h) is native (W − v − h, u, h, w)), x and
+  width multiples of 8, inside the panel: `Refresh(This, Fb, X, Y, Width, Height, W, 0)`,
+  `Fb` the framebuffer's base, the stride `W`. With `display_partial=0` every refresh is
+  `(0, 0, W, H)`. Whether a firmware honours a rectangle other than the whole panel is
+  the firmware's; `display_partial=0` is the escape where it doesn't.
+- **Input:** the absolute pointer protocol (`GetState` only, never `Reset`), and the
+  console's text input: up and down (and the volume keys) move, Enter and the power key
+  (`SCAN_SUSPEND`) pick.
+- **The watchdog:** while the menu is open the loader re-arms the firmware's watchdog
+  for 30 seconds before each refresh and at least every 10 seconds, and leaves it armed
+  for 30 seconds when it answers; it never disables it. The parent disarms it when
+  `StartImage` returns, as for any start.
+- **The probe:** with `probe=1`, the report is written again when the menu closes, so
+  its log holds the menu's lines (the refreshes and their times, the touches, the pick).
+
+A parent that ignores `cmdline_add` boots a deployment pick as the GlassineOS pick, and
+one that can't boot a `set:` answer boots its baseline (see "What the parent does with
+it"): the menu offers what the record names, not what the parent can do.
 
 
 ## The loader region

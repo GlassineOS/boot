@@ -4,7 +4,8 @@
 **Created:** 2026-11-16 · **Status:** spec, for review; the running system's writer of the
 raw form built and host-tested (FR-020, FR-022 to FR-025: `glassine-boot-raw`, the raw
 backend of `lib/glassine-bootpart.sh`, `test/bootraw`); not built: FR-021 (`reboot
-recovery` on a raw board) and the installer's raw writer; nothing has run on a device
+recovery` on a raw board), the installer's raw writer and the running system's writer
+of `request=menu`; nothing has run on a device
 **Builds on:** [010-uefi-deployments](../010-uefi-deployments/spec.md),
 [004-kernel-records](../004-kernel-records/spec.md),
 [005-blocklist-handoff](../005-blocklist-handoff/spec.md) · **Interfaces:**
@@ -143,20 +144,25 @@ systems to the boot partition, reading only, and then answers as it would have w
   the option, the loader runs as on a PC (loader spec 001), unchanged.
 - **FR-009** In hand-back mode it draws nothing, opens no display, waits for no key,
   shows no message, and calls no serial protocol unless the load options ask for it
-  (`glassine.log=serial`). With the display of FR-006 it draws the picture of 011 once
-  (one full refresh, before it answers) and nothing else: no key line, no list, no
-  message. It draws only after the record's write has counted the start, only when
-  `unmarked` was 0 at entry and only while the sticky `display_failed` is not set; a
-  start after an unmarked one that drew sets it, and only the running system's
-  `glassine-loader-mark display-retry` clears it. So a refresh that never returns can't
-  stop the limit, and doesn't come back after every healthy boot
+  (`glassine.log=serial`). With the display of FR-006 it draws the picture of 011 (one
+  full refresh, before it answers) and, when `request=menu` asks for it or the last
+  start wasn't marked healthy, the start menu: 010's list, picked by touch or keys, its
+  picks answered as hand-back answers
+  ([handback.md](../../docs/handback.md#the-start-menu)); no key line and no message. It
+  draws only after a durable write has counted the start and set `drew=1`, and clears
+  `drew` in one more write after its last refresh returned, before it answers; it draws
+  only while the sticky `display_failed` is not set, and a start that finds `drew=1`
+  with `unmarked` above 0 sets it; only the running system's `glassine-loader-mark
+  display-retry` clears it. So a refresh that never returns can't stop the limit, and
+  doesn't come back after every healthy boot
   ([handback.md](../../docs/handback.md#a-display-through-the-firmwares-refresh)).
 - **FR-010** It decides as 010 and boot-partition.md say, with the record keys of
   [handback.md](../../docs/handback.md#the-loader-record-raw): a request taken only from
   a record read with both slots valid and cleared durably before the answer; the count
   raised before the answer for the default and the previous set; the recovery not
-  counted. It makes the same writes it makes on a PC, and no others (the probe report
-  aside).
+  counted. It makes the same writes it makes on a PC, and no others, apart from the
+  probe report and the writes of FR-009's display (`drew` set and cleared, the menu
+  write and the pick's write).
 - **FR-011** It answers `baseline` for the default set when the record names none, and
   `set:<id>` with its `_rec` value when it names one. It answers the previous or trial
   set as `set:<id>`, and the recovery as `recovery`. It checks no set itself: the files
