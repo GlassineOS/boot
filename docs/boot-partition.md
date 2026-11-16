@@ -196,7 +196,11 @@ write; the loader runs when no system does.
   was no bare boot and no health check failed in it. It is `glassine-loader-mark
   shutdown`, run by the stop of the `glassine-deploy-accept` service when OpenRC goes
   down (`RC_GOINGDOWN`), before `localmount` takes the system partition away. The
-  running set is the one `glassine.img=` names on this boot's command line. What
+  running set is the one `glassine.img=` names on this boot's command line. Under a
+  parent (the raw form), where the default set is the parent's baseline and the
+  loader's count writes an empty `started` for it ([handback.md](handback.md#the-loader-record-under-a-parent)),
+  an empty `started` with `started_why=default` is the running set when this boot runs
+  no set that either slot names. What
   this start did is in `/run/glassine`: `loader-marked` (the mark was written) and
   `health-failed` (a health check failed, written by the boot-success step). Both
   writes hold the system partition's state lock, as `glassine-bootimg`'s do.
@@ -620,7 +624,8 @@ An entry:
   region never writes the table. The entry's CRC covers the entry, not the region.
 - **Names** a reader doesn't know are ignored, and so are regions with a flag it doesn't
   know.
-- **Writing the table** (the installer; a later release that adds a region): the backup
+- **Writing the table** (the installer; `glassine-boot-raw init`; a later release that
+  adds a region): the backup
   first, flushed and read back, then the primary, flushed and read back. A cut leaves a
   valid primary (the old table) or a valid backup (the new one). Regions are added in
   space no region uses; a region is never moved or shrunk while it holds content.
@@ -631,10 +636,10 @@ An entry:
 |---|---|---|---|
 | `record` | 32 KiB | the loader record: slot a at the region's start, slot b at 16 KiB | the loader; the running system; the recovery; the installer |
 | `probe` | 64 KiB | the probe report of [handback.md](handback.md#the-probe-report) | the loader, on request |
-| `loader` | 8 KiB | the loader image header (4096 bytes), then the loader image ([handback.md](handback.md#the-loader-region)) | the installer; the running system's loader update |
-| `splash-default` | 64 KiB | the release's splash: one image of the format below | the installer, the repair |
-| `splash` | 64 KiB | the splash the system set | the running system |
-| `override` | 64 KiB | the one-time override | the running system; removed by the stage that draws it |
+| `loader` | 8 KiB | the loader image header (4096 bytes), then the loader image ([handback.md](handback.md#the-loader-region)) | the installer; the running system's loader update (`glassine-boot-raw loader`) |
+| `splash-default` | 64 KiB | the release's splash: one image of the format below | the installer, the repair (`glassine-boot-raw splash-default`) |
+| `splash` | 64 KiB | the splash the system set | the running system (`glassine-boot-raw splash`) |
+| `override` | 64 KiB | the one-time override | the running system (`glassine-boot-raw override`, `clear`); removed by the stage that draws it |
 
 A region holds one item at its start. The bytes after the item's end (the end its own
 header gives) are ignored: a writer needn't clear them.

@@ -457,7 +457,7 @@ fallback), because the slot itself works. Without it the bootloader counts a try
 boot after a kernel update and in the end boots the other system. A bare boot does not
 mark it. A failing `glassine-slot` is logged and does not stop the accept.
 
-**The healthy mark** (`HANDOFF=uefi`): the same healthy boot also writes `unmarked=0`
+**The healthy mark** (`HANDOFF=uefi`, or `BOOT_FORM=raw`): the same healthy boot also writes `unmarked=0`
 into the loader record on the boot partition
 ([boot-partition.md](boot-partition.md#keys)), whichever deployment booted and also when
 there was no candidate, and also on a start by request (`deploy-once`: no deployment

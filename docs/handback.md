@@ -69,7 +69,9 @@ differences:
 | `deploys`, `deploy1` … | kept as read; a headless loader offers no list |
 
 The other keys (`format`, `seq`, `request`, `unmarked`, `started`, `started_why`) are
-the same, with the same writers.
+the same, with the same writers. With `default` empty, the loader's count writes
+`started` empty and `started_why=default`: the parent's baseline was started, which is
+how the shutdown step knows the start as this boot's ([boot-partition.md](boot-partition.md#keys)).
 
 ### The splash store under a parent
 

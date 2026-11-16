@@ -47,7 +47,10 @@
 # The shutdown step takes one off only when neither of the first two is there,
 # the start was no bare boot, the record's `started` is the set this boot runs
 # (glassine.img= on the command line) and `started_why` is default, limit or
-# choice.
+# choice. Under a parent (BOOT_FORM=raw), a `started` that is empty with
+# started_why=default is the parent's baseline (the record's default empty,
+# docs/handback.md): it is this boot's when this boot runs no set either slot of
+# the record names.
 #
 # Exit: 0 written or nothing to write, 1 not written (said), 2 usage, 3
 # (has-record) no loader record, 6 busy (the state lock stayed held).
@@ -94,7 +97,8 @@ if [ "$cmd" = shutdown ]; then
     [ ! -e "$RUN_DIR/health-failed" ] || exit 0
     case $(cat "$RUN_DIR/booted" 2>/dev/null) in bare:*) exit 0 ;; esac
     run=$(tr ' ' '\n' < "$CMDLINE" | sed -n 's/^glassine\.img=//p' | head -n 1)
-    [ -n "$run" ] || exit 0
+    # under a parent (the raw form) the baseline may run with no image id
+    [ -n "$run" ] || [ "$kind" = raw ] || exit 0
     wait_s=${LOCK_WAIT:-10}
 else
     wait_s=${LOCK_WAIT:-$ACCEPT_BUSY_S}
@@ -145,7 +149,13 @@ healthy)
     ;;
 shutdown)
     started=$(gp_get "$GP_REC" started) why=$(gp_get "$GP_REC" started_why)
-    [ "$started" = "$run" ] || exit 0
+    # under a parent the default set is the parent's baseline, which the loader's
+    # count names by an empty started (docs/handback.md, "The loader record under a
+    # parent"): a boot that runs no set the record names is that baseline
+    if [ "$started" != "$run" ]; then
+        [ "$kind" = raw ] && [ -z "$started" ] && [ "$why" = default ] || exit 0
+        case $(gp_names | tr '\n' ' ') in *"$run "*) [ -z "$run" ] || exit 0 ;; esac
+    fi
     case $why in default|limit|choice) ;; *) exit 0 ;; esac
     [ "$count" != 0 ] || exit 0
     if gp_write "$GP_DIR" unmarked=$((count - 1)); then

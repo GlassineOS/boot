@@ -3,7 +3,8 @@
 **Feature branch:** `boot-partition-forms`
 **Created:** 2026-11-16 · **Status:** spec, for review; the running system's writer of the
 raw form built and host-tested (FR-020, FR-022 to FR-025: `glassine-boot-raw`, the raw
-backend of `lib/glassine-bootpart.sh`, `test/bootraw`); nothing has run on a device
+backend of `lib/glassine-bootpart.sh`, `test/bootraw`); not built: FR-021 (`reboot
+recovery` on a raw board) and the installer's raw writer; nothing has run on a device
 **Builds on:** [010-uefi-deployments](../010-uefi-deployments/spec.md),
 [004-kernel-records](../004-kernel-records/spec.md),
 [005-blocklist-handoff](../005-blocklist-handoff/spec.md) · **Interfaces:**
@@ -299,7 +300,8 @@ systems to the boot partition, reading only, and then answers as it would have w
   over another table, the loader region over none, a larger and a smaller loader, an
   image, the override's removal, the healthy mark's slot) leaves the old item, none or
   the new one; the healthy mark, `display-retry` and the shutdown step on a raw board
-  write what the loader reads.
+  write what the loader reads, also on a baseline start under a parent (`default` and
+  `started` empty).
 - **SC-005** On the device, with the person's go and a gate written: a parent build with
   no `glassine-boot` partition on the table boots exactly as before (the floor), and with one,
   Scenarios 1, 3 and 5.
@@ -309,7 +311,6 @@ systems to the boot partition, reading only, and then answers as it would have w
 - The block-list reader in the parent (005, hub#55).
 - Writing the boot partition's raw form from the installer, and the partition-table
   change that adds it (the running system's writer is FR-022 to FR-025).
-- `reboot recovery` writing `request=recovery` on a raw board (FR-021): not built.
 - A gesture at power-on that picks the recovery (`glassine.pick=recovery` is reserved).
 - Drawing on displays the firmware can't drive (e-ink) other than through the firmware's
   own refresh (FR-006).

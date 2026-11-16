@@ -654,7 +654,7 @@ kernel (with a kexec loader) is a loader change, not a format change: an empty v
 | `glassine-bootimg` | kernel records, trial and accept on the system partition in the deployments layout; `install` defers during a deployment trial or with a staged deployment; `cancel` (new); `status` `format=1`; `rollback --limit` (`uefi`: the rollback after the loader's limit, 010 FR-013) |
 | initramfs | the kernel trial (boots current, no deployment try, no accept); the `DEVICE_PART` mount, verified before it is bound |
 | `glassine-hibernate` | exit 3 while another kernel than the running one is selected, during a kernel trial, and while `DEVICE_PART` is read-write |
-| `board.conf` | `DEVICE_PART`, `HANDOFF`, `RAMDISK_MAX`; `KERNEL`, `DTB`, `INITRAMFS` only for the plain layout |
+| `board.conf` | `DEVICE_PART`, `HANDOFF`, `BOOT_FORM`, `RAMDISK_MAX`; `KERNEL`, `DTB`, `INITRAMFS` only for the plain layout |
 
 ## When this is implemented
 

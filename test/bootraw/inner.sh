@@ -79,6 +79,16 @@ fresh $W/fat
 { head -c 82 /dev/zero; printf 'FAT32   '; head -c 420 /dev/zero; printf '\125\252'; } | dd of=$W/fat conv=notrunc 2>/dev/null
 ok "a FAT boot sector: refused (3) without --force" "$R init $W/fat 2>$W/err; [ \$? = 3 ] && grep -q 'FAT boot sector' $W/err"
 ok "a FAT boot sector with --force: the raw form" "$R init --force $W/fat 2>/dev/null && [ \"\$($M table $W/fat | head -n 1)\" = primary ]"
+# a table that doesn't read back: the backup copy's bytes flipped after its write
+export GLASSINE_BI_AFTER_PUT='[ "$2" != 16773120 ] || printf Z | dd of="$1" bs=1 seek=16773220 conv=notrunc 2>/dev/null; :'
+fresh $W/rb
+ok "init whose backup doesn't read back: 1, said, the primary not written (no table for the loader)" "$R init $W/rb 2>$W/err; [ \$? = 1 ] && grep -q 'backup table' $W/err && [ \"\$(head -c 4096 $W/rb | tr -d '\\000' | wc -c)\" = 0 ] && ! $M table $W/rb"
+cp $W/t0 $W/rb2; cp $W/rb2 $W/rb3
+ok "init --force whose backup doesn't read back: 1, the old primary as it was, the loader reads the old table" "$R init --force $W/rb2 2>/dev/null; [ \$? = 1 ] && cmp -n 4096 $W/rb2 $W/rb3 && [ \"\$($M table $W/rb2 | head -n 1)\" = primary ]"
+export GLASSINE_BI_AFTER_PUT='[ "$2" != 0 ] || printf Z | dd of="$1" bs=1 seek=100 conv=notrunc 2>/dev/null; :'
+fresh $W/rb
+ok "init whose primary doesn't read back: 1, said, the backup in use for the loader" "$R init $W/rb 2>$W/err; [ \$? = 1 ] && grep -q 'primary table' $W/err && [ \"\$($M table $W/rb | head -n 1)\" = backup ]"
+unset GLASSINE_BI_AFTER_PUT
 ok "usage: no DEV, an unknown command (2)" "$R init 2>/dev/null; [ \$? = 2 ] && { $R frob 2>/dev/null; [ \$? = 2 ]; }"
 
 # --- 2. the regions ------------------------------------------------------------------
@@ -180,6 +190,26 @@ rm -f $MR/loader-marked
 ok "shutdown: one off the count (2 -> 1), the loader reads it" "mark shutdown 2>/dev/null && [ \"\$(rec unmarked)\" = 1 ] && [ \"\$(slot)\" = 'a 3 1' ]"
 mstart drew=1 display_failed=2
 ok "display-retry: display_failed and drew cleared, unmarked as it was" "mark display-retry 2>$W/err && [ -z \"\$(rec display_failed)\" ] && [ -z \"\$(rec drew)\" ] && [ \"\$(rec unmarked)\" = 2 ] && grep -q 'display_failed=2 cleared' $W/err"
+# the Note Air's record under its parent: no default (the baseline), the loader's
+# count with started empty (core/src/plan.rs handback: started = the default's id)
+mstart default= default_rec= previous= previous_rec= recovery= recovery_rec= started= started_why=default
+ok "under a parent: healthy on a baseline start: unmarked=0" "mark healthy 2>/dev/null && [ \"\$(rec unmarked)\" = 0 ]"
+mstart default= default_rec= previous= previous_rec= recovery= recovery_rec= started= started_why=default
+echo "BOOT_IMAGE=vmlinuz glassine.img=feedfacefeedface" > $MW/cmdline
+ok "under a parent: shutdown on a baseline start (an image id neither slot names): one off (2 -> 1)" "mark shutdown 2>/dev/null && [ \"\$(rec unmarked)\" = 1 ]"
+mstart default= default_rec= previous= previous_rec= recovery= recovery_rec= started= started_why=default
+echo "BOOT_IMAGE=vmlinuz glassine.img=$RUNSET" > $MW/cmdline
+ok "under a parent: a baseline start, but this boot runs the set the other slot names: nothing written" "mark shutdown 2>/dev/null && cmp -s $MI $W/m0"
+mstart default= default_rec= previous= previous_rec= recovery= recovery_rec= started= started_why=default
+echo "BOOT_IMAGE=vmlinuz" > $MW/cmdline
+ok "under a parent: shutdown on a baseline start with no glassine.img=: one off" "mark shutdown 2>/dev/null && [ \"\$(rec unmarked)\" = 1 ]"
+echo "BOOT_IMAGE=vmlinuz glassine.img=$RUNSET" > $MW/cmdline
+mstart default= default_rec= previous= previous_rec= recovery= recovery_rec= started= started_why=default trial=abcdefabcdefabcd
+echo "BOOT_IMAGE=vmlinuz glassine.img=abcdefabcdefabcd" > $MW/cmdline
+ok "under a parent: a baseline start, but this boot runs the record's trial set: nothing written" "mark shutdown 2>/dev/null && cmp -s $MI $W/m0"
+echo "BOOT_IMAGE=vmlinuz glassine.img=$RUNSET" > $MW/cmdline
+mstart default= default_rec= started= started_why=request
+ok "under a parent: started empty but not by default (a request): nothing written" "mark shutdown 2>/dev/null && cmp -s $MI $W/m0"
 mstart
 ok "glassine-deploy-accept on a raw board: the healthy mark written" "menv sh /p/sbin/glassine-deploy-accept > $W/out 2>&1 && [ \"\$(rec unmarked)\" = 0 ] && grep -q 'healthy mark written (unmarked 2 -> 0)' $W/out"
 # only slot a valid, slot b never written (zeros): the write goes to b
