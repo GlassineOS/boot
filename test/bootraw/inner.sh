@@ -191,8 +191,12 @@ rm -f $MR/loader-marked
 ok "shutdown: one off the count (2 -> 1), the loader reads it" "mark shutdown 2>/dev/null && [ \"\$(rec unmarked)\" = 1 ] && [ \"\$(slot)\" = 'a 3 1' ]"
 mstart drew=1 display_failed=2
 ok "display-retry: display_failed and drew cleared, unmarked as it was" "mark display-retry 2>$W/err && [ -z \"\$(rec display_failed)\" ] && [ -z \"\$(rec drew)\" ] && [ \"\$(rec unmarked)\" = 2 ] && grep -q 'display_failed=2 cleared' $W/err"
-# the one-shot requests (boot-partition.md "Keys", handback.md "The start menu", 012 FR-021)
+# the one-shot requests (boot-partition.md "Keys", handback.md "The start menu", 012 FR-021);
+# mstartl: a start whose region loader holds a loader (a request is written only then)
+mstartl() { mstart "$@"; $R loader $MI $W/l5000 2>/dev/null; cp $MI $W/m0; }
 mstart
+ok "request menu, recovery with no loader in the region: 3, said, nothing written (the parent would boot its baseline)" "mark request menu 2>$W/err; a=\$?; mark request recovery 2>/dev/null; [ \$a\$? = 33 ] && grep -q 'holds no loader' $W/err && cmp -s $MI $W/m0"
+mstartl
 ok "can-request menu, recovery on a raw board: 0, nothing written; a board with no record: 3" "mark can-request menu && mark can-request recovery && cmp -s $MI $W/m0 && { MBOARD=$MW/board.none mark can-request menu; [ \$? = 3 ]; }"
 ok "can-request needs no partition (board key only)" "MDEV='' GLASSINE_BI_BOOTPART_DEV= mark can-request menu"
 ok "request menu on a board with no loader record: 3, said, nothing written" "MBOARD=$MW/board.none mark request menu 2>$W/err; [ \$? = 3 ] && grep -q 'keeps no loader record' $W/err && cmp -s $MI $W/m0"
@@ -205,9 +209,9 @@ ok "request recovery replaces it (the person's last choice)" "mark request recov
 ok "request clear: the loader reads no request" "mark request clear 2>$W/err && [ -z \"\$(rec request)\" ] && grep -q 'request=recovery cleared' $W/err"
 cp $MI $W/m1
 ok "request clear with none: nothing written" "mark request clear 2>/dev/null && cmp -s $MI $W/m1"
-mstart request=trial
+mstartl request=trial
 ok "a kernel trial requested: request menu and clear refused (1), said, the trial kept" "! mark request menu 2>$W/err && grep -q 'kernel trial is requested' $W/err && ! mark request clear 2>/dev/null && cmp -s $MI $W/m0"
-mstart
+mstartl
 { flock 9; LOCK_WAIT=0 mark request menu 2>$W/err; lr=$?; flock -u 9; } 9>>$MS/state/.lock
 ok "request with the state lock held by another writer: 6, nothing written" "[ $lr = 6 ] && cmp -s $MI $W/m0"
 export GLASSINE_BI_AFTER_PUT='[ "$2" = 65536 ] && printf Z | dd of="$1" bs=1 seek=65600 conv=notrunc 2>/dev/null; :'
@@ -266,6 +270,7 @@ rec = [(k, v) for k, v in rec if k not in ('request', 'check')] + [('request', '
 b = lm.text(rec).encode(); b += b'\n' * (16384 - len(b))
 with open(sys.argv[1], 'r+b') as f: f.seek(off); f.write(b)
 EOF2
+$R loader $MI $W/l5000 2>/dev/null
 ok "request=menu in the only valid slot (the loader won't take it): request menu writes slot b, both valid" "[ \"\$(slot)\" = 'a 1 0' ] && [ \"\$(rec request)\" = menu ] && mark request menu 2>/dev/null && [ \"\$(slot)\" = 'b 2 1' ] && [ \"\$(rec request)\" = menu ]"
 cp $W/m0 $MI; printf 'format=1\nseq=1\n' | dd of=$MI bs=1 seek=$((65536 + 16384)) conv=notrunc 2>/dev/null
 ok "slot b cut over zeros (a record's start, then zeros): not valid, written over" "mark healthy 2>/dev/null && [ \"\$(slot)\" = 'b 2 1' ] && [ \"\$(rec unmarked)\" = 0 ]"
@@ -484,7 +489,7 @@ done
 ok "the mark killed inside its slot: the partition is the replay's; the loader reads the old count, or the new one once its record is whole" "[ $rc_ok = 1 ]"
 
 # the record's slot: a request (request menu)
-mstart; cp $MI $W/r0
+mstartl; cp $MI $W/r0
 QENV="env GLASSINE_BI_BOOTPART_DEV=$T GLASSINE_DEPLOY_CONF=$MW/conf GLASSINE_BI_SYSTEM=$MS GLASSINE_BI_CMDLINE=$MW/cmdline GLASSINE_BI_BOARD=$MW/board.raw GLASSINE_BI_RUN_DIR=$MR"
 ok "request menu, cut at every byte of its slot: the old record or the new, by the loader's rules" "replay $W/r0 record $QENV sh /p/sbin/glassine-loader-mark request menu && grep -q 'bad=0' $W/replay && grep -q 'none=0' $W/replay && grep -q 'final=new' $W/replay"
 echo "     $(cat $W/replay)"

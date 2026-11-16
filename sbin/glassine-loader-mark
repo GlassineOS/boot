@@ -40,7 +40,9 @@
 #                                      board.conf, writes nothing (the desktop's
 #                                      check before it offers the entry)
 #
-# A request is written last, alone, by gp_write, then the record is read again:
+# Under a parent (BOOT_FORM=raw) a request is written only when the region loader
+# holds a valid loader (else exit 3: the parent would boot its baseline and leave the
+# request for a later start). A request is written last, alone, by gp_write, then the record is read again:
 # it counts only when both slots are valid and the record in use holds it (the
 # loader takes a request only from such a record). A kernel trial's request
 # (request=trial) is glassine-bootimg's: neither replaced nor cleared here.
@@ -191,6 +193,14 @@ request)
         say "a kernel trial is requested (glassine-bootimg reboot-test): request $what not written; glassine-bootimg cancel takes the trial back"
         exit 1
     fi
+    # under a parent, a request only the loader acts on: with no loader in the region the
+    # parent boots its baseline, and the request would wait for a later start
+    if [ -n "$want" ] && [ "$kind" = raw ] && ! gr_item loader "$GP_TMP/glassine-bootpart.ldr.$$"; then
+        rm -f "$GP_TMP/glassine-bootpart.ldr.$$"
+        say "the boot partition holds no loader ($GR_WHY): the parent wouldn't act on request=$want; nothing written"
+        exit 3
+    fi
+    rm -f "$GP_TMP/glassine-bootpart.ldr.$$"
     if [ "$cur" = "$want" ] && { [ -z "$want" ] || [ "$GP_BOTH" = 1 ]; }; then
         say "request: the record holds request=$cur already: nothing written"
     elif ! gp_write "$GP_DIR" "request=$want"; then

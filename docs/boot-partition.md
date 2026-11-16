@@ -218,8 +218,10 @@ write; the loader runs when no system does.
   record that changes `request` alone, under the state lock, then a read of the record
   again: the request counts only when the record in use holds it and both slots are valid,
   the record the loader takes a request from. A request already there with both slots
-  valid is not written again. A board without a loader record, and for `menu` any board but
-  the raw form, refuses with exit 3 before anything is written (`glassine-loader-mark
+  valid is not written again. A board without a loader record, for `menu` any board but
+  the raw form, and on the raw form a partition whose region `loader` holds no valid loader
+  (the parent would boot its baseline and leave the request for a later start) refuse
+  with exit 3 before anything is written (`glassine-loader-mark
   can-request` asks the same with no write, for the desktop's entry). A `request=trial` is
   `glassine-bootimg`'s: never replaced or cleared by these. `reboot menu` writes nothing
   and doesn't reboot when the request isn't written, and takes the request back when the
