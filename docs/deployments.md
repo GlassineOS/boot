@@ -465,7 +465,7 @@ trial boot and a boot that fails a health check write none; the failure is noted
 the start as one that never became healthy. The write is `glassine-loader-mark healthy`
 (`GLASSINE_LOADER_MARK` in tests), in its own process, before the deployment accept; a
 failing write is logged and does not stop the accept. On a hand-off without a loader
-record (`blocklist`, `abl`, none) nothing changes: the accept doesn't even wait when
+record (`bootpart-test`, `blocklist`, empty) nothing changes: the accept doesn't even wait when
 there is no candidate and no slot to mark.
 
 **The recovery's keep marker:** every command that opens userdata read-write creates
