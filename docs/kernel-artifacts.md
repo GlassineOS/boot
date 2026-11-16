@@ -398,7 +398,14 @@ In an image record, `reason` is `no-boot` (the trial never reached the initramfs
 failed and the old image went back), or the health check's own. `seeded=1` marks the
 record of the first `current_img`: after the migration nothing names the running image,
 so the first accept or `rollback` records the default slot's image, if it is a boot
-image with a `glassine.img=` whose kernel is release `current`.
+image with a `glassine.img=` whose kernel is release `current`. Its record names
+`device`, `kernel` (= `current`) and the `boot/` files the image was packed from, found
+by their bytes: `dtb`, the `boot/dtb/<DEVICE>@<id>.dtb` that is the tail of the
+image's kernel area (the packer appends it), and `initramfs`, the
+`boot/initramfs/<commit12>@<id>.cpio.gz` that starts its ramdisk; each only with its
+manifest beside it, else empty. On a fresh installation the pool brings exactly those
+files ([images](https://github.com/GlassineOS/images) `pool-image`), so the seed names
+them and `bases remove` keeps them.
 
 On `uefi` the image is the set's assembled `initrd`, and the record also has
 `kernel_sha256`, `kernel_size` (of `modules/<release>/vmlinuz`) and `set_rec` (the
@@ -611,8 +618,10 @@ own: the image record's checksum covers the assembled file, which is kept as
 2. `glassine-bootimg install <release> [--dtb <device>@<id>] [--initramfs <commit12>@<id>]`:
    checks, makes it the candidate, hands it off. An update passes all three from the
    device's `select/<device>` (below). Without the flags, the device tree and the
-   initramfs are the ones in `current_img`'s boot record; neither there: refused, naming
-   the flag. Board key `DEVICE` is required, and a device tree for another device is
+   initramfs are the ones in `current_img`'s boot record; with no `current_img` yet (a
+   fresh installation, before the first accept seeds it), the ones the default slot's
+   image was packed from, found as the seed finds them (nothing is written for that);
+   neither there: refused, naming the flag. Board key `DEVICE` is required, and a device tree for another device is
    refused. Names must have their form: `<device>@<hex>` and `<hex>@<hex>` (a bare hex
    initramfs commit is accepted from records written before the id).
 3. The trial, then accept (writes `state/kernel`). Modules of current, previous, the

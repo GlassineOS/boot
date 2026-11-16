@@ -734,24 +734,59 @@ gk_fail() {
     gk_prune
 }
 
+# gk_seed_parts PAGE KSIZE: the boot/ files the image in RAM (GK_RAM, header v0)
+# was packed from, by their bytes (the packer appends the device tree to the
+# kernel and puts the initramfs first in the ramdisk): _sdtb, a DEVICE@ID whose
+# .dtb is the kernel area's tail, and _sird, a COMMIT12@ID whose .cpio.gz starts
+# the ramdisk; each only with its manifest beside it, else empty
+gk_seed_parts() {
+    _sdtb='' _sird=''
+    _rs=$(gk_u32 "$GK_RAM" 16) _ro=$((1 + ($2 + $1 - 1) / $1))
+    for _f in "$SYS"/boot/dtb/"$DEVICE"@*.dtb; do
+        [ -n "$DEVICE" ] && [ -r "$_f" ] && [ -r "${_f%.dtb}.manifest" ] || continue
+        _z=$(stat -c %s "$_f")
+        [ "$_z" -gt 0 ] && [ "$_z" -le "$2" ] || continue
+        if dd if="$GK_RAM" bs="$1" skip=1 2>/dev/null | head -c "$2" | tail -c "$_z" | cmp -s - "$_f"; then
+            _sdtb=${_f##*/}; _sdtb=${_sdtb%.dtb}; break
+        fi
+    done
+    for _f in "$SYS"/boot/initramfs/*@*.cpio.gz; do
+        [ -r "$_f" ] && [ -r "${_f%.cpio.gz}.manifest" ] || continue
+        _z=$(stat -c %s "$_f")
+        [ "$_z" -gt 0 ] && [ "$_z" -le "$_rs" ] || continue
+        if dd if="$GK_RAM" bs="$1" skip="$_ro" 2>/dev/null | head -c "$_z" | cmp -s - "$_f"; then
+            _sird=${_f##*/}; _sird=${_sird%.cpio.gz}; break
+        fi
+    done
+}
+
 # gk_seed: FR-015. With no current_img, the image in RAM (the default slot's)
 # becomes the current one's record if it is a boot image with a glassine.img=
-# whose kernel is release `current` (the packer's --expect-release check).
+# whose kernel is release `current` (the packer's --expect-release check). The
+# record names the device tree and initramfs in boot/ it was packed from
+# (gk_seed_parts), so a later install needs no flags and the prune keeps them.
 # Prints its id; nothing when it doesn't qualify.
-gk_seed() {
-    [ -n "$GK_RAM" ] || return 0
+# gk_seed_ok: GK_RAM is a seedable image (a glassine.img= and a kernel of release
+# `current`); sets _id, _cur, _ps (page size), _ks (kernel size); 1 = not, logged
+gk_seed_ok() {
+    [ -n "$GK_RAM" ] || return 1
     _id=$(gk_hdr_id "$GK_RAM") _cur=$(k current)
-    [ -n "$_id" ] && [ -n "$_cur" ] || { log "seed: the default slot's image has no glassine.img=, or no current release: no rollback until the next accept"; return 0; }
+    [ -n "$_id" ] && [ -n "$_cur" ] || { log "seed: the default slot's image has no glassine.img=, or no current release: no rollback until the next accept"; return 1; }
     _ps=$(gk_u32 "$GK_RAM" 36) _ks=$(gk_u32 "$GK_RAM" 8)
     if ! dd if="$GK_RAM" bs="$_ps" skip=1 2>/dev/null | head -c "$_ks" | gunzip -c 2>/dev/null | grep -aqF "Linux version $_cur "; then
         log "seed: the default slot's kernel is not release $_cur: not recorded, no rollback until the next accept"
-        return 0
+        return 1
     fi
+}
+
+gk_seed() {
+    gk_seed_ok || return 0
+    gk_seed_parts "$_ps" "$_ks"
     cp "$GK_RAM" "$BI/$_id.img.tmp" && mv -f "$BI/$_id.img.tmp" "$BI/$_id.img" || { rm -f "$BI/$_id.img.tmp"; log "seed: cannot write $BI/$_id.img"; return 0; }
-    printf 'format=1\nid=%s\nrelease=%s\nsize=%s\nsha256=%s\nstaged=%s\nreason=\nseeded=1\ndevice=\nkernel=\ndtb=\ninitramfs=\ncmdline=\nboard=\n' \
-        "$_id" "$_cur" "$(stat -c %s "$GK_RAM")" "$(gk_sha "$GK_RAM")" "$(gk_utc)" | gs_write "$BI/$_id.manifest" ||
-        { rm -f "$BI/$_id.img"; log "seed: cannot write $BI/$_id.manifest"; return 0; }
-    log "seed: the default slot's image $_id (release $_cur) recorded as the current one (seeded=1)"
+    printf 'format=1\nid=%s\nrelease=%s\nsize=%s\nsha256=%s\nstaged=%s\nreason=\nseeded=1\ndevice=%s\nkernel=%s\ndtb=%s\ninitramfs=%s\ncmdline=\nboard=\n' \
+        "$_id" "$_cur" "$(stat -c %s "$GK_RAM")" "$(gk_sha "$GK_RAM")" "$(gk_utc)" "$DEVICE" "$_cur" "$_sdtb" "$_sird" |
+        gs_write "$BI/$_id.manifest" || { rm -f "$BI/$_id.img"; log "seed: cannot write $BI/$_id.manifest"; return 0; }
+    log "seed: the default slot's image $_id (release $_cur) recorded as the current one (seeded=1; device tree ${_sdtb:-not in boot/}, initramfs ${_sird:-not in boot/})"
     echo "$_id"
 }
 
@@ -841,6 +876,18 @@ gk_install() {
     _clash=$(gk_seed_clash "$_md/kernel.manifest")
     [ -z "$_clash" ] || die "install $_rel: the kernel's firmware provides files the device seed holds:$_clash (the seed's copy would win; the device package must drop them from its list)"
 
+    # no current image yet (a fresh installation) and a flag left out: the device
+    # tree and initramfs the default slot's image was packed from, as the seed
+    # (FR-015) will record them at the first accept; nothing is written here
+    if [ "$HANDOFF" != uefi ] && [ -z "$(k current_img)" ] && { [ -z "$_dtb" ] || [ -z "$_ird" ]; }; then
+        _sdtb='' _sird=''
+        if gk_ram "$DEFDEV" && gk_seed_ok; then
+            gk_seed_parts "$_ps" "$_ks"
+            [ -n "$_dtb" ] || _dtb=$_sdtb
+            [ -n "$_ird" ] || _ird=$_sird
+        fi
+        rm -f "$GK_RAM"; GK_RAM=''
+    fi
     # the device tree and the initramfs (FR-005)
     # no --dtb: the tree of the running image (the device's update names a new one)
     _cimg=$(k current_img)
