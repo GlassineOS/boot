@@ -7,7 +7,8 @@
 [008-recovery](../008-recovery/spec.md), [009-first-start](../009-first-start/spec.md) ·
 **Interfaces:** [docs/deployments.md](../../docs/deployments.md) (`glassine-deploy`, the
 deployment state), [docs/kernel-artifacts.md](../../docs/kernel-artifacts.md) (kernel
-records, the trial), installer
+records, the trial), [docs/boot-partition.md](../../docs/boot-partition.md) (the boot
+partition's layout, the loader record, a kernel set, the splash store), installer
 [`devices/uefi-pc.toml`](https://github.com/GlassineOS/installer/blob/main/devices/uefi-pc.toml)
 (the partitions and boot settings an install makes) · **Decisions:** docs
 [0007](https://github.com/GlassineOS/docs/blob/main/docs/decisions/0007-recovery-mainline-twrp.md),
@@ -44,7 +45,7 @@ entry, however many deployments and kernels there are.
 | default set | The kernel set of the current kernel record. It starts when nothing else is asked for. |
 | previous set | The kernel set of the previous kernel record. |
 | trial set | The kernel set of the kernel candidate. |
-| loader record | The small file on the boot partition that tells the loader what to start: the default set, the previous set, a one-shot request, the count of starts not yet marked healthy. |
+| loader record | The record on the boot partition that tells the loader what to start: the default set, the previous set, a one-shot request, the count of starts not yet marked healthy. It is kept in two slots, so one of them is always whole. |
 | healthy mark | The running system's statement, on the boot partition, that this start reached a healthy system. |
 | our entry | The one firmware boot entry the installer made for GlassineOS. |
 
@@ -132,10 +133,11 @@ the next start without a choice runs the current deployment again.
   holds the loader, the loader record, the default set, the previous set (when there
   is one), at most one trial set, and the recovery image. It holds nothing of the
   person's and no secret.
-- **FR-002** The kernel records, the kernels, initramfs files and command lines they are
-  made from stay on the system partition, the same as on every machine (004). The boot
-  partition is a copy made from them. Every file on it can be made again from the system
-  partition and the recovery's own record, with no network.
+- **FR-002** The kernel records, the kernels, the initramfs of every kernel set as it
+  was assembled and the command lines stay on the system partition, the same as on
+  every machine (004). The boot partition is a copy made from them. Every file on it can
+  be made again from the system partition and the recovery's own record, by copying,
+  with no network.
 - **FR-003** GlassineOS creates exactly one firmware boot entry. A deployment, a base or
   a kernel never adds, removes or renames a firmware boot entry. Entries the firmware
   makes by itself (for the removable-media path of FR-034, for example) are the
@@ -144,22 +146,28 @@ the next start without a choice runs the current deployment again.
   searches other disks or partitions for kernel sets, so a second GlassineOS disk, or an
   install medium, is never mixed in.
 - **FR-005** The command line of every kernel set carries the unique identity of this
-  installation's system partition and userdata, so the initramfs never picks another
-  disk's. A kernel set without them is not written to the boot partition.
+  installation's system partition and userdata (`glassine.system=`,
+  `glassine.userdata=`; [boot.md](../../docs/boot.md#command-line-keys)), so the
+  initramfs never picks another disk's. A kernel set without them is not written to the
+  boot partition.
 
 ### The loader
 
 - **FR-006** With no request and the count of unmarked starts within the limit, the
   loader starts the default set.
 - **FR-007** Before it starts a kernel set, the loader checks that the set is complete
-  and matches the checksums the loader record names. A set that fails the check is not
-  started; the loader goes on to the next choice: the default set, then the previous
-  set, then the recovery.
-- **FR-008** A loader record that is missing, cut or fails its own check counts as
-  absent. The record it replaced is kept until the new one is durable, and the loader
-  uses that one instead, without its request. With no valid record at all, the loader
-  starts the recovery, which has a fixed name. It never starts a trial set without a
-  valid record that requests it.
+  and matches the checksums the loader record names: the record names the set's own
+  record by its checksum, and that names the kernel and the initramfs by theirs. The
+  loader reads both files whole, checks them, and starts the kernel with exactly the
+  bytes it checked; the kernel reads nothing from the boot partition after that. A set
+  that fails the check is not started; the loader goes on to the next choice: the
+  default set, then the previous set, then the recovery.
+- **FR-008** A slot of the loader record that is missing, cut or fails its own check
+  counts as absent. A write goes only to the slot that is not in use, so the record it
+  replaces stays whole until the new one is durable, and the loader uses that one
+  instead, without its request. With no valid slot at all, the loader starts the
+  recovery, which it finds in its fixed place by the recovery's own record. It never
+  starts a trial set without a valid record that requests it.
 - **FR-009** A one-shot request (the trial set, or the recovery) is removed from the
   loader record before the loader acts on it, and the removal is durable. If the loader
   can't write the boot partition, it doesn't start a trial set: it starts the default
@@ -169,8 +177,10 @@ the next start without a choice runs the current deployment again.
   a trial set the default set.
 - **FR-011** The loader counts every start of the default set and the previous set in
   the loader record before it starts the set. The count is cleared by the healthy mark.
-  When the count passes the limit, the next start uses the previous set; the start
-  after that uses the recovery. With no previous set, the recovery comes at once.
+  When the count has reached the limit, the next start uses the previous set; the start
+  after that uses the recovery. With no previous set, the recovery comes at once. The
+  loader records which set it started and why, so the running system can tell a start
+  the limit caused (FR-013).
 - **FR-012** A start that ends in an orderly shutdown or restart is taken out of the
   count again, unless it was a bare boot or a health check failed in it. So a person
   who switches the PC on and off for short sessions never reaches the recovery by
@@ -200,17 +210,16 @@ the next start without a choice runs the current deployment again.
 
 ### The form of the loader's state
 
-- **FR-019** "The loader record" names what the loader must keep, not one file. Any
-  form qualifies in which each change the loader or the running system makes is one
-  step that a power cut leaves done or not done (on FAT: the rename of one file), and
-  in which a damaged state is told from a valid one.
-- **FR-020** A loader that keeps its counts in the names of its entries, as the Boot
-  Loader Specification describes boot counting, qualifies when all of this holds: it
-  takes a try off before it starts the entry; an entry with no tries left is never
-  started by itself and never becomes the default; the entry that starts by default is
-  the accepted one, with no key pressed; the "mark good" half is a step GlassineOS's
-  own boot-success and kernel verdict make (FR-022, FR-023), since no base ships
-  another system's service for it; and FR-007 to FR-017 hold as written.
+- **FR-019** The loader record has one form, which the loader, the installer, the
+  running system and the recovery share
+  ([boot-partition.md](../../docs/boot-partition.md#the-loader-record)): a text record
+  with a format version, a sequence number and its own check value, kept in two slots of
+  fixed size. FAT has no step that replaces a file whole, so each change is one write of
+  the slot that is not in use. A power cut at any byte of it leaves the slot in use
+  untouched and the other one either whole or told as damaged by its check.
+- **FR-020** Every key of the loader record has its writers
+  ([boot-partition.md](../../docs/boot-partition.md#keys)). A writer changes only its
+  own keys and carries every other key over as it read it.
 
 ### The running system's side
 
@@ -231,6 +240,12 @@ the next start without a choice runs the current deployment again.
 - **FR-025** The kernel hand-off of this platform is one more hand-off kind of 004
   (`HANDOFF=uefi`; 004 FR-007 and "Hand-off kinds"): a trial set is written to the boot
   partition next to the default set, never over it, and the request is written last.
+  `install` assembles the set's initramfs, keeps it with the record on the system
+  partition, writes the set to the boot partition and names it in the loader record as
+  the trial set; `reboot-test` writes the request. Accept, rollback, cancel and a failed
+  trial each change the loader record in one write, and a set nothing names any more is
+  removed after it
+  ([boot-partition.md](../../docs/boot-partition.md#who-assembles-a-set)).
   Accept, rollback and repair change the default set under 004's rules for a
   default-slot write that hold for every kind (004 FR-009, FR-010: the write is named in
   the kernel state before it starts, and a start in the middle is a finishing boot). The
@@ -240,7 +255,8 @@ the next start without a choice runs the current deployment again.
   work.
 - **FR-049** A PC's kernel may build the drivers of its disks and the file systems the
   start needs as modules, which live on the system partition they are needed to reach.
-  So every kernel set carries, after its initramfs, that kernel's boot modules: its own
+  So every kernel set's initramfs carries, after the GlassineOS initramfs and the
+  board's configuration, that kernel's boot modules: its own
   modules for NVMe disks (and the controller in front of them), SATA, eMMC, USB disks
   and virtual disks, for the btrfs, ext4 and overlay file systems, and every module
   these depend on, hard or soft (btrfs's checksums), taken from that kernel's modules
@@ -253,14 +269,19 @@ the next start without a choice runs the current deployment again.
   - A kernel that has btrfs, ext4 or overlay neither built in nor as a module gets no
     kernel set.
   - The initramfs itself is the same file for every kernel (004): only the boot modules
-    are the kernel's.
+    and the microcode are the kernel's.
+- **FR-050** A kernel that ships CPU microcode has it applied at every start: its
+  microcode comes first in the kernel set's initramfs, before the GlassineOS initramfs,
+  in the form the kernel loads early. The order of a set's initramfs is in
+  [boot-partition.md](../../docs/boot-partition.md#files).
 
 ### Writing the boot partition safely
 
-- **FR-027** A file the next start may need is never changed in place. A new file is
-  written under a new name, synced and read back against its checksum; only then does
-  one step (the replacement of the loader record) make the loader use it. Old files are
-  removed after that step is durable.
+- **FR-027** A file of a kernel set or of the recovery image is never changed in place.
+  A new file is written under a new name, synced and read back against its checksum;
+  only then does one step (a write of the loader record, FR-019) make the loader use
+  it. Old files are removed only after both slots of the loader record have stopped
+  naming them.
 - **FR-028** Before any write, the free space is checked against what the write needs
   plus the loader record's own room. Too little: the command refuses, writes nothing
   and says how much is needed and free. It never removes the default set, the previous
@@ -308,9 +329,10 @@ the next start without a choice runs the current deployment again.
 
 ### The recovery on a PC
 
-- **FR-037** The recovery image is one file on the boot partition that the loader starts
-  like a kernel set, with its own record and checksum. It runs from memory (008 FR-001)
-  and needs nothing from the system partition to start.
+- **FR-037** The recovery image is on the boot partition in the form of a kernel set,
+  in a place of its own, and the loader starts it like one. Its record carries its own
+  check value, so the loader can find and check the recovery with no loader record. It
+  runs from memory (008 FR-001) and needs nothing from the system partition to start.
 - **FR-038** The recovery is updated like a kernel set: the new image next to the old
   one, checked, then named in the loader record. A cut update leaves the old one in
   use.
@@ -335,13 +357,15 @@ the next start without a choice runs the current deployment again.
   starts its layer from empty.
 - **FR-041** The loader has the list from the loader record. The running system and the
   recovery write it there whenever a command changes which deployments exist or what
-  they are (switch, accept, select, rollback, remove), under FR-027. The loader can't
+  they are (switch, accept, select, rollback, remove), under FR-019. The loader can't
   read the system partition, so the list may be out of date; FR-043 covers that.
 - **FR-042** A deployment picked in the list is a one-shot request to the initramfs,
   passed with this start only (on the kernel command line). The loader writes nothing
   for it: not to the boot partition, not to a firmware variable. A power cut, a reset or
   the next start without a choice therefore has no request, and the ordinary pick
-  applies. The request is the only thing the loader adds to a kernel set's command line.
+  applies. The request (`glassine.deploy.once=`;
+  [boot.md](../../docs/boot.md#command-line-keys)) is the only thing the loader adds to
+  a kernel set's command line.
 - **FR-043** With a request, the initramfs starts that deployment in place of the pick
   of 001 FR-005, for this start only. `state/deploy` is not written: current stays
   current, the requested deployment is no candidate, and no deployment try is used or
@@ -367,26 +391,29 @@ the next start without a choice runs the current deployment again.
 
 - **The boot partition**: `glassine-boot`, FAT, created by the installer, owned whole by
   GlassineOS. Identified by its unique partition identity.
-- **The loader record**: format version, the default set and the previous set (ids and
-  checksums), a one-shot request, the count of unmarked starts, the list of
-  deployments that can be chosen at start-up, its own check value;
-  in one file or another form FR-019 allows.
-  Read and written by the loader, `glassine-bootimg`, the boot-success step and the
-  recovery.
-- **A kernel set**: the files of one 004 image record, on the boot partition under names
-  made from the record's id, so a set once written never changes.
+- **The loader record**: format version, sequence number, the default set, the
+  previous set and the trial set (ids and checksums), the recovery image, a one-shot
+  request, the count of unmarked starts, the set started last and why, the list of
+  deployments that can be chosen at start-up, its own check value; in two slots.
+  Read and written by the loader, the installer, `glassine-bootimg`, `glassine-deploy`,
+  the boot-success and shutdown steps, and the recovery.
+- **A kernel set**: the files of one 004 image record (the kernel, the assembled
+  initramfs, the set's record), on the boot partition in a directory named by the
+  record's id, so a set once written never changes.
 - **Our entry**: label, the boot partition's identity, the loader's path.
 
 ## Contracts
 
 | Contract | Owned / consumed | Version | Spec location |
 |---|---|---|---|
-| The loader record | owned (new) | `format=1` | to be added to `docs/kernel-artifacts.md` |
-| The boot partition's layout and fixed names | owned (new); consumed by the installer's `write-boot-files` step and its repair | `format=1` | to be added to `docs/kernel-artifacts.md` |
-| The one-shot deployment request to the initramfs | owned (new); device-neutral | a command-line key | `docs/boot.md`, 001 FR-005 |
-| The deployment list in the loader record | owned (new) | part of the loader record | to be added to `docs/kernel-artifacts.md` |
-| The healthy mark | owned (new); written by the boot-success step on every healthy boot | part of the loader record | `docs/deployments.md` |
-| The boot modules of a kernel set (FR-049) | owned (new); consumed by whatever makes kernel sets (images, the boot partition's writer) | the archive's layout, unversioned (the initramfs reads the load list of its release) | `docs/boot.md` ("Boot modules"), `docs/kernel-artifacts.md` ("Packing") |
+| The loader record | owned (new); read and written by the loader, the installer, the running system and the recovery | `format=1` | `docs/boot-partition.md`, "The loader record" |
+| The boot partition's layout and fixed names | owned (new); consumed by the loader, the installer's `write-boot-files` step and its repair | `format=1` | `docs/boot-partition.md`, "Layout" |
+| A kernel set: its files, the order of its initramfs, its record and id | owned (new); consumed by the loader and the installer | `format=1` | `docs/boot-partition.md`, "A kernel set" |
+| The identities on the command line | owned (new); written by whatever makes a kernel set, read by the initramfs | two command-line keys | `docs/boot.md`, "Command-line keys" |
+| The one-shot deployment request to the initramfs | owned (new); device-neutral | a command-line key | `docs/boot.md`, "Command-line keys"; 001 FR-005 |
+| The deployment list in the loader record | owned (new) | part of the loader record | `docs/boot-partition.md`, "Keys" |
+| The healthy mark | owned (new); written by the boot-success step on every healthy boot | part of the loader record | `docs/boot-partition.md`, "Keys"; `docs/deployments.md`, "Accepting a candidate" |
+| The boot modules of a kernel set (FR-049) | owned (new); consumed by whatever makes kernel sets (the installer, the boot partition's writer) | the archive's layout, unversioned (the initramfs reads the load list of its release) | `docs/boot.md` ("Boot modules"), `docs/kernel-artifacts.md` ("Packing") |
 | The hand-off kind `uefi` in `HANDOFF` | owned (added value; 004 FR-007) | 004's records, unchanged | `docs/kernel-artifacts.md` |
 | `state/deploy`, `state/kernel`, `glassine-deploy` | owned (unchanged) | state `version=1`, porcelain 1 | `docs/deployments.md` |
 | Firmware boot entries and boot order | consumed; written by the installer (`add-boot-entry`) and the repair | UEFI | installer 002 |
@@ -409,8 +436,9 @@ the next start without a choice runs the current deployment again.
 
 ## Edge cases
 
-- **Power cut while the loader record is replaced:** the old record or the new one is
-  read, whole. A record that is neither is absent (FR-008).
+- **Power cut while the loader record is written:** the slot in use was not touched, so
+  the old record is read, whole; once the write is durable, the new one. A slot that is
+  neither is absent (FR-008).
 - **Power cut after the loader counted a start and before the kernel ran:** one start is
   counted that never ran. The limit absorbs it; it can't select a trial set.
 - **Power cut during a trial:** the request is already gone, so the next start is the
@@ -518,8 +546,8 @@ Each is a test in QEMU with OVMF unless it says otherwise.
   installer's.
 - The recovery of 008 exists for x86-64 as one image; its screen and keys on a PC are
   008's (008 FR-006).
-- The loader is a program GlassineOS builds or packages for the release. Which one is
-  the plan's choice, measured against FR-006 to FR-020; none is named here.
+- The loader is a program GlassineOS builds for the release. It reads and writes the
+  loader record of FR-019, so it is no other system's loader, packaged.
 - x86-64 only. Other UEFI machines (arm64 PCs) follow this spec once they have a
   description.
 
@@ -531,5 +559,5 @@ Each is a test in QEMU with OVMF unless it says otherwise.
 - Starting another system from the loader.
 - Network boot, and firmware updates.
 - The installer's steps, plan and backup (installer 001, 002).
-- Building the loader, the kernel sets and the recovery image (the plan, and
-  GlassineOS/images).
+- Building the loader and the recovery image, and the parts a release's first kernel set
+  is assembled from (the plan, and GlassineOS/images).
