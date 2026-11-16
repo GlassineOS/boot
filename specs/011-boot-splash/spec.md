@@ -38,8 +38,9 @@ earliest and where that stage reads the images (a PC: the loader and the boot pa
 
 **Given** a splash the system set,
 **When** the machine starts,
-**Then** the earliest stage draws it, and it stays, with no text over it and no blank
-frame, until the system draws.
+**Then** the earliest stage draws it, and it stays, with no blank frame, until the system
+draws. The only text over it is the earliest stage's own line naming the recovery key
+(FR-016a), and the picture under that line comes back when the line goes.
 
 ### Scenario 2 – An override is shown once (P1)
 
@@ -122,9 +123,14 @@ and an override that says to leave the screen,
 
 - **FR-016** From the earliest stage's drawing to the system's first frame, no stage
   shows another frame, clears the screen, writes text over it or shows a cursor: not the
-  earliest stage after drawing, not the kernel when it takes the display over, not the
-  initramfs. Where a display driver must set the mode again and the machine can't avoid
-  a blank, the blank is as short as the machine allows and is the only change.
+  earliest stage after drawing (apart from FR-016a), not the kernel when it takes the
+  display over, not the initramfs. Where a display driver must set the mode again and
+  the machine can't avoid a blank, the blank is as short as the machine allows and is
+  the only change.
+- **FR-016a** The earliest stage may show one line naming its recovery key over the
+  splash or the override, for its wait only (about two seconds). When the wait ends, it
+  restores the picture under the line pixel for pixel. A key press opens that stage's
+  own list over the picture; from then on, that start keeps no picture on screen.
 - **FR-017** Messages go to the kernel log. They come to the screen when a start fails,
   when the person asks with a key, and in developer mode.
 - **FR-018** On a bistable display, no stage GlassineOS provides or configures clears the
@@ -198,10 +204,11 @@ SC-001 to SC-007 are tests in QEMU with OVMF. The frame is captured from the mac
 display at the earliest stage and at fixed points after it.
 
 - **SC-001** With a splash set, the first captured frame after the firmware's own is the
-  splash, pixel for pixel, and every frame up to the system's first is the splash: no
+  splash, pixel for pixel, apart from the key line of FR-016a during the wait; every
+  frame after the wait up to the system's first is the splash, pixel for pixel: no
   text, no blank frame, no cursor.
 - **SC-002** With an override written: at the next start every captured frame up to the
-  system's first is the override. After that start the store holds no override, and
+  system's first is the override (apart from the key line of FR-016a during the wait). After that start the store holds no override, and
   the start after it shows the splash.
 - **SC-003** With an override written and the power cut at each point of the start that
   shows it: the override is shown at one start at most.

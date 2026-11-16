@@ -323,7 +323,7 @@ the next start without a choice runs the current deployment again.
 - **FR-048** The loader is the earliest stage that owns the display on a PC, so it draws
   the boot splash and the one-time override of
   [011](../011-boot-splash/spec.md), through the firmware's graphics output, before
-  the kernel starts. The line of FR-039 is drawn over the splash. A splash that can't
+  the kernel starts. The line of FR-039 is drawn over the splash or the override for the wait only, and the picture under it is restored when the wait ends (011 FR-016a). A splash that can't
   be drawn never delays or stops a start.
 
 ### A deployment chosen at start-up
@@ -390,7 +390,7 @@ the next start without a choice runs the current deployment again.
 | The hand-off kind `uefi` in `HANDOFF` | owned (added value; 004 FR-007) | 004's records, unchanged | `docs/kernel-artifacts.md` |
 | `state/deploy`, `state/kernel`, `glassine-deploy` | owned (unchanged) | state `version=1`, porcelain 1 | `docs/deployments.md` |
 | Firmware boot entries and boot order | consumed; written by the installer (`add-boot-entry`) and the repair | UEFI | installer 002 |
-| `glassine-boot`, 1 GiB, role `esp` | consumed; the installer's description | description `format = 4` | installer `devices/uefi-pc.toml` |
+| `glassine-boot` (2 GiB, role `esp`) and `glassine-userdata` | consumed; the installer's description | description `format = 4` | installer `devices/uefi-pc.toml` |
 
 ## Device scope and risk
 
