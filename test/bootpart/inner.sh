@@ -415,6 +415,14 @@ mstart
 ok "the mark while the state lock is held (glassine-bootimg writing): busy (6), nothing written" "[ $lr = 6 ] && same"
 mstart; rm -rf "${MB:?}/glassine"; mkdir -p $MB/glassine
 ok "the mark with no loader record: 1, none made" "! menv sh /p/sbin/glassine-loader-mark healthy 2>/dev/null && [ -z \"\$(ls $MB/glassine)\" ]"
+# display-retry: the loader's sticky display_failed (docs/handback.md)
+mstart display_failed=1 drew=
+ok "healthy keeps display_failed (only display-retry clears it)" "macc && [ \"\$($M get $MB unmarked)\" = 0 ] && [ \"\$($M get $MB display_failed)\" = 1 ]"
+S1=$(mseq)
+ok "display-retry clears display_failed and drew, seq one higher, other keys kept" "menv sh /p/sbin/glassine-loader-mark display-retry 2>$MW/out && [ -z \"\$($M get $MB display_failed)\" ] && [ -z \"\$($M get $MB drew)\" ] && [ \$(mseq) = \$((S1 + 1)) ] && [ \"\$($M get $MB unmarked)\" = 0 ] && [ \"\$($M get $MB zz_unknown)\" = keep ] && grep -q 'display_failed=1 cleared' $MW/out"
+cp $MB/glassine/loader.a $W/ma; cp $MB/glassine/loader.b $W/mb
+ok "display-retry with nothing set: 0, nothing written" "menv sh /p/sbin/glassine-loader-mark display-retry 2>/dev/null && same"
+ok "display-retry with an argument: usage (2)" "menv sh /p/sbin/glassine-loader-mark display-retry x 2>/dev/null; [ \$? = 2 ]"
 # the shutdown step (010 FR-012)
 mstart
 ok "shutdown, this set started by default, no mark, no failure: one off (2 -> 1)" "mshut && [ \"\$($M get $MB unmarked)\" = 1 ] && [ \"\$($M get $MB zz_unknown)\" = keep ]"
