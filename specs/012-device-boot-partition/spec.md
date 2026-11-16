@@ -142,8 +142,11 @@ systems to the boot partition, reading only, and then answers as it would have w
   shows no message, and calls no serial protocol unless the load options ask for it
   (`glassine.log=serial`). With the display of FR-006 it draws the picture of 011 once
   (one full refresh, before it answers) and nothing else: no key line, no list, no
-  message. It draws only after the record's write has counted the start, and only when
-  `unmarked` was 0 at entry, so a refresh that never returns can't stop the limit
+  message. It draws only after the record's write has counted the start, only when
+  `unmarked` was 0 at entry and only while the sticky `display_failed` is not set; a
+  start after an unmarked one that drew sets it, and only the running system's
+  `glassine-loader-mark display-retry` clears it. So a refresh that never returns can't
+  stop the limit, and doesn't come back after every healthy boot
   ([handback.md](../../docs/handback.md#a-display-through-the-firmwares-refresh)).
 - **FR-010** It decides as 010 and boot-partition.md say, with the record keys of
   [handback.md](../../docs/handback.md#the-loader-record-raw): a request taken only from

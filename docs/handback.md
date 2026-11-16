@@ -62,6 +62,8 @@ differences:
 | `recovery`, `recovery_rec` | not used: the recovery is the parent's own |
 | `probe` | `1`: write the probe report at this start; anything else, or empty: don't. Set and cleared by the running system; the loader never changes it |
 | `display` | `epd-fw`: draw the splash through the firmware's panel refresh when the firmware has an extended graphics output (below, "A display through the firmware's refresh"); anything else, or empty: headless. Set by the running system or the installer; the loader never changes it |
+| `drew` | `1`: the start that wrote it drew through the firmware's refresh; empty otherwise. Written by the loader only (below) |
+| `display_failed` | set (the count it was set at): a start that drew was never marked healthy, so the loader no longer draws, whatever `unmarked` says. Written by the loader; cleared only by the person's retry, `glassine-loader-mark display-retry`, never by a healthy mark |
 | `deploys`, `deploy1` … | kept as read; a headless loader offers no list |
 
 The other keys (`format`, `seq`, `request`, `unmarked`, `started`, `started_why`) are
@@ -95,15 +97,18 @@ of its QueryMode, SetMode and Blt. With neither, the loader runs headless, as ab
 - It draws only before it hands back, never after `ExitBootServices`, and never calls
   `SetMode`, `Blt` or any power protocol of the display.
 - The order is normative, against a refresh that never returns: the loader decides and
-  writes the record first (the count raised, durably), then draws, then answers. It
-  draws only on a start that write counted (`default`, written), and only when
-  `unmarked` was 0 when it read the record. So a hang inside the refresh is a failed,
-  counted start (the parent's watchdog or a power cycle ends it), the next start doesn't
-  draw, and the limit leads on to the previous set or the recovery as without a display.
-  A start marked healthy (`unmarked` back to 0) makes the next one draw again.
-- The key line and the list stay off: which key the person would press at power-on is
-  not defined for such a machine, and each change of the picture is one more full
-  refresh.
+  writes the record first (the count raised, durably), then draws, then answers.
+  - It draws only on a start that write counted (`default`, written), only when
+    `unmarked` was 0 when it read the record, and only when `display_failed` is not set;
+    that counting write sets `drew=1`. A hang inside the refresh is then a failed,
+    counted start (the parent's watchdog or a power cycle ends it), and the limit leads
+    on to the previous set or the recovery as without a display.
+  - A start that finds `unmarked` above 0 and `drew=1` doesn't draw and sets
+    `display_failed=<unmarked>` in its write; a start that doesn't draw clears `drew`.
+  - While `display_failed` is set, no start draws. A healthy mark doesn't clear it, so a
+    draw that hung once doesn't come back after every healthy boot. The person clears it
+    on purpose with `glassine-loader-mark display-retry` (it also clears `drew`); the
+    next start with `unmarked` 0 draws again.
 
 
 ## The loader region
