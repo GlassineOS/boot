@@ -2,10 +2,10 @@
 
 **Feature branch:** `boot-partition-forms`
 **Created:** 2026-11-16 · **Status:** spec, for review; the running system's writer of the
-raw form built and host-tested (FR-020, FR-022 to FR-026: `glassine-boot-raw`, the raw
-backend of `lib/glassine-bootpart.sh`, `glassine-loader-update`, `test/bootraw`); not built: FR-021 (`reboot
-recovery` on a raw board), the installer's raw writer and the running system's writer
-of `request=menu`; nothing has run on a device
+raw form built and host-tested (FR-020 to FR-028: `glassine-boot-raw`, the raw
+backend of `lib/glassine-bootpart.sh`, `glassine-loader-update`, `glassine-loader-mark
+request` and `display-sync`, `glassine-reboot-clean`; `test/bootraw`, `test/reboot`); not
+built: the installer's raw writer; nothing has run on a device
 **Builds on:** [010-uefi-deployments](../010-uefi-deployments/spec.md),
 [004-kernel-records](../004-kernel-records/spec.md),
 [005-blocklist-handoff](../005-blocklist-handoff/spec.md) · **Interfaces:**
@@ -242,6 +242,15 @@ systems to the boot partition, reading only, and then answers as it would have w
   more is written. A partition without a valid table is reported and left as it is (no
   table is made); the tool that installs the loader ships in the same package as the
   record's raw writers, and the package with the loader depends on it.
+- **FR-027** The running system's "reboot to the start menu" (`reboot menu`) writes
+  `request=menu` into the record on a board with `BOOT_FORM=raw`, then reboots plainly;
+  on any other board, or when the write doesn't read back with both slots valid, it
+  refuses and doesn't reboot. A reboot that can't be started after the write takes the
+  request back. The desktop offers it only where the board's loader takes it.
+- **FR-028** A board whose loader draws through the firmware's refresh names the value in
+  `board.conf` (`LOADER_DISPLAY=epd-fw`); after the loader update, the running system
+  writes the record's `display` to it when it differs, and never writes `display_failed`
+  or `drew` (only the person's retry clears them).
 
 ## Key entities
 

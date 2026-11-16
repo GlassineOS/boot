@@ -28,12 +28,18 @@
 # parent then boots its baseline), never a part of an item, and nothing more is
 # written.
 #
+# Last, when the regions hold the package's files (or it ships none): the loader
+# record's `display` set to the board's LOADER_DISPLAY (glassine-loader-mark
+# display-sync: only when it differs, never clearing display_failed, which stays
+# the person's display-retry). A record that can't be written is said; the exit
+# stays the regions'.
+#
 # Exit: 0 written, or nothing to do (another board, no files, the regions hold the
 # files); 1 a write or its read-back failed (said; that region emptied, or, when even
 # that failed, holding no valid item or the old one); 3 nothing written: no partition,
 # none of that name or two, no valid region table, a region missing, or a file
 # glassine-boot-raw refuses; 6 busy (the device's lock stayed held).
-# Test hooks: GLASSINE_LOADER_DIR, GLASSINE_BOOT_RAW (the writer), GLASSINE_BI_BOARD,
+# Test hooks: GLASSINE_LOADER_DIR, GLASSINE_BOOT_RAW (the writer), GLASSINE_LOADER_MARK, GLASSINE_BI_BOARD,
 # GLASSINE_BI_CMDLINE, GLASSINE_BI_LIB, GLASSINE_BI_TMP, and the library's
 # (GLASSINE_BI_BOOTPART_DEV, GLASSINE_BI_SYSBLOCK, GLASSINE_BI_DEVDIR).
 set -u
@@ -41,6 +47,7 @@ BOARD=${GLASSINE_BI_BOARD:-/etc/glassine-bootimg/board.conf}
 GBLIB=${GLASSINE_BI_LIB:-/usr/lib/glassine-boot}
 DIR=${GLASSINE_LOADER_DIR:-/usr/share/glassine/loader}
 RAW=${GLASSINE_BOOT_RAW:-/usr/sbin/glassine-boot-raw}
+MARK=${GLASSINE_LOADER_MARK:-/usr/sbin/glassine-loader-mark}
 HANDOFF='' BOOT_FORM='' BOOT_PART=glassine-boot
 # shellcheck source=/dev/null
 [ -r "$BOARD" ] && . "$BOARD"
@@ -59,12 +66,17 @@ say() {
 # the board: the raw form only, never a PC's FAT
 [ "$HANDOFF" != uefi ] || exit 0
 [ "$BOOT_FORM" = raw ] || exit 0
+# the record's display: by the record's writer (its locks, gp_write, the read-back)
+display_sync() {
+    [ -x "$MARK" ] || return 0
+    "$MARK" display-sync || say "the loader record's display not set (glassine-loader-mark display-sync exit $?)"
+}
 todo=''
 for r in splash-default loader; do
     f=$DIR/loader.efi; [ $r = loader ] || f=$DIR/splash-default.gspl
     [ -f "$f" ] && todo="$todo $r"
 done
-[ -n "$todo" ] || exit 0
+[ -n "$todo" ] || { display_sync; exit 0; }
 
 dev=$(gp_raw_dev "$CMDLINE" "$BOOT_PART") || { say "the boot partition: $dev: nothing written"; exit 3; }
 "$RAW" table "$dev" > "$TMP.table" 2>"$TMP.err"; rc=$?
@@ -103,4 +115,5 @@ for r in $todo; do
     fi
     exit 1
 done
+display_sync
 exit 0

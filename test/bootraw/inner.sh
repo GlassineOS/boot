@@ -191,6 +191,28 @@ rm -f $MR/loader-marked
 ok "shutdown: one off the count (2 -> 1), the loader reads it" "mark shutdown 2>/dev/null && [ \"\$(rec unmarked)\" = 1 ] && [ \"\$(slot)\" = 'a 3 1' ]"
 mstart drew=1 display_failed=2
 ok "display-retry: display_failed and drew cleared, unmarked as it was" "mark display-retry 2>$W/err && [ -z \"\$(rec display_failed)\" ] && [ -z \"\$(rec drew)\" ] && [ \"\$(rec unmarked)\" = 2 ] && grep -q 'display_failed=2 cleared' $W/err"
+# the one-shot requests (boot-partition.md "Keys", handback.md "The start menu", 012 FR-021)
+mstart
+ok "can-request menu, recovery on a raw board: 0, nothing written; a board with no record: 3" "mark can-request menu && mark can-request recovery && cmp -s $MI $W/m0 && { MBOARD=$MW/board.none mark can-request menu; [ \$? = 3 ]; }"
+ok "can-request needs no partition (board key only)" "MDEV='' GLASSINE_BI_BOOTPART_DEV= mark can-request menu"
+ok "request menu on a board with no loader record: 3, said, nothing written" "MBOARD=$MW/board.none mark request menu 2>$W/err; [ \$? = 3 ] && grep -q 'keeps no loader record' $W/err && cmp -s $MI $W/m0"
+ok "request: usage (no word, an unknown one, trial): 2, nothing written" "mark request 2>/dev/null; a=\$?; mark request trial 2>/dev/null; b=\$?; mark can-request clear 2>/dev/null; [ \$a\$b\$? = 222 ] && cmp -s $MI $W/m0"
+ok "request menu: the loader reads request=menu, both slots valid, seq 3, every other key kept" "mark request menu 2>$W/err && [ \"\$(slot)\" = 'a 3 1' ] && [ \"\$(rec request)\" = menu ] && [ \"\$(rec unmarked)\" = 2 ] && [ \"\$(rec zz_unknown)\" = keep ] && grep -q 'request=menu written' $W/err"
+cp $MI $W/m1
+ok "request menu again: nothing written" "mark request menu 2>/dev/null && cmp -s $MI $W/m1"
+ok "the shutdown step after it: one off the count, the request kept, both slots valid" "mark shutdown 2>/dev/null && [ \"\$(slot)\" = 'b 4 1' ] && [ \"\$(rec request)\" = menu ] && [ \"\$(rec unmarked)\" = 1 ]"
+ok "request recovery replaces it (the person's last choice)" "mark request recovery 2>/dev/null && [ \"\$(rec request)\" = recovery ] && [ \"\$(slot)\" = 'a 5 1' ]"
+ok "request clear: the loader reads no request" "mark request clear 2>$W/err && [ -z \"\$(rec request)\" ] && grep -q 'request=recovery cleared' $W/err"
+cp $MI $W/m1
+ok "request clear with none: nothing written" "mark request clear 2>/dev/null && cmp -s $MI $W/m1"
+mstart request=trial
+ok "a kernel trial requested: request menu and clear refused (1), said, the trial kept" "! mark request menu 2>$W/err && grep -q 'kernel trial is requested' $W/err && ! mark request clear 2>/dev/null && cmp -s $MI $W/m0"
+mstart
+{ flock 9; LOCK_WAIT=0 mark request menu 2>$W/err; lr=$?; flock -u 9; } 9>>$MS/state/.lock
+ok "request with the state lock held by another writer: 6, nothing written" "[ $lr = 6 ] && cmp -s $MI $W/m0"
+export GLASSINE_BI_AFTER_PUT='[ "$2" = 65536 ] && printf Z | dd of="$1" bs=1 seek=65600 conv=notrunc 2>/dev/null; :'
+ok "request menu: the slot doesn't read back (both tries): 1, said, the loader reads no request" "! mark request menu 2>$W/err && grep -q 'request=menu not written' $W/err && [ -z \"\$(rec request)\" ] && [ \"\$(rec unmarked)\" = 2 ]"
+unset GLASSINE_BI_AFTER_PUT
 # the Note Air's record under its parent: no default (the baseline), the loader's
 # count with started empty (core/src/plan.rs handback: started = the default's id)
 mstart default= default_rec= previous= previous_rec= recovery= recovery_rec= started= started_why=default
@@ -234,6 +256,17 @@ with open(sys.argv[1], 'r+b') as f: f.seek(off); f.write(b)
 EOF
 cp $MI $W/m0
 ok "only slot a valid, slot b zeros: healthy writes slot b (seq 2), the loader reads it, both valid" "mark healthy 2>/dev/null && [ \"\$(slot)\" = 'b 2 1' ] && [ \"\$(rec unmarked)\" = 0 ]"
+cp $W/m0 $W/m0a; cp $W/m0 $MI
+python3 - $MI <<'EOF2'
+import sys
+sys.path.insert(0, '/p/test/bootraw'); import raw_model as m, loader_model as lm
+img = open(sys.argv[1], 'rb').read(); off, _ = m.region(img, 'record')
+rec = lm.read_slot(img[off:off + 16384])[1]
+rec = [(k, v) for k, v in rec if k not in ('request', 'check')] + [('request', 'menu')]
+b = lm.text(rec).encode(); b += b'\n' * (16384 - len(b))
+with open(sys.argv[1], 'r+b') as f: f.seek(off); f.write(b)
+EOF2
+ok "request=menu in the only valid slot (the loader won't take it): request menu writes slot b, both valid" "[ \"\$(slot)\" = 'a 1 0' ] && [ \"\$(rec request)\" = menu ] && mark request menu 2>/dev/null && [ \"\$(slot)\" = 'b 2 1' ] && [ \"\$(rec request)\" = menu ]"
 cp $W/m0 $MI; printf 'format=1\nseq=1\n' | dd of=$MI bs=1 seek=$((65536 + 16384)) conv=notrunc 2>/dev/null
 ok "slot b cut over zeros (a record's start, then zeros): not valid, written over" "mark healthy 2>/dev/null && [ \"\$(slot)\" = 'b 2 1' ] && [ \"\$(rec unmarked)\" = 0 ]"
 cp $W/m0 $MI; printf '\000' | dd of=$MI bs=1 seek=$((65536 + 300)) conv=notrunc 2>/dev/null; cp $MI $W/m0n
@@ -335,6 +368,30 @@ ok "update: a splash the writer refuses: 3, said, nothing written (not the loade
 mkdir -p $LU/bad2; cp $W/l20000 $LU/bad2/loader.efi
 { flock 8; LDIR=$LU/bad2 upd 2>$W/err; lr=$?; flock -u 8; } 8<$MI
 ok "update: the device locked by another writer: 6 after waiting, nothing written" "[ $lr = 6 ] && grep -q 'locked by another writer' $W/err && cmp -s $MI $W/m1"
+# the record's display from the board's LOADER_DISPLAY (glassine-loader-mark display-sync, last)
+printf '#!/bin/sh\nexec sh /p/sbin/glassine-loader-mark "$@"\n' > $LU/mark; chmod +x $LU/mark
+{ cat $MW/board.raw; echo LOADER_DISPLAY=epd-fw; } > $MW/board.disp
+{ cat $MW/board.raw; echo "LOADER_DISPLAY='epd fw'"; } > $MW/board.dispbad
+updm() { MB=${MBOARD:-$MW/board.raw}; menv env GLASSINE_LOADER_MARK=$LU/mark GLASSINE_LOADER_DIR=${LDIR:-$LU/pkg} GLASSINE_BOOT_RAW=${LRAW:-$LU/raw} GLASSINE_BI_BOARD=$MB sh /p/sbin/glassine-loader-update; }
+mstart
+ok "display-sync: no LOADER_DISPLAY: the regions written, the record as it was" "updm 2>$W/err && items_are $LU/pkg/loader.efi $LU/pkg/splash-default.gspl && [ \"\$(slot)\" = 'b 2 1' ] && [ -z \"\$(rec display)\" ]"
+ok "display-sync: LOADER_DISPLAY=epd-fw, the record's display differs: written after the regions, the loader reads it, every other key kept" "MBOARD=$MW/board.disp updm 2>$W/err && [ \"\$(rec display)\" = epd-fw ] && [ \"\$(slot)\" = 'a 3 1' ] && [ \"\$(rec unmarked)\" = 2 ] && [ \"\$(rec zz_unknown)\" = keep ] && grep -q \"display=epd-fw written (was '')\" $W/err"
+cp $MI $W/m1
+ok "display-sync: already equal: nothing written" "MBOARD=$MW/board.disp updm 2>/dev/null && cmp -s $MI $W/m1"
+mstart display=headless display_failed=2 drew=1
+ok "display-sync: display_failed set: display written, display_failed and drew kept (only display-retry clears them)" "MBOARD=$MW/board.disp updm 2>/dev/null && [ \"\$(rec display)\" = epd-fw ] && [ \"\$(rec display_failed)\" = 2 ] && [ \"\$(rec drew)\" = 1 ]"
+mstart display=headless
+ok "display-sync: a LOADER_DISPLAY that is no record value: said, the record as it was, the update's exit 0" "MBOARD=$MW/board.dispbad updm 2>$W/err && grep -q 'not a value of the record' $W/err && [ \"\$(rec display)\" = headless ] && [ \"\$(slot)\" = 'b 2 1' ]"
+mstart display=headless
+LDIR=$LU/none MBOARD=$MW/board.disp updm 2>/dev/null
+ok "display-sync: also when the package ships no loader files" "[ \"\$(rec display)\" = epd-fw ]"
+mstart display=headless
+export GLASSINE_BI_AFTER_PUT='[ "$2" = 65536 ] && printf Z | dd of="$1" bs=1 seek=65600 conv=notrunc 2>/dev/null; :'
+ok "display-sync: the slot doesn't read back (both tries): said, the loader reads the old display" "LDIR=$LU/none MBOARD=$MW/board.disp updm 2>$W/err && grep -q 'display=epd-fw not written' $W/err && [ \"\$(rec display)\" = headless ]"
+unset GLASSINE_BI_AFTER_PUT
+mstart display=headless; cp $LU/bad.gspl $LU/bad/splash-default.gspl
+ok "display-sync: not after a region the writer refuses (3): the record as it was" "LDIR=$LU/bad MBOARD=$MW/board.disp updm 2>/dev/null; [ \$? = 3 ] && [ \"\$(rec display)\" = headless ]"
+cp $W/l20000 $LU/pkg/loader.efi
 # the accept step runs it only after a healthy mark it wrote, and a candidate once accepted
 cp $W/l20000 $LU/pkg/loader.efi
 uacc() { menv env GLASSINE_LOADER_UPDATE=$LU/update GLASSINE_LOADER_DIR=$LU/pkg GLASSINE_BOOT_RAW=$LU/raw GLASSINE_DEPLOY=${MDEPLOY:-$MW/deploy} sh /p/sbin/glassine-deploy-accept > $W/out 2>&1; }
@@ -425,6 +482,21 @@ for k in 0 1 100 8191 16383; do
     [ "$($M item $T record | sed -n 's/^unmarked=//p')" = $want ] || { rc_ok=0; echo "  cut at $k: unmarked is not $want"; }
 done
 ok "the mark killed inside its slot: the partition is the replay's; the loader reads the old count, or the new one once its record is whole" "[ $rc_ok = 1 ]"
+
+# the record's slot: a request (request menu)
+mstart; cp $MI $W/r0
+QENV="env GLASSINE_BI_BOOTPART_DEV=$T GLASSINE_DEPLOY_CONF=$MW/conf GLASSINE_BI_SYSTEM=$MS GLASSINE_BI_CMDLINE=$MW/cmdline GLASSINE_BI_BOARD=$MW/board.raw GLASSINE_BI_RUN_DIR=$MR"
+ok "request menu, cut at every byte of its slot: the old record or the new, by the loader's rules" "replay $W/r0 record $QENV sh /p/sbin/glassine-loader-mark request menu && grep -q 'bad=0' $W/replay && grep -q 'none=0' $W/replay && grep -q 'final=new' $W/replay"
+echo "     $(cat $W/replay)"
+rc_ok=1
+for k in 0 1 100 8191 16383; do
+    realcut $W/r0 $k $QENV sh /p/sbin/glassine-loader-mark request menu || { rc_ok=0; echo "  cut at $k differs from the replay"; }
+    # inside the record: the old record, no request; after it: request=menu, both valid
+    got=$($M item $T record | sed -n 's/^request=//p'); both=$($M item $T record | head -n 1 | cut -d' ' -f3)
+    if [ $k -lt 8191 ]; then [ -z "$got" ] || { rc_ok=0; echo "  cut at $k: request '$got', both $both"; }
+    else [ "$got" = menu ] && [ "$both" = 1 ] || { rc_ok=0; echo "  cut at $k: request '$got', both $both"; }; fi
+done
+ok "request menu killed inside its slot: the replay's partition; no request the loader would take, or the whole new record" "[ $rc_ok = 1 ]"
 
 # --- 5. a loop device (privileged) -------------------------------------------------
 if [ "${BR_PRIV:-}" = 1 ]; then

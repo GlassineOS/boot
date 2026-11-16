@@ -32,8 +32,8 @@ the deployment's layers on userdata) and manages them with `glassine-deploy`:
 | `sbin/glassine-bootimg` | stages, tests, promotes and rolls back kernels |
 | `lib/glassine-bootimg-pack` | packs a header-v0 Android boot image from the board config |
 | `openrc/glassine-bootimg-promote` | gives the verdict on a test boot |
-| `sbin/glassine-reboot-clean`, `openrc/glassine-reboot-reason`, `src/glassine-reboot.c` | an orderly reboot with a reboot reason (the way into the recovery and the test slot): init runs the shutdown, its last service (shutdown runlevel) reboots with the reason |
-| `sbin/reboot` | `reboot <reason>` (`reboot bootloader`, `reboot recovery`): busybox reboot drops the reason, this one hands it to glassine-reboot-clean; without a reason it is busybox reboot |
+| `sbin/glassine-reboot-clean`, `openrc/glassine-reboot-reason`, `src/glassine-reboot.c` | an orderly reboot with a reboot reason (the way into the recovery and the test slot): init runs the shutdown, its last service (shutdown runlevel) reboots with the reason. `menu` and, where the board keeps a loader record, `recovery` are requests in the loader record instead (`glassine-loader-mark request`, then a plain reboot; docs/boot-partition.md "Keys") |
+| `sbin/reboot` | `reboot <reason>` (`reboot bootloader`, `reboot recovery`, `reboot menu`): busybox reboot drops the reason, this one hands it to glassine-reboot-clean; without a reason it is busybox reboot |
 | `src/glassine-slot.c` | the bootloader slot (A/B) state: status, set-active, mark-successful ([boot.md](docs/boot.md#slots)) |
 | `conf/board.conf.example` | every board key, documented |
 | `sbin/glassine-deploy`, `lib/glassine-state.sh` | root deployments and their recovery interface (`status`, `list`, `select`, `rollback`, `hibernate-invalidate`, `reset`, `stage`, `receive`, `bases`, `packages`, `switch`, `accept`), and `init`, which lays out an empty btrfs pool for an image builder; the shared state and hibernate-guard helpers |
