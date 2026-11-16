@@ -8,7 +8,7 @@
 # mismatches come from GLASSINE_BI_AFTER_SLOT / GLASSINE_BI_AFTER_SETFILE.
 # Part 1: the library. Part 2: glassine-bootimg on a directory as the boot
 # partition. Part 3 (privileged): a real FAT file system on a loop device.
-# shellcheck disable=SC2089,SC2090  # the hooks are code, eval'd by the library
+# shellcheck disable=SC2089,SC2090,SC2034  # the hooks are code, eval'd by the library; variables the sourced libraries read
 set -u
 D=/p/test/bootpart
 M="python3 $D/loader_model.py"
