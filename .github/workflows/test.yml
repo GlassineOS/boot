@@ -27,6 +27,8 @@ jobs:
         run: sh test/blocklist/test.sh
       - name: the uefi hand-off on a directory and a FAT image, read by a port of the loader's reader (privileged)
         run: sh test/bootpart/test.sh
+      - name: the raw boot partition (glassine-boot-raw, the record on a raw board), read by a port of the loader's reader and its golden bytes, cut at every byte (privileged)
+        run: sh test/bootraw/test.sh
       - name: glassine-device-seed on plain directories and a vfat image (privileged)
         run: sh test/seed/test.sh
       - name: glassine-devmode with stubs

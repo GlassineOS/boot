@@ -10,7 +10,11 @@ real PC. The healthy mark and the shutdown step (`unmarked`) are built too
 `glassine-hibernate`; host-tested in `test/bootpart`), and so is the rollback after a
 healthy limit start (`glassine-bootimg rollback --limit`, 010 FR-013). Not built here: the
 `reboot recovery` request, the deployment list (`deploys`), the recovery's update, the
-repair, the splash store. This page is the contract between the three programs that read or write a PC's boot
+repair, the splash store's writer on FAT. The raw form's writer is built too
+(`glassine-boot-raw`: the region table, the loader region, the splash regions; the
+loader record by slots through `glassine-loader-mark` with `BOOT_FORM=raw`), host-tested
+in `test/bootraw` against the loader's golden bytes and a port of its reader; nothing
+has run on a device ("The running system's writer", below). This page is the contract between the three programs that read or write a PC's boot
 partition: the loader, the installer, and the running system's tools (`glassine-bootimg`,
 `glassine-deploy`, the boot-success step, the recovery). What they do and why is
 [specs/010](../specs/010-uefi-deployments/spec.md) and
@@ -192,7 +196,11 @@ write; the loader runs when no system does.
   was no bare boot and no health check failed in it. It is `glassine-loader-mark
   shutdown`, run by the stop of the `glassine-deploy-accept` service when OpenRC goes
   down (`RC_GOINGDOWN`), before `localmount` takes the system partition away. The
-  running set is the one `glassine.img=` names on this boot's command line. What
+  running set is the one `glassine.img=` names on this boot's command line. Under a
+  parent (the raw form), where the default set is the parent's baseline and the
+  loader's count writes an empty `started` for it ([handback.md](handback.md#the-loader-record-under-a-parent)),
+  an empty `started` with `started_why=default` is the running set when this boot runs
+  no set that either slot names. What
   this start did is in `/run/glassine`: `loader-marked` (the mark was written) and
   `health-failed` (a health check failed, written by the boot-success step). Both
   writes hold the system partition's state lock, as `glassine-bootimg`'s do.
@@ -616,7 +624,8 @@ An entry:
   region never writes the table. The entry's CRC covers the entry, not the region.
 - **Names** a reader doesn't know are ignored, and so are regions with a flag it doesn't
   know.
-- **Writing the table** (the installer; a later release that adds a region): the backup
+- **Writing the table** (the installer; `glassine-boot-raw init`; a later release that
+  adds a region): the backup
   first, flushed and read back, then the primary, flushed and read back. A cut leaves a
   valid primary (the old table) or a valid backup (the new one). Regions are added in
   space no region uses; a region is never moved or shrunk while it holds content.
@@ -627,10 +636,10 @@ An entry:
 |---|---|---|---|
 | `record` | 32 KiB | the loader record: slot a at the region's start, slot b at 16 KiB | the loader; the running system; the recovery; the installer |
 | `probe` | 64 KiB | the probe report of [handback.md](handback.md#the-probe-report) | the loader, on request |
-| `loader` | 8 KiB | the loader image header (4096 bytes), then the loader image ([handback.md](handback.md#the-loader-region)) | the installer; the running system's loader update |
-| `splash-default` | 64 KiB | the release's splash: one image of the format below | the installer, the repair |
-| `splash` | 64 KiB | the splash the system set | the running system |
-| `override` | 64 KiB | the one-time override | the running system; removed by the stage that draws it |
+| `loader` | 8 KiB | the loader image header (4096 bytes), then the loader image ([handback.md](handback.md#the-loader-region)) | the installer; the running system's loader update (`glassine-boot-raw loader`) |
+| `splash-default` | 64 KiB | the release's splash: one image of the format below | the installer, the repair (`glassine-boot-raw splash-default`) |
+| `splash` | 64 KiB | the splash the system set | the running system (`glassine-boot-raw splash`) |
+| `override` | 64 KiB | the one-time override | the running system (`glassine-boot-raw override`, `clear`); removed by the stage that draws it |
 
 A region holds one item at its start. The bytes after the item's end (the end its own
 header gives) are ignored: a writer needn't clear them.
@@ -659,6 +668,43 @@ no image.
   fails, it is not drawn.
 - **Writing:** "Writing a region", above, for `.new`, sync and rename on FAT. An image
   larger than its region is refused, with a message (011 FR-020).
+
+### The running system's writer
+
+The raw form is written from the running system by `glassine-boot-raw` and
+`lib/glassine-bootpart.sh` (busybox only; CRC-32 from gzip's trailer):
+
+| Command | Writes |
+|---|---|
+| `glassine-boot-raw init [--force] DEV` | the table of "Sizes" for DEV's size (16 MiB or more, a multiple of 4096; a larger partition gets the same regions and more free space): every region emptied first (`record` whole, the others' first 4096 bytes), then the backup copy, flushed and read back, then the primary, flushed and read back. Refused where either copy of a valid table, or a FAT boot sector, is already there, unless `--force`; `--force` empties every region, the record included |
+| `glassine-boot-raw loader DEV FILE` | the region `loader`: the header of [handback.md](handback.md#the-loader-region) and the image (1 to 3,141,632 bytes), by "Writing a region" |
+| `glassine-boot-raw splash-default\|splash\|override DEV FILE` | that region: a format-2 image whose header, CRCs and (uncompressed) payload length pass the reader's checks; leave the screen only as the override; refused when larger than the region |
+| `glassine-boot-raw clear DEV REGION` | the region's first 4096 bytes zero, read back (the override's removal by a running system, 011 FR-015) |
+| `glassine-boot-raw table DEV`, `read DEV REGION`, `find [NAME]` | nothing: the table in use, a region's item as its reader takes it, the device of the partition of that GPT name |
+
+Every refusal comes before the first write. `init` makes no loader record: an empty
+`record` region holds none, and the running system's writers never make one (012
+FR-020); the installer writes the first.
+
+**The loader record** in the raw form is written by the same code as on FAT
+(`gp_write`): the slot not in use, its 16384 bytes at the slot's place in `record`,
+flushed and read back (one retry). `glassine-loader-mark` (`healthy`, `display-retry`,
+`shutdown`) does so on a board whose `board.conf` says `BOOT_FORM=raw`; the
+partition is the one named `BOOT_PART` (default `glassine-boot`), found on the system
+partition's disk when the command line names one (`glassine.system=PARTUUID=`), else as
+the one partition of that name on any disk (a device with one disk). A slot whose last
+byte is not a newline or whose first line is not `format=1` (a region never written,
+a slot cut over zeros) is not valid, whatever else it holds.
+
+`BOOT_FORM` (board key): empty, the FAT form when `HANDOFF=uefi` and no loader record
+otherwise; `raw`, the raw form (not with `HANDOFF=uefi`: a PC is always FAT). It says
+only where the loader record is; how kernels reach the parent stays `HANDOFF`'s. A board
+sets it once the parent starts the loader and the parent's recovery clears the count
+(012 FR-020).
+
+Every write of `glassine-boot-raw` and of the record's writers holds an exclusive
+lock (`flock`) on the device, so a region write and a record write never overlap; the
+record's writers also hold the system partition's state lock, as on FAT.
 
 ### Sizes
 

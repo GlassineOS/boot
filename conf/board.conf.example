@@ -45,6 +45,13 @@ RAMDISK_MAX=
 # the set's base command line is CMDLINE; empty: kernel updates are paused.
 # This board's TEST_DEV is its recovery partition, so it stays empty.
 HANDOFF=
+# Where the loader record is (docs/boot-partition.md, "The running system's writer";
+# specs/012): empty: on the FAT boot partition with HANDOFF=uefi, none otherwise;
+# raw: the raw boot partition (GPT name BOOT_PART, default glassine-boot), for a
+# machine whose parent bootloader starts the loader from it. This board's ABL does
+# that only once it starts the loader and its recovery clears the count (012
+# FR-020), so it stays empty.
+BOOT_FORM=
 # The blocklist hand-off (docs/blocklist.md, "Board keys"), read only with
 # HANDOFF=blocklist. The default slot's partition name, which holds the record;
 # the reboot reason that asks the bootloader for the one-shot; the bootloader's

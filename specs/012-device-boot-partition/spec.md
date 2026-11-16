@@ -1,7 +1,10 @@
 # Feature Specification: The boot partition on devices with their own bootloader (hand-back)
 
 **Feature branch:** `boot-partition-forms`
-**Created:** 2026-11-16 · **Status:** spec, for review; nothing built
+**Created:** 2026-11-16 · **Status:** spec, for review; the running system's writer of the
+raw form built and host-tested (FR-020, FR-022 to FR-025: `glassine-boot-raw`, the raw
+backend of `lib/glassine-bootpart.sh`, `test/bootraw`); not built: FR-021 (`reboot
+recovery` on a raw board) and the installer's raw writer; nothing has run on a device
 **Builds on:** [010-uefi-deployments](../010-uefi-deployments/spec.md),
 [004-kernel-records](../004-kernel-records/spec.md),
 [005-blocklist-handoff](../005-blocklist-handoff/spec.md) · **Interfaces:**
@@ -202,6 +205,23 @@ systems to the boot partition, reading only, and then answers as it would have w
   limit is reached.
 - **FR-021** `reboot recovery` on such a machine writes `request=recovery` when a record
   exists, and uses the parent's own recovery request when none does.
+- **FR-022** The board says where its loader record is: `BOOT_FORM=raw` in `board.conf`
+  for the raw form, independent of `HANDOFF` (how kernels reach the parent). The
+  record's writers (the healthy mark, `display-retry`, the shutdown step) then find the
+  partition by its GPT name `glassine-boot` (`BOOT_PART`): on the system partition's
+  disk when the command line names one, else the one partition of that name, and
+  nothing is written with none or two. A board sets the key only once FR-020 holds.
+- **FR-023** The running system formats a raw partition (`glassine-boot-raw init`):
+  the region table of "Sizes" for the partition's size, the regions emptied first, the
+  backup copy written, flushed and read back before the primary. It refuses where a
+  valid table or a FAT boot sector is, unless forced, and a partition below 16 MiB. It
+  makes no loader record.
+- **FR-024** It writes the loader region (the header of handback.md, then the image)
+  and the splash regions (format-2 images that pass the reader's checks) as "Writing a
+  region" says, and refuses before the first write what is not valid or doesn't fit.
+  A cut at any byte leaves the old item, no item or the new one.
+- **FR-025** Every write of a region or a record slot holds an exclusive lock on the
+  device, and the record's writers also the system partition's state lock.
 
 ## Key entities
 
@@ -273,6 +293,15 @@ systems to the boot partition, reading only, and then answers as it would have w
 - **SC-004a** In QEMU, the stand-in parent's cases pass with the raw form, and with the
   FAT form where the firmware offers a file system on the partition; the splash regions
   are byte-identical after a hand-back start.
+- **SC-004b** A host test formats a partition and writes the loader and the splash
+  regions with `glassine-boot-raw`: the table and the loader header are the bytes the
+  loader's own code makes (golden files), the loader's reader (a port) reads every item
+  back, and a cut at every byte of every write sequence (the table over nothing and
+  over another table, the loader region over none, a larger and a smaller loader, an
+  image, the override's removal, the healthy mark's slot) leaves the old item, none or
+  the new one; the healthy mark, `display-retry` and the shutdown step on a raw board
+  write what the loader reads, also on a baseline start under a parent (`default` and
+  `started` empty).
 - **SC-005** On the device, with the person's go and a gate written: a parent build with
   no `glassine-boot` partition on the table boots exactly as before (the floor), and with one,
   Scenarios 1, 3 and 5.
@@ -280,8 +309,8 @@ systems to the boot partition, reading only, and then answers as it would have w
 ## Out of scope
 
 - The block-list reader in the parent (005, hub#55).
-- Writing the boot partition's raw form from the running system and the installer (a
-  later feature), and the partition-table change that adds it.
+- Writing the boot partition's raw form from the installer, and the partition-table
+  change that adds it (the running system's writer is FR-022 to FR-025).
 - A gesture at power-on that picks the recovery (`glassine.pick=recovery` is reserved).
 - Drawing on displays the firmware can't drive (e-ink) other than through the firmware's
   own refresh (FR-006).
