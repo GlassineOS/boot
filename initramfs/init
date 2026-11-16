@@ -60,9 +60,9 @@ mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
 log() { echo "<3>glassine-boot: $*" > /dev/kmsg; }
 # The host test's overrides (test/initramfs). Never as PID 1: the kernel puts
 # unknown command line words of the form A=B into PID 1's environment.
-[ $$ = 1 ] && unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS GLASSINE_INIT_LIB GLASSINE_INIT_SYSBLOCK
+[ $$ = 1 ] && unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS GLASSINE_INIT_LIB GLASSINE_INIT_SYSBLOCK GLASSINE_INIT_DEVDIR
 CMDF=${GLASSINE_INIT_CMDLINE:-/proc/cmdline}
-SYSBLOCK=${GLASSINE_INIT_SYSBLOCK:-/sys/class/block}
+SYSBLOCK=${GLASSINE_INIT_SYSBLOCK:-/sys/class/block} DEVDIR=${GLASSINE_INIT_DEVDIR:-/dev}
 BOARD=${GLASSINE_INIT_BOARD:-/etc/glassine-boot/board.conf}
 HOOKDIR=${GLASSINE_INIT_HOOKS:-/lib/glassine-boot/hooks.d}
 LIBDIR=${GLASSINE_INIT_LIB:-/lib/glassine-boot}
@@ -223,11 +223,36 @@ find_part() {
 }
 # The same by its GPT unique partition identity (lower case), waiting as long.
 # Two partitions that carry it (a cloned disk): none is taken.
+# le DEV OFFSET N: the N-byte little-endian number at OFFSET of DEV, decimal
+le() { od -An -v -tu1 -j "$2" -N "$3" "$1" 2>/dev/null | awk 'BEGIN { m = 1 } { for (i = 1; i <= NF; i++) { v += $i * m; m *= 256 } } END { if (m > 1) printf "%.0f\n", v }'; }
+# part_uuid DIR: the GPT unique identity of the partition whose sysfs directory is
+# DIR, in lower case. The kernel's uevent PARTUUID= where it gives one (newer
+# kernels; 6.12 has none); else the disk's primary GPT entry PARTN, taken only when
+# the header is a GPT's and the entry's first block is the partition's start.
+part_uuid() {
+    _qu=$(sed -n 's/^PARTUUID=//p' "$1/uevent" 2>/dev/null | head -n 1)
+    [ -z "$_qu" ] || { echo "$_qu" | tr A-F a-f; return 0; }
+    _pn=$(sed -n 's/^PARTN=//p' "$1/uevent" 2>/dev/null)
+    case $_pn in ''|*[!0-9]*) return 1 ;; esac
+    _pd=$(cd -P "$1/.." 2>/dev/null && pwd -P) || return 1       # a partition sits in its disk's directory
+    _dn=$(sed -n 's/^DEVNAME=//p' "$_pd/uevent" 2>/dev/null)
+    [ -n "$_dn" ] && [ -r "$DEVDIR/$_dn" ] || return 1
+    _dv=$DEVDIR/$_dn
+    _lb=$(cat "$_pd/queue/logical_block_size" 2>/dev/null); _lb=${_lb:-512}
+    [ "$(dd if="$_dv" bs=1 skip="$_lb" count=8 2>/dev/null)" = "EFI PART" ] || return 1
+    _el=$(le "$_dv" $((_lb + 72)) 8) _en=$(le "$_dv" $((_lb + 80)) 4) _es=$(le "$_dv" $((_lb + 84)) 4)
+    [ -n "$_el" ] && [ -n "$_en" ] && [ -n "$_es" ] && [ "$_pn" -ge 1 ] && [ "$_pn" -le "$_en" ] && [ "$_es" -ge 128 ] || return 1
+    _eo=$((_el * _lb + (_pn - 1) * _es))
+    [ "$(le "$_dv" $((_eo + 32)) 8)" = "$(( $(cat "$1/start" 2>/dev/null || echo -1) * 512 / _lb ))" ] || return 1
+    od -An -v -tx1 -j $((_eo + 16)) -N 16 "$_dv" 2>/dev/null | tr -s ' \n' ' ' | awk '{ if (NF != 16) exit 1
+        printf "%s%s%s%s-%s%s-%s%s-%s%s-%s%s%s%s%s%s\n", $4, $3, $2, $1, $6, $5, $8, $7, $9, $10, $11, $12, $13, $14, $15, $16 }'
+}
 find_partuuid() {
     for _ in $(seq 1 60); do
         _fn=0 _fd=''
         for u in "$SYSBLOCK"/*/uevent; do
-            grep -qix "PARTUUID=$1" "$u" || continue
+            grep -q '^PARTN=' "$u" || continue
+            [ "$(part_uuid "${u%/uevent}")" = "$1" ] || continue
             _fn=$((_fn + 1)) _fd=$(sed -n 's/^DEVNAME=//p' "$u")
         done
         [ $_fn = 1 ] && { echo "$_fd"; return 0; }

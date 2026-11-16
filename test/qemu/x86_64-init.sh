@@ -24,7 +24,7 @@ if [ -n "$ONCE" ]; then
     ok "by request: state/deploy not written (current d1, no candidate)" "grep -qx current=d1 /run/glassine/system/state/deploy && grep -qx candidate= /run/glassine/system/state/deploy"
 fi
 if grep -q 'glassine\.system=PARTUUID=' /proc/cmdline; then
-    ok "the system partition found by its identity (the kernel's uevent names PARTUUID)" "dmesg | grep -q 'glassine-boot: default: root partition glassine.system=PARTUUID=[0-9a-f-]* is /dev/'"
+    ok "the system partition found by its identity" "dmesg | grep -q 'glassine-boot: default: root partition glassine.system=PARTUUID=[0-9a-f-]* is /dev/'"
     ok "no partition carries the board's names (system, userdata)" "! grep -qx 'PARTNAME=system' /sys/class/block/*/uevent && ! grep -qx 'PARTNAME=userdata' /sys/class/block/*/uevent"
 fi
 ok "the kernel's modules subvolume bound on /lib/modules/$KR" "[ -f /lib/modules/$KR/modules.dep ] && awk '\$2 == \"/lib/modules/$KR\"' /proc/mounts | grep -q ."

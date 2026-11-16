@@ -155,7 +155,22 @@ run once-bad "panic=5 rdinit=/init glassine.deploy.once=../d1" /dep.conf
 ok "glassine.deploy.once= that isn't a deployment id: dropped, said" "grep -q 'glassine.deploy.once=../d1 is not a deployment id: no deployment request' /kmsg.once-bad"
 run once-twice "panic=5 rdinit=/init glassine.deploy.once=d1 glassine.deploy.once=d2" /dep.conf
 ok "glassine.deploy.once= given twice: no request" "grep -q 'glassine.deploy.once= is given more than once' /kmsg.once-twice"
-unset GLASSINE_INIT_SYSBLOCK GLASSINE_INIT_LIB
+# a kernel whose uevent has no PARTUUID= (6.12): the identity read from the disk's GPT
+apk add -q sgdisk >/dev/null 2>&1
+GU=5a0c3e7d-1b2f-4c6a-8d9e-0f1a2b3c4d5e
+SB2=/sysblock2; mkdir -p $SB2/devices/vdz/queue $SB2/devices/vdz/vdz1 /devdir
+head -c 4194304 /dev/zero > /devdir/vdz
+sgdisk -o -n 1:2048:+1M -c 1:pc-system -u 1:$(echo $GU | tr a-f A-F) /devdir/vdz >/dev/null
+printf 'MAJOR=254\nDEVNAME=vdz\nDEVTYPE=disk\n' > $SB2/devices/vdz/uevent; echo 512 > $SB2/devices/vdz/queue/logical_block_size
+printf 'MAJOR=254\nDEVNAME=vdz1\nDEVTYPE=partition\nPARTN=1\nPARTNAME=pc-system\n' > $SB2/devices/vdz/vdz1/uevent; echo 2048 > $SB2/devices/vdz/vdz1/start
+ln -s devices/vdz/vdz1 $SB2/vdz1; ln -s devices/vdz $SB2/vdz
+export GLASSINE_INIT_SYSBLOCK=$SB2 GLASSINE_INIT_DEVDIR=/devdir
+run gpt "panic=5 rdinit=/init glassine.system=PARTUUID=$GU" /dep.conf
+ok "no PARTUUID= in the uevent: the identity read from the disk's GPT entry" "grep -q 'root partition glassine.system=PARTUUID=$GU is /dev/vdz1' /kmsg.gpt"
+echo 4096 > $SB2/devices/vdz/vdz1/start
+run gpt-start "panic=5 rdinit=/init glassine.system=PARTUUID=$GU" /dep.conf
+ok "the GPT entry's first block isn't the partition's start: not taken" "grep -q 'PARTUUID=$GU not found' /kmsg.gpt-start"
+unset GLASSINE_INIT_SYSBLOCK GLASSINE_INIT_LIB GLASSINE_INIT_DEVDIR
 
 # --- boot modules (an archive appended for this kernel, for another, none) ---
 cat > $S/uname <<'EOF2'
@@ -189,6 +204,6 @@ rm -f $S/uname $S/insmod
 run noboard "panic=5 rdinit=/init glassine.return=3 glassine.devmode=usb" /does-not-exist
 ok "no board config: said, no listeners, no root to boot: powers off" "grep -q 'no board config' /kmsg.noboard && ! listens noboard && grep -q 'none configured' /kmsg.noboard && grep -q '^poweroff -f' /calls.noboard"
 
-ok "the test overrides are dropped when the init is PID 1" "[ \"\$(grep -n 'unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS GLASSINE_INIT_LIB GLASSINE_INIT_SYSBLOCK' /m/initramfs/init | cut -d: -f1)\" -lt \"\$(grep -n '^CMDF=' /m/initramfs/init | cut -d: -f1)\" ]"
+ok "the test overrides are dropped when the init is PID 1" "[ \"\$(grep -n 'unset GLASSINE_INIT_CMDLINE GLASSINE_INIT_BOARD GLASSINE_INIT_HOOKS GLASSINE_INIT_LIB GLASSINE_INIT_SYSBLOCK GLASSINE_INIT_DEVDIR' /m/initramfs/init | cut -d: -f1)\" -lt \"\$(grep -n '^CMDF=' /m/initramfs/init | cut -d: -f1)\" ]"
 
 [ $fails = 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; for f in /kmsg.*; do echo "--- $f"; cat $f; done; exit 1; }
