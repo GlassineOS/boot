@@ -266,7 +266,8 @@ since the id is made from its bytes. It may be empty; the command line then star
 with `glassine.system=`. `CMDLINE` is one line of `board.conf`, `CMDLINE="<text>"` or `CMDLINE=<word>`: the
 text between one pair of double quotes, or a bare word, with no backslash, `$`,
 backtick or further quote in it. Every reader of `board.conf` gets the same value from
-that form; a `CMDLINE` in another form is refused for a kernel set.
+that form; a `CMDLINE` in another form, a second `CMDLINE` line or no `CMDLINE` line is refused for a
+kernel set (an empty base is written `CMDLINE=""`).
 
 The whole command line is at most 1920 bytes, so that the one key the loader may add (the one-shot
 deployment request, `glassine.deploy.once=<deployment id>`, 010 FR-042) fits the
