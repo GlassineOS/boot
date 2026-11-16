@@ -102,7 +102,7 @@ write; the loader runs when no system does.
 | `request` | empty, `trial` or `recovery` | set by `glassine-bootimg reboot-test` (`trial`) and by `reboot recovery` (`recovery`); cleared by the loader before it acts on it; cleared by the running system when it finds one the loader left (a loader that can't write) |
 | `unmarked` | the count of starts not marked healthy, decimal | the loader (one more, before it starts the default or the previous set); the boot-success step (`0`: the healthy mark); the shutdown step (one less, 010 FR-012); the recovery (`0`, 010 FR-014) |
 | `started` | id of the set the loader started last | the loader, in the same write as the count or the cleared request |
-| `started_why` | why: `default`, `limit` (the previous set, because the count reached the limit), `choice` (picked in the list), `request` (a trial) | the loader, with `started` |
+| `started_why` | why: `default`, `limit` (the previous set, because the count reached the limit), `choice` (the previous kernel set, picked in the list), `request` (a trial) | the loader, with `started` |
 | `deploys` | the number of entries in the deployment list, `0` to `32` | `glassine-deploy`, in the running system and in the recovery; the installer (`0`) |
 | `deploy1` … `deploy<n>` | `<deployment id> <state> <label>`, separated by single spaces | with `deploys` |
 
@@ -112,7 +112,10 @@ write; the loader runs when no system does.
 - **The limit** is 3 in format 1. With no key pressed and no request, the loader starts,
   by the `unmarked` it reads: below 3 the default set; at 3 the previous set
   (`started_why=limit`); above 3, or at 3 with no previous set that checks, the recovery.
-  A start of the recovery is not counted and writes nothing.
+  A start of the recovery is not counted and writes nothing, apart from clearing a
+  `request=recovery`.
+- **A deployment picked in the list** leaves no mark in the record (010 FR-042): the
+  set starts as it would have without the pick, with the same count and `started_why`.
 - **The shutdown step** takes one off `unmarked`, never below 0, when the system shuts
   down or restarts in an orderly way, the running set is `started`, `started_why` is
   `default`, `limit` or `choice`, no healthy mark was written in this start, the start
@@ -136,9 +139,12 @@ write; the loader runs when no system does.
 2. Removes the override from the splash store and draws (below).
 3. Waits for the recovery key; longer when `unmarked` isn't 0.
 4. Picks: the person's choice from the list, else a request, else by the count.
-5. Checks the set (below). A set that fails is not started, and the next choice is
+5. With a request: writes the record with `request` empty, before it reads anything of
+   the trial set or the recovery, so a set that can't even be read is asked for once.
+6. Checks the set (below). A set that fails is not started, and the next choice is
    taken: the default set, then the previous set, then the recovery.
-6. Writes the record (the count, `started`, the cleared request), then starts the set.
+7. Writes the record for the set it starts (the count, `started`, `started_why`), then
+   starts it. For a trial this is the write of step 5.
 
 With no loader record, or when the recovery the record names fails its check, the loader
 takes the recovery from `\glassine\recovery\` by itself: each directory there whose
