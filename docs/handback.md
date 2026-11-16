@@ -140,10 +140,12 @@ asked:
 
 - **When it opens:** `display=epd-fw` and an extended graphics output that passes the
   checks above; `display_failed` not set; not `drew=1` with `unmarked` above 0; no
-  `glassine.pick=recovery` in the load options; and either `request=menu` in a record
-  read with both slots valid (written by the running system's "reboot to the start
-  menu"), or `unmarked` above 0 (the last start wasn't marked healthy). Else the start
-  is as above: no wait and no refresh but the splash's. A `request=menu` the loader
+  `glassine.pick=recovery` in the load options; a tap source (below); and either
+  `request=menu` in a record read with both slots valid (written by the running
+  system's "reboot to the start menu"), or `unmarked` above 0 (the last start wasn't
+  marked healthy). Else the start is as above: no wait and no refresh but the splash's;
+  with no tap source the loader logs `MENU_NO_INPUT` and the start takes the default at
+  once, counted as without a menu. A `request=menu` the loader
   doesn't open the menu for is cleared in the start's first write.
 - **The menu write**, durable before the first refresh: `request` cleared (when it was
   `menu`), `unmarked` one more than read, `drew=1`. A hang anywhere in the menu is then a
@@ -177,9 +179,14 @@ asked:
   `Fb` the framebuffer's base, the stride `W`. With `display_partial=0` every refresh is
   `(0, 0, W, H)`. Whether a firmware honours a rectangle other than the whole panel is
   the firmware's; `display_partial=0` is the escape where it doesn't.
-- **Input:** the absolute pointer protocol (`GetState` only, never `Reset`), and the
-  console's text input: up and down (and the volume keys) move, Enter and the power key
-  (`SCAN_SUSPEND`) pick.
+- **Input:** taps only: a tap source gives presses and releases at positions on the
+  portrait panel. A machine such as the Note Air has no keys but the power button, so
+  keys don't drive the menu; the loader logs each key it receives (scan code and
+  character, so a run shows what a machine sends, the power key's `SCAN_SUSPEND` among
+  them) and does nothing else with it. A tap source is a firmware absolute pointer of a
+  device's own (`GetState` only, never `Reset`, never waited on), or a touch driver of
+  the loader's own for the panel's controller. The console splitter's pointer on the
+  console-in handle is not one: with no touch driver bound under it, it never reports.
 - **The watchdog:** while the menu is open the loader re-arms the firmware's watchdog
   for 30 seconds before each refresh and at least every 10 seconds, and leaves it armed
   for 30 seconds when it answers; it never disables it. The parent disarms it when
