@@ -394,8 +394,9 @@ gp_sweep() {
 # hand-off whose loader keeps a record names where that directory comes from:
 #   uefi   the boot partition (boot-partition.md), the FAT partition named BOOT_PART
 #          on the disk of the system partition this boot names, mounted for the write
-# No other hand-off keeps a loader record yet (Note Air's hand-back partition,
-# specs/012, is a raw partition: its backend is not built).
+# No other hand-off keeps a loader record here yet (a device boot partition in the
+# raw form, specs/012 and docs/boot-partition.md "The raw form": its backend is not
+# built).
 
 # gp_has_record HANDOFF: 0 when that hand-off's loader keeps a loader record
 gp_has_record() { case $1 in uefi) return 0 ;; esac; return 1; }
