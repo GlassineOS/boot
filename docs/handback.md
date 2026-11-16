@@ -106,7 +106,11 @@ loader.
    CRC matches. Read the image into memory it allocated from the firmware and compare its
    CRC-32. **FAT form:** read `\EFI\glassine\loader.efi` whole, at most 3 MiB less
    4096 bytes, into memory it allocated.
-2. `LoadImage` from that memory, with no device path (`BootPolicy` false). If
+2. `LoadImage` from that memory (`BootPolicy` false), with the boot partition's device
+   path (the `EFI_DEVICE_PATH_PROTOCOL` of its handle) as the image's path. The firmware
+   reads nothing through it, but an EDK2 built with image verification refuses a buffer
+   with no path (`EFI_INVALID_PARAMETER`, Secure Boot off or on; seen with
+   edk2-stable202605). A parent without the partition's device path passes none. If
    `LoadImage` returns a handle with an error (`EFI_SECURITY_VIOLATION`), unload it.
 3. In the child's `EFI_LOADED_IMAGE_PROTOCOL`: set `DeviceHandle` to the boot
    partition's handle (the one with its `EFI_BLOCK_IO_PROTOCOL`) and `LoadOptions` to
