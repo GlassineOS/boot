@@ -169,14 +169,18 @@ and an override that says to leave the screen,
 |---|---|---|---|
 | The store's image format | owned (new); read by each machine's earliest stage | `format=1` | `docs/boot-partition.md`, "The image format" |
 | The store's names on a PC | owned (new) | part of the boot partition's layout | `docs/boot-partition.md`, "The splash store" |
+| The store on a device without FAT | owned (new); the regions `splash-default`, `splash`, `override` of the boot partition's raw form | region table `format=1` | `docs/boot-partition.md`, "The raw form" |
 | The command that sets and removes the splash and the override | owned (new); used by the settings, the session and the hibernate step | — | to be added to `docs/boot.md` |
 | The earliest stage's display mode, readable by the running system | owned (new) | — | to be added to `docs/boot.md` |
 | The earliest stage on a PC | owned | — | 010 FR-048 |
 
 ## Device scope and risk
 
-- **Writes:** the splash store only. On a PC that is the boot partition, under 010's
-  rules.
+- **Writes:** the splash store only. On every machine that is the boot partition
+  (`glassine-boot`): on a PC its FAT form under 010's rules; on a machine whose firmware
+  has no FAT driver, three regions of its raw form, each image no larger than its region
+  (FR-020), replaced by the region write of `docs/boot-partition.md`, which keeps FR-012's
+  order: the override's header is cleared and flushed before it is drawn.
 - **Never:** a start that depends on an image. A boot chain stage that GlassineOS
   doesn't provide or configure is not changed for this; on such a machine the splash
   starts at the first stage GlassineOS owns.
