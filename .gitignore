@@ -1,3 +1,4 @@
 /glassine-reboot
 /initramfs.cpio.gz
 /test/qemu/out/
+/test/qemu/out-x86_64/
