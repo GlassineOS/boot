@@ -251,8 +251,10 @@ what the firmware offers it: the file `\glassine\probe.txt` in the FAT form, the
 `probe` in the raw form. It writes nothing else for the probe, and it makes no firmware
 call for it beyond listing handles and their protocols, reading the memory map, the
 loaded images and a few variables (`GetVariable`), reading the graphics outputs raw
-(below: `QueryMode`, and `GetFrameBuffer` on an extended one) and reading the console's
-mode fields. It never sets a mode, draws, refreshes a panel, or touches hardware.
+(below: `QueryMode`, and `GetFrameBuffer` on an extended one), reading the console's
+mode fields and reading the input devices' interfaces and Modes from memory (no function
+of an input protocol is called: no `Reset`, `GetState` or `ReadKeyStroke`). It never
+sets a mode, draws, refreshes a panel, or touches hardware.
 
 The report is a text record of the same form as the loader record, its last line
 `check=<sha256>` over the bytes before it, at most 65536 bytes. In the raw form it is
@@ -285,10 +287,25 @@ which a reader treats as no report.
 | `var.<name>` | `DisplaySplashBufferInfo`, `UEFIDisplayInfo`: `present size=<n> attr=0x<n> hex=<at most 64 bytes>`; `DISABLEDISPLAY`, `DisplayPanelOverride`: `present size=<n>`; or `absent`, or `error <status>`. Under `gQcomTokenSpaceGuid` `882f8c2b-9646-435f-8de5-f208ff80c1bd`; read only |
 | `conin`, `conout`, `stderr` | `handle=<index or none> <guid> …`: the console handles of the system table and their protocols |
 | `conout.modes` | `max=<max> current=<mode>` of the text output, when there is one |
+| `apointers` | the number of handles with the absolute pointer protocol (`EFI_ABSOLUTE_POINTER_PROTOCOL`, a touch panel or the console splitter's) |
+| `apointer<n>` | `handle=<index> conin=<0 or 1> iface=0x<address>`: `conin=1` for the console-in handle of the system table; `unopened` in place of `iface` when the protocol can't be opened |
+| `apointer<n>.in` | for `Reset` and `GetState`: `image<k>` (the loaded image it points into), `0`, or `-` |
+| `apointer<n>.mode` | `min_x=<n> max_x=<n> min_y=<n> max_y=<n> min_z=<n> max_z=<n> attr=0x<n>` (`AbsoluteMinX` … `AbsoluteMaxZ`, `Attributes`), or the first check the Mode pointer failed (`not-ram` for the interface or the Mode, `null`, `unaligned`) |
+| `apointer<n>.path`, `apointer<n>.guids` | the handle's device path (as `gop<n>.path`) and its protocol GUIDs |
+| `spointers`, `spointer<n>`, `spointer<n>.in`, `spointer<n>.path`, `spointer<n>.guids` | the same for the simple pointer protocol (`EFI_SIMPLE_POINTER_PROTOCOL`) |
+| `spointer<n>.mode` | `res_x=<n> res_y=<n> res_z=<n> left=<0 or 1> right=<0 or 1>` (`ResolutionX` … `RightButton`), or the check that failed |
+| `textins` | the number of handles with the simple text input protocol |
+| `textin<n>` | `handle=<index> conin=<0 or 1> ex=<0 or 1>`: `ex=1` when the handle also has the extended text input protocol |
+| `textin<n>.path`, `textin<n>.guids` | the handle's device path and its protocol GUIDs |
 | `boot_fs` | `1` when the firmware offers a file system (`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`) on the boot partition, so the loader uses the FAT form; `0` when not |
 | `fs_handles` | the number of handles with a file system, on any device: `0` means the firmware has no file system driver it has used, which decides that the machine needs the raw form |
 | `fs<n>` | `handle=<index> part=<GPT partition GUID or -> <partition number or ->`, one per handle with a file system |
 | `log<n>` | the loader's own log lines of this start, as far as room is left |
+
+An input device's interface words and Mode are read only where the memory map says
+their bytes are RAM, and the Mode pointer (the fourth word) only when it is non-zero and
+8-byte aligned, as for a graphics output. A pointer on the console-in handle may be the
+console splitter's, whose Mode is its own scale rather than a device's.
 
 A handle's index is its position in the handle database's list at that start; it is
 stable only within one report. Lines that don't fit are left out: `log` lines first, then
