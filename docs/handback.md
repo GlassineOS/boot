@@ -218,8 +218,8 @@ switches, 66 its reset, 67 its interrupt). The protocols' layout is the loader's
   firmware) and releases when the loader closes it. Through the firmware's PMIC
   regulator protocol it reads (status and level only) the controller's two supplies;
   only with `touch_rail=on` does it
-  set and switch the two supplies (pm660l LDO3, 3.3 V, and pm660 LDO11, 1.8 V), and only
-  ones it found off and set within their range. No other GPIO, bus, regulator or
+  switch the two supplies (pm660l LDO3 and pm660 LDO11) on, and only ones it found off
+  with their set level already within the controller's range; it never sets a level. No other GPIO, bus, regulator or
   register. Every regulator call is logged. Every GPIO and I2C call is logged, except the polls while it waits for the
   controller (its interrupt pin read, and reads of its input register with nothing
   waiting), which are counted. It reads that register only while the interrupt pin is
