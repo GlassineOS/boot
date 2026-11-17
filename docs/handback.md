@@ -68,6 +68,7 @@ differences:
 | `drew` | `1`: a start drew through the firmware's refresh and its last refresh hasn't returned (yet); empty otherwise. Written by the loader only (below) |
 | `display_failed` | set (the count it was set at): a start that drew was never marked healthy, so the loader no longer draws, whatever `unmarked` says. Written by the loader; cleared only by the person's retry, `glassine-loader-mark display-retry`, never by a healthy mark |
 | `touch` | the loader's own touch driver ("The loader's touch driver", below): `probe`: bring the touch controller up once at this start and write what it read into the probe report; the loader clears it in its own write before it touches the controller; `on`: the driver is the start menu's tap source; anything else, or empty: the loader never touches the controller. Set by the running system (`probe`, `on`) or the installer (`on`); the loader only clears `probe` |
+| `touch_rail` | with `touch` `probe` or `on`: `on`: the loader turns the touch controller's two supplies on through the firmware's PMIC regulator protocol when they are off, before its power switches, and off again with the controller ("The loader's touch driver", below); anything else, or empty: it only reads them. Set by the person or the running system for a device run; the loader never writes it |
 | `request` | also `menu`: open the start menu at this start (below); cleared by the loader in its first write of the start, whether the menu opens or not |
 | `deploys`, `deploy1` … | kept as read; the start menu offers them, a headless loader offers no list |
 
@@ -214,15 +215,21 @@ switches, 66 its reset, 67 its interrupt). The protocols' layout is the loader's
   the plain GPIO function and only in the controller's power-up order (its power on, then
   its reset low and high), and only the controller's bus, which the firmware's I2C
   protocol powers when the loader opens it (its clock and its two pins, set by the
-  firmware) and releases when the loader closes it. No other GPIO, bus, regulator or
-  register. Every GPIO and I2C call is logged, except the polls while it waits for the
+  firmware) and releases when the loader closes it. Through the firmware's PMIC
+  regulator protocol it reads (status and level only) the controller's two supplies;
+  only with `touch_rail=on` does it
+  set and switch the two supplies (pm660l LDO3, 3.3 V, and pm660 LDO11, 1.8 V), and only
+  ones it found off and set within their range. No other GPIO, bus, regulator or
+  register. Every regulator call is logged. Every GPIO and I2C call is logged, except the polls while it waits for the
   controller (its interrupt pin read, and reads of its input register with nothing
   waiting), which are counted. It reads that register only while the interrupt pin is
   asserted, as Linux does, or every 50 ms until it has seen it asserted.
 - **As found:** before it drives anything the loader reads the four pins' levels
   (read-only). When both power switches already read high, the controller was powered
   and stays so; else the loader powers it and, when it is done, powers it down again
-  (its reset low, then both switches low) before it answers.
+  (its reset low, then both switches low, then the supplies it turned on off) before it
+  answers, and leaves the three pins it drove configured as inputs (the firmware's
+  protocol can't read a pin's configuration to restore the one found).
 - **Time:** the whole bring-up has one deadline (at most 10 seconds from its first
   call: the controller's application can take seconds after power-up to answer);
   every wait, retry and I2C timeout is cut to what is left of it. A step that fails or
@@ -243,7 +250,8 @@ switches, 66 its reset, 67 its interrupt). The protocols' layout is the loader's
   next start sets `display_failed`). It polls the controller's input register (no
   interrupt), maps the first contact to the portrait panel, and powers the controller
   down when the menu closes. A bring-up that fails leaves the menu without taps: it ends
-  at its timeout as with no input.
+  at its timeout as with no input. When the menu closes the loader logs what it read
+  while the menu was open (polls, the interrupt, frames by report id).
 
 ## The loader region
 
@@ -421,12 +429,12 @@ which a reader treats as no report.
 | `textins` | the number of handles with the simple text input protocol |
 | `textin<n>` | `handle=<index> conin=<0 or 1> ex=<0 or 1>`: `ex=1` when the handle also has the extended text input protocol |
 | `textin<n>.path`, `textin<n>.guids` | the handle's device path and its protocol GUIDs |
-| `i2c`, `gpio` | the firmware's I2C protocol (`b27ae8b1-3e10-4d07-ab5c-eb9a6dc6fa8f`) and GPIO protocol (`ad9aec18-7bf0-4809-9e96-3012309f3df7`): `handle=<index> iface=0x<address>`, `none` when no handle has it, `unopened` when it can't be opened |
-| `i2c.words`, `gpio.words` | the interface's first 6 (I2C) or 8 (GPIO) 64-bit words, `0x<hex>` each, or `not-ram` |
-| `i2c.in`, `gpio.in` | for each word after the first: `image<k>`, `0` or `-`, as `gop<n>.in` |
-| `i2c.check`, `gpio.check` | `ok` when the first word is the revision the loader knows (I2C `0x10000`, GPIO `1`) and the function words point into one loaded image; else the first check that failed (`not-ram`, `revision=0x<n>`, `outside`) |
+| `i2c`, `gpio`, `vreg` | the firmware's I2C protocol (`b27ae8b1-3e10-4d07-ab5c-eb9a6dc6fa8f`), GPIO protocol (`ad9aec18-7bf0-4809-9e96-3012309f3df7`) and PMIC regulator protocol (`22d38d3d-e8b6-4f8f-9c26-bceb07d6cb68`): `handle=<index> iface=0x<address>`, `none` when no handle has it, `unopened` when it can't be opened |
+| `i2c.words`, `gpio.words`, `vreg.words` | the interface's first 6 (I2C) or 8 (GPIO, regulator) 64-bit words, `0x<hex>` each, or `not-ram` |
+| `i2c.in`, `gpio.in`, `vreg.in` | for each word after the first: `image<k>`, `0` or `-`, as `gop<n>.in` |
+| `i2c.check`, `gpio.check`, `vreg.check` | `ok` when the first word is the revision the loader knows (I2C `0x10000`, GPIO `1`, regulator `0x10005`) and the function words point into one loaded image; else the first check that failed (`not-ram`, `revision=0x<n>`, `outside`). No regulator function is called for the report |
 | `gpio.pin<n>` | for each of the touch controller's GPIOs (61, 62, 66, 67), only after `gpio.check=ok`: `<0 or 1>` from the pin read, or `error <status>` |
-| `touch.*` | with `touch=probe` only: the bring-up's steps and results (`touch.found`, `touch.power`, `touch.open`, `touch.hid`, `touch.desc`, `touch.sysinfo`, `touch.res`, `touch.down`, `touch.result`; the loader's spec 005 names them), each a line of text |
+| `touch.*` | with `touch=probe` only: the bring-up's steps and results (`touch.found`, `touch.rail.*`, `touch.power`, `touch.open`, `touch.hid`, `touch.desc`, `touch.sysinfo`, `touch.res`, `touch.down`, `touch.release`, `touch.result`; the loader's spec 005 names them), each a line of text |
 | `boot_fs` | `1` when the firmware offers a file system (`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`) on the boot partition, so the loader uses the FAT form; `0` when not |
 | `fs_handles` | the number of handles with a file system, on any device: `0` means the firmware has no file system driver it has used, which decides that the machine needs the raw form |
 | `fs<n>` | `handle=<index> part=<GPT partition GUID or -> <partition number or ->`, one per handle with a file system |
