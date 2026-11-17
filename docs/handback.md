@@ -215,7 +215,10 @@ switches, 66 its reset, 67 its interrupt). The protocols' layout is the loader's
   its reset low and high), and only the controller's bus, which the firmware's I2C
   protocol powers when the loader opens it (its clock and its two pins, set by the
   firmware) and releases when the loader closes it. No other GPIO, bus, regulator or
-  register. Every GPIO and I2C call is logged.
+  register. Every GPIO and I2C call is logged, except the polls while it waits for the
+  controller (its interrupt pin read, and reads of its input register with nothing
+  waiting), which are counted. It reads that register only while the interrupt pin is
+  asserted, as Linux does, or every 50 ms until it has seen it asserted.
 - **As found:** before it drives anything the loader reads the four pins' levels
   (read-only). When both power switches already read high, the controller was powered
   and stays so; else the loader powers it and, when it is done, powers it down again
