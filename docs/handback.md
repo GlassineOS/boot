@@ -220,11 +220,13 @@ switches, 66 its reset, 67 its interrupt). The protocols' layout is the loader's
   (read-only). When both power switches already read high, the controller was powered
   and stays so; else the loader powers it and, when it is done, powers it down again
   (its reset low, then both switches low) before it answers.
-- **Time:** the whole bring-up has one deadline (at most 3 seconds from its first call);
+- **Time:** the whole bring-up has one deadline (at most 10 seconds from its first
+  call: the controller's application can take seconds after power-up to answer);
   every wait, retry and I2C timeout is cut to what is left of it. A step that fails or
   runs out of time ends the bring-up there, logged, with the controller powered down as
   above; the start goes on as without the driver. The bring-up never blocks the answer
-  (the floor) and never comes near the parent's 30-second watchdog.
+  (the floor); the loader re-arms the firmware watchdog (30 seconds) just before it, so
+  it stays well inside one watchdog period.
 - **`touch=probe`:** the loader first writes the record with `touch` cleared (the
   write durable, as every write), and only then brings the controller up: a bring-up that
   hangs inside the firmware is a watchdog reset that doesn't repeat at the next start.
