@@ -347,7 +347,10 @@ the next start without a choice runs the current deployment again.
 - **FR-039** The loader shows no menu by default. During its wait, about two seconds,
   it shows one line that names the recovery key. The key opens a short list:
   GlassineOS, the previous deployment and "more" for the other deployments (FR-040),
-  the previous kernel, the recovery, the firmware's set-up. The other system is not in
+  the previous kernel, the recovery, the firmware's set-up. A machine whose parent
+  bootloader can't start a kernel set (the board says so;
+  [handback.md](../../docs/handback.md#the-start-menu)) leaves the previous kernel out.
+  The other system is not in
   the list; it is started from the firmware's own boot menu, so its start is never
   altered by passing through our loader.
 - **FR-048** The loader is the earliest stage that owns the display on a PC, so it draws
@@ -365,7 +368,9 @@ the next start without a choice runs the current deployment again.
   starts its layer from empty.
 - **FR-041** The loader has the list from the loader record. The running system and the
   recovery write it there whenever a command changes which deployments exist or what
-  they are (switch, accept, select, rollback, remove), under FR-019. The loader can't
+  they are (switch, accept, select, rollback, remove), under FR-019, and the boot-success step
+  on a start that accepts nothing, so a list written before it is brought up to date.
+  The loader can't
   read the system partition, so the list may be out of date; FR-043 covers that.
 - **FR-042** A deployment picked in the list is a one-shot request to the initramfs,
   passed with this start only (on the kernel command line). The loader writes nothing
@@ -374,6 +379,13 @@ the next start without a choice runs the current deployment again.
   applies. The request (`glassine.deploy.once=`;
   [boot.md](../../docs/boot.md#command-line-keys)) is the only thing the loader adds to
   a kernel set's command line.
+  Where the loader's parent bootloader passes no command line (the board says so;
+  [handback.md](../../docs/handback.md#the-start-menu)), the request goes through the
+  loader record instead: the loader writes the picked id as a one-shot key with the
+  start's own record write, and the initramfs clears it in the record, read back,
+  before it takes it. A request it can't clear is not taken, so it never outlives the
+  start it was made for; any other pick clears one still there. On a PC nothing
+  changes.
 - **FR-043** With a request, the initramfs starts that deployment in place of the pick
   of 001 FR-005, for this start only. `state/deploy` is not written: current stays
   current, the requested deployment is no candidate, and no deployment try is used or

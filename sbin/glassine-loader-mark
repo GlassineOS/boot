@@ -28,12 +28,31 @@
 #                                      (both forms, 012 FR-021). Run by
 #                                      glassine-reboot-clean before its reboot
 #   glassine-loader-mark request clear a menu or recovery request taken back
-#   glassine-loader-mark display-sync  the record's `display` set to the board's
-#                                      LOADER_DISPLAY (board.conf; e.g. epd-fw)
-#                                      when it differs; LOADER_DISPLAY absent or
-#                                      empty: nothing written. Never touches
+#   glassine-loader-mark display-sync  the board's loader keys (board.conf), in one
+#                                      write when one differs: the record's
+#                                      `display` set to LOADER_DISPLAY (e.g.
+#                                      epd-fw), and an empty `touch` set to
+#                                      LOADER_TOUCH (on: the loader's touch driver
+#                                      in the start menu; a person's touch value,
+#                                      probe or off, is kept), `parent_cmdline` and
+#                                      `parent_sets` set to LOADER_PARENT_CMDLINE
+#                                      and LOADER_PARENT_SETS (no: the parent
+#                                      bootloader passes no command line, boots no
+#                                      kernel set; docs/handback.md). All absent
+#                                      or empty: nothing written. Never touches
 #                                      display_failed or drew (only display-retry
 #                                      clears those). Run by glassine-loader-update
+#   glassine-loader-mark deploys       the deployment list (docs/boot-partition.md
+#                                      "Keys": deploys, deploy1 ...) from stdin, one
+#                                      "<id> <state> <label>" line per deployment
+#                                      (state previous, candidate, failed or kept;
+#                                      label up to 64 printable ASCII characters),
+#                                      at most 32; deployN keys past the new count
+#                                      cleared; one write, only when it differs. A
+#                                      line that breaks the form is said and left
+#                                      out. Run by glassine-deploy (publish), which
+#                                      holds the state lock and says so with
+#                                      GLASSINE_LOADER_MARK_LOCKED=1
 #   glassine-loader-mark can-request menu|recovery
 #                                      exit 0 when this board's loader takes that
 #                                      request, 3 when it doesn't; reads only
@@ -79,6 +98,9 @@
 # docs/handback.md): it is this boot's when this boot runs no set either slot of
 # the record names.
 #
+# The deployment list (deploys) is written by glassine-deploy, which holds the state
+# lock already: with GLASSINE_LOADER_MARK_LOCKED=1 this tool takes no lock itself.
+#
 # Exit: 0 written or nothing to write, 1 not written (said; for request: the
 # record in use is as it was, or holds a request the loader won't take), 2 usage,
 # 3 (has-record) no loader record, (request, can-request) this board's loader
@@ -93,7 +115,7 @@ GBLIB=${GLASSINE_BI_LIB:-/usr/lib/glassine-boot}
 RUN_DIR=/run/glassine SYSTEM_MNT=/run/glassine/system ACCEPT_BUSY_S=600
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
-HANDOFF='' BOOT_FORM='' BOOT_PART=glassine-boot LOADER_DISPLAY=''
+HANDOFF='' BOOT_FORM='' BOOT_PART=glassine-boot LOADER_DISPLAY='' LOADER_TOUCH='' LOADER_PARENT_CMDLINE='' LOADER_PARENT_SETS=''
 # shellcheck source=/dev/null
 [ -r "$BOARD" ] && . "$BOARD"
 # after board.conf: its CMDLINE is the set's base command line, not this file
@@ -108,9 +130,9 @@ say() {
 }
 
 cmd=${1:-} what=${2:-}
-USAGE="usage: glassine-loader-mark has-record|healthy|shutdown|display-retry|display-sync|request menu|recovery|clear|can-request menu|recovery"
+USAGE="usage: glassine-loader-mark has-record|healthy|shutdown|display-retry|display-sync|deploys|request menu|recovery|clear|can-request menu|recovery"
 case $cmd in
-has-record|healthy|shutdown|display-retry|display-sync) [ $# = 1 ] || { echo "$USAGE" >&2; exit 2; } ;;
+has-record|healthy|shutdown|display-retry|display-sync|deploys) [ $# = 1 ] || { echo "$USAGE" >&2; exit 2; } ;;
 request) [ $# = 2 ] && case $what in menu|recovery|clear) ;; *) false ;; esac || { echo "$USAGE" >&2; exit 2; } ;;
 can-request) [ $# = 2 ] && case $what in menu|recovery) ;; *) false ;; esac || { echo "$USAGE" >&2; exit 2; } ;;
 *) echo "$USAGE" >&2; exit 2 ;;
@@ -137,8 +159,33 @@ esac
 gp_has_record "$kind" || { [ "$cmd" = has-record ] && exit 3; exit 0; }
 [ "$cmd" = has-record ] && exit 0
 if [ "$cmd" = display-sync ]; then
-    [ -n "$LOADER_DISPLAY" ] || exit 0
+    [ -n "$LOADER_DISPLAY$LOADER_TOUCH$LOADER_PARENT_CMDLINE$LOADER_PARENT_SETS" ] || exit 0
     case $LOADER_DISPLAY in *[!a-z0-9-]*) say "board.conf: LOADER_DISPLAY '$LOADER_DISPLAY' is not a value of the record: nothing written"; exit 1 ;; esac
+    case $LOADER_TOUCH in ''|on) ;; *) say "board.conf: LOADER_TOUCH '$LOADER_TOUCH' is not a value of the record (on): nothing written"; exit 1 ;; esac
+    for v in "$LOADER_PARENT_CMDLINE" "$LOADER_PARENT_SETS"; do
+        case $v in ''|no) ;; *) say "board.conf: LOADER_PARENT_CMDLINE/LOADER_PARENT_SETS '$v' is not a value of the record (no): nothing written"; exit 1 ;; esac
+    done
+fi
+# the deployment list, read and checked before the lock: "<id> <state> <label>" lines
+if [ "$cmd" = deploys ]; then
+    DL=$(mktemp "${GLASSINE_BI_TMP:-/run}/glassine-loader-mark.deploys.XXXXXX") || { say "cannot make a temporary file: nothing written"; exit 1; }
+    dn=0
+    while IFS= read -r l || [ -n "$l" ]; do
+        [ -n "$l" ] || continue
+        id=${l%% *} rest=''
+        [ "$id" = "$l" ] || rest=${l#* }
+        state=${rest%% *} label=''
+        [ "$state" = "$rest" ] || label=${rest#* }
+        bad=''
+        case $id in ''|.*|*[!A-Za-z0-9._-]*) bad="not a deployment id" ;; esac
+        case $state in previous|candidate|failed|kept) ;; *) bad=${bad:-"state '$state' is not previous, candidate, failed or kept"} ;; esac
+        [ ${#label} -le 64 ] || bad=${bad:-"the label is longer than 64 characters"}
+        case $label in *[!\ -~]*) bad=${bad:-"the label holds a character outside printable ASCII"} ;; esac
+        if [ -n "$bad" ]; then say "deploys: '$l' left out: $bad"; continue; fi
+        [ $dn -lt 32 ] || { say "deploys: more than 32 deployments: '$l' and the ones after it left out"; break; }
+        dn=$((dn + 1))
+        echo "deploy$dn=$id $state${label:+ $label}" >> "$DL"
+    done
 fi
 
 # the shutdown step's conditions that need no record (FR-012)
@@ -150,22 +197,24 @@ if [ "$cmd" = shutdown ]; then
     # under a parent (the raw form) the baseline may run with no image id
     [ -n "$run" ] || [ "$kind" = raw ] || exit 0
     wait_s=${LOCK_WAIT:-10}
-elif [ "$cmd" = request ] || [ "$cmd" = display-sync ]; then
+elif [ "$cmd" = request ] || [ "$cmd" = display-sync ] || [ "$cmd" = deploys ]; then
     wait_s=${LOCK_WAIT:-10}     # a person waits for the reboot; the accept step for the update
 else
     wait_s=${LOCK_WAIT:-$ACCEPT_BUSY_S}
 fi
 
-[ -d "$SYS/state" ] || { say "the system partition's state is not at $SYS: nothing written"; exit 1; }
-exec 9>>"$SYS/state/.lock" || { say "cannot open $SYS/state/.lock: nothing written"; exit 1; }
-n=0
-until flock -n 9; do
-    [ $n -lt "$wait_s" ] || { say "busy: $SYS/state/.lock stayed held: nothing written"; exit 6; }
-    sleep 1; n=$((n + 1))
-done
+if [ "${GLASSINE_LOADER_MARK_LOCKED:-}" != 1 ]; then
+    [ -d "$SYS/state" ] || { say "the system partition's state is not at $SYS: nothing written"; exit 1; }
+    exec 9>>"$SYS/state/.lock" || { say "cannot open $SYS/state/.lock: nothing written"; exit 1; }
+    n=0
+    until flock -n 9; do
+        [ $n -lt "$wait_s" ] || { say "busy: $SYS/state/.lock stayed held: nothing written"; exit 6; }
+        sleep 1; n=$((n + 1))
+    done
+fi
 
 rc=0
-trap 'gp_close >/dev/null 2>&1; gp_clean' EXIT
+trap 'gp_close >/dev/null 2>&1; gp_clean; rm -f "${DL:-}"' EXIT
 gp_open "$kind" "$CMDLINE" "$BOOT_PART" "$MNT" || { say "$GP_WHY: nothing written"; exit 1; }
 if ! gp_in_use "$GP_DIR"; then
     say "$GP_WHY: nothing written"
@@ -175,15 +224,53 @@ count=$(gp_get "$GP_REC" unmarked)
 case $count in ''|*[!0-9]*) say "the record's unmarked is '$count', not a count: nothing written"; exit 1 ;; esac
 case $cmd in
 display-sync)
-    cur=$(gp_get "$GP_REC" display)
-    if [ "$cur" = "$LOADER_DISPLAY" ]; then
+    cur=$(gp_get "$GP_REC" display) tcur=$(gp_get "$GP_REC" touch)
+    set --
+    [ -z "$LOADER_DISPLAY" ] || [ "$cur" = "$LOADER_DISPLAY" ] || set -- "display=$LOADER_DISPLAY"
+    [ -z "$LOADER_TOUCH" ] || [ -n "$tcur" ] || set -- "$@" "touch=$LOADER_TOUCH"
+    [ -z "$LOADER_PARENT_CMDLINE" ] || [ "$(gp_get "$GP_REC" parent_cmdline)" = "$LOADER_PARENT_CMDLINE" ] || set -- "$@" "parent_cmdline=$LOADER_PARENT_CMDLINE"
+    [ -z "$LOADER_PARENT_SETS" ] || [ "$(gp_get "$GP_REC" parent_sets)" = "$LOADER_PARENT_SETS" ] || set -- "$@" "parent_sets=$LOADER_PARENT_SETS"
+    if [ $# = 0 ]; then
         :
-    elif ! gp_write "$GP_DIR" "display=$LOADER_DISPLAY"; then
-        say "display=$LOADER_DISPLAY not written: $GP_WHY"; rc=1
-    elif ! gp_in_use "$GP_DIR" || [ "$(gp_get "$GP_REC" display)" != "$LOADER_DISPLAY" ]; then
-        say "display=$LOADER_DISPLAY: the record in use doesn't hold it"; rc=1
+    elif ! gp_write "$GP_DIR" "$@"; then
+        say "$* not written: $GP_WHY"; rc=1
+    elif ! gp_in_use "$GP_DIR"; then
+        say "$*: the record can't be read back ($GP_WHY)"; rc=1
     else
-        say "display=$LOADER_DISPLAY written (was '$cur')"
+        for kv in "$@"; do
+            if [ "$(gp_get "$GP_REC" "${kv%%=*}")" != "${kv#*=}" ]; then
+                say "$kv: the record in use doesn't hold it"; rc=1
+            elif [ "${kv%%=*}" = display ]; then
+                say "$kv written (was '$cur')"
+            elif [ "${kv%%=*}" = touch ]; then
+                say "$kv written (was '$tcur')"
+            else
+                say "$kv written"
+            fi
+        done
+    fi
+    ;;
+deploys)
+    old=$(gp_get "$GP_REC" deploys)
+    set -- "deploys=$dn"
+    while IFS= read -r kv; do set -- "$@" "$kv"; done < "$DL"
+    k=$((dn + 1))
+    while [ $k -le 32 ]; do
+        grep -q "^deploy$k=" "$GP_REC" && set -- "$@" "deploy$k="
+        k=$((k + 1))
+    done
+    same=1
+    for kv in "$@"; do
+        [ "$(gp_get "$GP_REC" "${kv%%=*}")" = "${kv#*=}" ] && grep -q "^${kv%%=*}=" "$GP_REC" || { same=0; break; }
+    done
+    if [ $same = 1 ]; then
+        say "deploys: the record holds this list already ($dn): nothing written"
+    elif ! gp_write "$GP_DIR" "$@"; then
+        say "deploys=$dn not written: $GP_WHY"; rc=1
+    elif ! gp_in_use "$GP_DIR" || [ "$(gp_get "$GP_REC" deploys)" != "$dn" ]; then
+        say "deploys=$dn: the record in use doesn't hold it"; rc=1
+    else
+        say "deploys=$dn written (was '${old}')"
     fi
     ;;
 request)

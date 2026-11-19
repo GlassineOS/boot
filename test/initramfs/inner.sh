@@ -170,6 +170,38 @@ ok "no PARTUUID= in the uevent: the identity read from the disk's GPT entry" "gr
 echo 4096 > $SB2/devices/vdz/vdz1/start
 run gpt-start "panic=5 rdinit=/init glassine.system=PARTUUID=$GU" /dep.conf
 ok "the GPT entry's first block isn't the partition's start: not taken" "grep -q 'PARTUUID=$GU not found' /kmsg.gpt-start"
+# the start menu's deployment pick through the loader record (BOOT_FORM=raw, a parent
+# that passes no command line): deploy_once taken, cleared first, for one start only
+apk add -q python3 >/dev/null 2>&1
+RM="python3 /m/test/bootraw/raw_model.py"
+SB3=/sysblock3; mkdir -p $SB3/bp /devdir3
+printf 'MAJOR=179\nDEVNAME=bp\nPARTN=52\nPARTNAME=glassine-boot\n' > $SB3/bp/uevent
+# the root partition (found: the record is read once it is; no btrfs, so no root after)
+mkdir -p $SB3/rf; printf 'MAJOR=179\nDEVNAME=rf\nPARTN=50\nPARTNAME=rootfs\n' > $SB3/rf/uevent; : > /devdir3/rf
+truncate -s 16777216 /devdir3/bp; GLASSINE_BI_LIB=/m/lib GLASSINE_BI_TMP=/tmp sh /m/sbin/glassine-boot-raw init /devdir3/bp
+$RM seed /devdir3/bp /m/test/bootpart/golden/loader.a /m/test/bootpart/golden/loader.b
+$RM next /devdir3/bp deploy_once=20261115-102217 zz_unknown=keep
+{ cat /dep.conf; echo BOOT_FORM=raw; } > /raw.conf
+export GLASSINE_INIT_SYSBLOCK=$SB3 GLASSINE_INIT_DEVDIR=/devdir3
+rrec() { $RM item /devdir3/bp record | sed -n "s/^$1=//p"; }
+run raw-once "panic=5 rdinit=/init glassine.return=3 _kip_initramfs" /raw.conf
+ok "raw: the record's deploy_once taken for this start, cleared in the record first, every other key kept" "grep -q 'deployment request 20261115-102217 from the loader record (deploy_once, cleared): for this start only' /kmsg.raw-once && [ -z \"\$(rrec deploy_once)\" ] && [ \"\$(rrec zz_unknown)\" = keep ]"
+run raw-once-2 "panic=5 rdinit=/init glassine.return=3 _kip_initramfs" /raw.conf
+ok "raw: the next start finds none: no request (the ordinary pick)" "! grep -q 'deployment request' /kmsg.raw-once-2 && ! grep -q 'loader record:' /kmsg.raw-once-2"
+$RM next /devdir3/bp deploy_once=d9
+run raw-cmdline "panic=5 rdinit=/init glassine.return=3 _kip_initramfs glassine.deploy.once=d1" /raw.conf
+ok "raw: a request on the command line wins; the record's left for a later start" "! grep -q 'from the loader record' /kmsg.raw-cmdline && [ \"\$(rrec deploy_once)\" = d9 ]"
+run raw-test "panic=5 rdinit=/init glassine.return=3 glassine.test" /raw.conf
+ok "raw: the test role never takes it" "! grep -q 'from the loader record' /kmsg.raw-test && [ \"\$(rrec deploy_once)\" = d9 ]"
+$RM next /devdir3/bp deploy_once=../d1
+run raw-bad "panic=5 rdinit=/init glassine.return=3 _kip_initramfs" /raw.conf
+ok "raw: a deploy_once that is no deployment id: cleared, not taken" "grep -q 'is not a deployment id: cleared' /kmsg.raw-bad && [ -z \"\$(rrec deploy_once)\" ]"
+$RM next /devdir3/bp deploy_once=d9
+# every slot write reads back other bytes (a byte flipped after it)
+export GLASSINE_BI_TEST=1 GLASSINE_BI_AFTER_PUT='case $2 in 65536|81920) printf Z | dd of="$1" bs=1 seek=$(($2 + 64)) conv=notrunc 2>/dev/null ;; esac; :'
+run raw-ro "panic=5 rdinit=/init glassine.return=3 _kip_initramfs" /raw.conf
+unset GLASSINE_BI_TEST GLASSINE_BI_AFTER_PUT
+ok "raw: a record that can't be written: deploy_once not taken (it would repeat)" "grep -q \"deploy_once=d9 in the loader record can't be cleared\" /kmsg.raw-ro && ! grep -q 'deployment request d9' /kmsg.raw-ro"
 unset GLASSINE_INIT_SYSBLOCK GLASSINE_INIT_LIB GLASSINE_INIT_DEVDIR
 
 # --- boot modules (an archive appended for this kernel, for another, none) ---

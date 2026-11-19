@@ -170,8 +170,8 @@ write; the loader runs when no system does.
 | `unmarked` | the count of starts not marked healthy, decimal | the loader (one more, before it starts the default or the previous set); the boot-success step (`0`: the healthy mark); the shutdown step (one less, 010 FR-012); the recovery (`0`, 010 FR-014) |
 | `started` | id of the set the loader started last | the loader, in the same write as the count or the cleared request |
 | `started_why` | why: `default`, `limit` (the previous set, because the count reached the limit), `choice` (the previous kernel set, picked in the list), `request` (a trial) | the loader, with `started` |
-| `deploys` | the number of entries in the deployment list, `0` to `32` | `glassine-deploy`, in the running system and in the recovery; the installer (`0`) |
-| `deploy1` … `deploy<n>` | `<deployment id> <state> <label>`, separated by single spaces | with `deploys` |
+| `deploys` | the number of entries in the deployment list, `0` to `32` | `glassine-deploy publish` (through `glassine-loader-mark deploys`), in the running system and in the recovery; the installer (`0`) |
+| `deploy1` … `deploy<n>` | `<deployment id> <state> <label>`, separated by single spaces: the state `previous`, `candidate`, `failed` or `kept` (never the current or a staged one, never one whose base is gone), in that order, the kept ones by id; the label `<base> <created date>`, at most 64 printable ASCII characters (the base cut) | with `deploys` |
 
 - **The healthy mark** is the write of `unmarked=0`. The boot-success step makes it on
   every start that reaches the health conditions (010 FR-023), whichever set and
@@ -730,7 +730,7 @@ FR-020); the installer writes the first.
 **The loader record** in the raw form is written by the same code as on FAT
 (`gp_write`): the slot not in use, its 16384 bytes at the slot's place in `record`,
 flushed and read back (one retry). `glassine-loader-mark` (`healthy`, `display-retry`,
-`shutdown`, `request`, `display-sync`) does so on a board whose `board.conf` says `BOOT_FORM=raw`; the
+`shutdown`, `request`, `display-sync`, `deploys`) does so, and the initramfs when it takes a `deploy_once` (handback.md), on a board whose `board.conf` says `BOOT_FORM=raw`; the
 partition is the one named `BOOT_PART` (default `glassine-boot`), found on the system
 partition's disk when the command line names one (`glassine.system=PARTUUID=`), else as
 the one partition of that name on any disk (a device with one disk). A slot whose last
@@ -750,6 +750,22 @@ package's files) writes `display` to it when the record holds another value, by
 `gp_write` with its read-back; it never writes `display_failed` or `drew`, so a sticky
 `display_failed` stays until the person's `display-retry`. Empty or absent: `display` is
 left as it is (the installer's).
+
+`LOADER_TOUCH`, `LOADER_PARENT_CMDLINE`, `LOADER_PARENT_SETS` (board keys, raw form
+only), written by the same step in the same write as `display`, each only when the
+record holds another value: `LOADER_TOUCH=on` sets an empty `touch` to `on` (the
+loader's touch driver in the start menu; a person's `probe` or `off` is kept);
+`LOADER_PARENT_CMDLINE=no` and `LOADER_PARENT_SETS=no` set `parent_cmdline=no` and
+`parent_sets=no`: the parent passes no command line, so a start menu's deployment pick
+goes through the record's `deploy_once`, and it boots no kernel set, so the menu offers
+no previous kernel (handback.md, "The start menu"). Empty or absent: left as they are.
+
+The deployment list (`deploys`, `deploy1` …) is written by `glassine-deploy publish`
+through `glassine-loader-mark deploys` (one write, only when it differs, `deployN` past
+the new count cleared) after every command that changes which deployments exist or
+what they are (switch, accept, select, rollback, remove, stage), and on every healthy
+start that accepts nothing (010 FR-041). `deploy_once` is cleared by the initramfs
+before it starts that deployment (handback.md).
 
 Every write of `glassine-boot-raw` and of the record's writers holds an exclusive
 lock (`flock`) on the device, so a region write and a record write never overlap; the

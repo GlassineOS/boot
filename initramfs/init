@@ -96,7 +96,7 @@ boot_modules() {
 }
 boot_modules
 
-ROOT_PART='' ROOT_FSTYPE=ext4 ROOT_LAYOUT=plain USERDATA_PART='' USERDATA_PREFIX=media/glassine DEVICE_PART='' DEFAULT_ROLE_MATCH='' DEVMODE_ADDR='' DEVMODE_NETMASK=255.255.255.0
+BOOT_FORM='' BOOT_PART=glassine-boot ROOT_PART='' ROOT_FSTYPE=ext4 ROOT_LAYOUT=plain USERDATA_PART='' USERDATA_PREFIX=media/glassine DEVICE_PART='' DEFAULT_ROLE_MATCH='' DEVMODE_ADDR='' DEVMODE_NETMASK=255.255.255.0
 DEVMODE_DHCP_START='' DEVMODE_DHCP_END='' USB_VENDOR=0x1d6b USB_PRODUCT=0x0104 USB_MANUFACTURER=GlassineOS
 if [ -r "$BOARD" ]; then
     # shellcheck source=/dev/null
@@ -310,6 +310,10 @@ part_what() {
 # (KBOOT, FR-011).
 mount_deployments() {
     U=''
+    if [ $ONCE_RECORD = 1 ]; then
+        ONCE=$(record_once); ONCE_RECORD=0
+        case $ONCE in .*|*[!A-Za-z0-9._-]*) log "the loader record's request '$ONCE' is not a deployment id: none"; ONCE='' ;; esac
+    fi
     if part_given glassine.userdata "$USERDATA_PART"; then
         U=$(part_for glassine.userdata "$USERDATA_PART") || log "default: userdata $(part_what glassine.userdata "$USERDATA_PART") not found"
     fi
@@ -413,6 +417,34 @@ if [ "$ROOT_LAYOUT" = deployments ]; then
     *:.*|*:|*:*[!A-Za-z0-9._-]*) log "glassine.deploy.once=$ONCE is not a deployment id: no deployment request"; ONCE='' ;;
     esac
 fi
+# The same request from the loader record (docs/handback.md, "A deployment picked
+# under a parent that passes no command line"): with BOOT_FORM=raw, on the default
+# role and with no glassine.deploy.once= on the command line, the record's
+# deploy_once=<id> (the start menu's pick) is cleared in the record first, a write
+# read back, and only then taken, so it serves this start only; one that can't be
+# cleared is not taken (it would come back at every start). Read once the root
+# partition is found (mount_deployments), so the disk that holds both is there.
+record_once() (
+    exec 3>&1 1>&2      # stdout carries the id only
+    # shellcheck disable=SC2034  # read by the library
+    GP_TMP=/tmp GLASSINE_BI_SYSBLOCK=$SYSBLOCK GLASSINE_BI_DEVDIR=$DEVDIR
+    # shellcheck source=../lib/glassine-bootpart.sh
+    . "$LIBDIR/glassine-bootpart.sh" 2>/dev/null || { log "$LIBDIR has no glassine-bootpart.sh: the loader record not read"; exit 0; }
+    trap 'gp_close >/dev/null 2>&1; gp_clean' EXIT
+    gp_open raw "$CMDF" "$BOOT_PART" /tmp/boot-partition || { log "the loader record: $GP_WHY: no deployment request read"; exit 0; }
+    gp_in_use "$GP_DIR" || { log "the loader record: $GP_WHY: no deployment request read"; exit 0; }
+    _ro=$(gp_get "$GP_REC" deploy_once)
+    [ -n "$_ro" ] || exit 0
+    if ! gp_write "$GP_DIR" deploy_once= || ! gp_in_use "$GP_DIR" || [ -n "$(gp_get "$GP_REC" deploy_once)" ]; then
+        log "deploy_once=$_ro in the loader record can't be cleared (${GP_WHY:-it reads back}): not taken"
+        exit 0
+    fi
+    case $_ro in .*|*[!A-Za-z0-9._-]*) log "deploy_once=$_ro in the loader record is not a deployment id: cleared, no deployment request"; exit 0 ;; esac
+    log "deployment request $_ro from the loader record (deploy_once, cleared): for this start only"
+    echo "$_ro" >&3
+)
+ONCE_RECORD=0
+[ "$ROOT_LAYOUT" = deployments ] && [ -z "$ONCE" ] && [ "$BOOT_FORM" = raw ] && [ $DEFAULT = 1 ] && ONCE_RECORD=1
 if [ -n "$IMG_ID" ] && [ "$ROOT_LAYOUT" = deployments ]; then
     P=$(find_root)
     [ -z "$P" ] || KBOOT=$(gr_kernel_mode "/dev/$P" "$IMG_ID")
