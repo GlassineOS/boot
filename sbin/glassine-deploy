@@ -7,11 +7,12 @@
 #
 #   glassine-deploy status [--porcelain]
 #   glassine-deploy list [--porcelain]
-#   glassine-deploy select ID [--yes] [--discard-hibernation]
-#   glassine-deploy rollback [--yes] [--discard-hibernation]
+#   glassine-deploy select ID [--yes] [--discard-hibernation] [--restart]
+#   glassine-deploy rollback [--yes] [--discard-hibernation] [--restart]
 #   glassine-deploy hibernate-invalidate [--yes]
-#   glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation]
-#   glassine-deploy stage BASE [--no-replay] [--without NAME]… [--accept-downgrades] [--now] [--yes] [--discard-hibernation]
+#   glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation] [--restart]
+#   glassine-deploy stage BASE [--no-replay] [--without NAME]… [--accept-downgrades] [--now] [--yes] [--discard-hibernation] [--restart]
+#   glassine-deploy restart [--check [--porcelain] | --soft | --cold] [--once ID]
 #   glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
 #   glassine-deploy receive FILE --boot [--sha256 HEX] [--discard-hibernation]
 #   glassine-deploy bases [--porcelain]
@@ -23,6 +24,11 @@
 #   glassine-deploy publish
 #   glassine-deploy init POOL_MOUNT [--install-marker]
 #
+# restart restarts soft (PID 1 re-enters the kept initramfs assembly: no
+# firmware, no loader, no kernel start) where the rules allow, else cold; --check
+# says which and why (exit 0 soft, 9 cold), --soft refuses a cold one (exit 9),
+# --once ID starts ID for one session; --restart on select/rollback/reset/stage
+# restarts after the command.
 # select makes ID the candidate for the next boot (2 tries, then the current
 # one again); selecting the current deployment cancels a candidate. rollback
 # = select the previous one. hibernate-invalidate turns a hibernate image on
@@ -104,9 +110,11 @@ CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 LIB=${GLASSINE_DEPLOY_LIB:-/usr/lib/glassine-boot/glassine-state.sh}
 SYSTEM_DEV='' SYSTEM_MNT=/run/glassine/system
 USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata USERDATA_PREFIX=media/glassine
-RUN_DIR=/run/glassine
+RUN_DIR=/run/glassine SOFT_RESTART=yes RESTART_LIMIT_S=20 SWITCH_MIN_CAPACITY=30
+SOFT_START=/usr/lib/glassine-boot/soft-start
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
+SWITCH_HOOK=${GLASSINE_SWITCH_HOOK:-/usr/sbin/glassine-switch-hook}
 # shellcheck source=../lib/glassine-state.sh
 . "$LIB" || { echo "glassine-deploy: cannot read $LIB" >&2; exit 1; }
 # shellcheck source=../lib/glassine-root.sh
@@ -582,6 +590,14 @@ cmd_status() {
     fi
     out twrp_keep "$_kv"
     storage_status
+    # a restart now (013 FR-006, FR-008): soft or cold and why, the switch, how
+    # this start came
+    if [ "$fmt" != none ] && gs_format_ok "$fmt"; then
+        ONCE_ID=''
+        restart_decide quick
+        if [ -z "$RW" ]; then out restart soft; out restart_reason ''; else out restart cold; out restart_reason "$RW"; fi
+    fi
+    out last_start "$(gs_kv "$RUN_DIR/restart" kind)"
     out swapfile "$SWAPFILE"
     out guard "$GUARD"
     [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
@@ -739,6 +755,18 @@ migrate_paths() {
     cat "$1/usr/share/glassine/migrate.list" "$1"/usr/share/glassine/migrate.d/*.list \
         ${2:+"$2"/usr/share/glassine/migrate.d/*.list} "$1"/etc/glassine/migrate.d/*.list 2>/dev/null |
         sed 's/#.*//; s/[[:space:]]*$//' | grep '^/' | grep -v '\.\.' | sort -u
+}
+
+# switch_space VIEW NEWBASEDIR: is there room on userdata for the switch's copy of
+# the migrate list from the root at VIEW? Sets need and avail (KiB). The switch's
+# own check, and restart --check's beforehand (013 FR-012).
+switch_space() {
+    need=1024
+    for p in $(migrate_paths "$1" "$2"); do
+        [ -e "$1$p" ] && need=$((need + $(du -sk "$1$p" | cut -f 1)))
+    done
+    avail=$(df -Pk "$USERDATA_MNT" | awk 'NR == 2 { print $4 }')
+    [ "${avail:-0}" -gt "$need" ]
 }
 
 cmd_reset() {
@@ -992,12 +1020,7 @@ do_switch() {
         view=$TMP_VIEW
         nb=$(gs_kv "$nd/meta" base)
         nbv=''; [ -n "$nb" ] && nbv=$SYSTEM_MNT/bases/$nb
-        need=1024
-        for p in $(migrate_paths "$view" "$nbv"); do
-            [ -e "$view$p" ] && need=$((need + $(du -sk "$view$p" | cut -f 1)))
-        done
-        avail=$(df -Pk "$USERDATA_MNT" | awk 'NR == 2 { print $4 }')
-        [ "${avail:-0}" -gt "$need" ] || fail 5 "not enough space on userdata: ${need} KiB needed, ${avail:-?} KiB free; $id stays staged"
+        switch_space "$view" "$nbv" || fail 5 "not enough space on userdata: ${need} KiB needed, ${avail:-?} KiB free; $id stays staged"
         for p in $(migrate_paths "$view" "$nbv"); do
             copy_path "$view" "$nd/switch" "$p" || die "copying $p failed; $id stays staged"
         done
@@ -1041,6 +1064,164 @@ cmd_switch() {
     [ -n "$(gs_kv "$S/deploy" staged)" ] || { echo "glassine-deploy: nothing staged"; return 0; }
     ud_open_rw
     do_switch
+}
+
+# --- restart (specs/013, docs/deployments.md "Restart") ------------------------
+# restart_decide: what a restart now would be (013 FR-001, FR-006, FR-012), with
+# nothing written. Sets RW (empty: soft, else the reason word), TARGET (the
+# deployment the incoming session would start), SW (yes|no: would the switch run),
+# SW_WHY (nothing-staged, kernel-candidate, battery, space, once: a start by
+# request switches nothing). ONCE_ID: restart --once ID. quick (status): without
+# the space check, which copies nothing but walks the migrate list. Exit 3 on a
+# newer state format.
+restart_decide() {
+    RW='' TARGET='' SW=no SW_WHY=nothing-staged
+    system_open || die "cannot mount $SYSTEM_DEV read-only"
+    format_check
+    _rs_st=''
+    [ "$FMT" = none ] || [ -z "$SYS_DIR" ] || _rs_st=$(gs_kv "$SYS_DIR/state/deploy" staged)
+    if [ -n "$_rs_st" ]; then
+        if [ -n "$ONCE_ID" ]; then SW_WHY=once
+        elif [ -n "$(gs_kernel_candidate "$SYS_DIR/state/kernel")" ]; then SW_WHY=kernel-candidate
+        elif ! gs_power_ok "${GLASSINE_POWER_SUPPLY:-/sys/class/power_supply}" "${SWITCH_MIN_CAPACITY:-30}"; then SW_WHY=battery
+        elif [ "${1:-}" != quick ] && ! restart_space "$_rs_st"; then SW_WHY=space
+        else SW=yes SW_WHY=''
+        fi
+    fi
+    if [ "${SOFT_RESTART:-yes}" = no ]; then RW=off; return 0; fi
+    if [ "$FMT" = none ] || [ ! -e "$RUN_DIR/booted" ] || ! ud_mounted; then RW=plain; return 0; fi
+    _rs_s=$SYS_DIR/state
+    if [ -n "$ONCE_ID" ]; then TARGET=$ONCE_ID
+    elif [ $SW = yes ]; then TARGET=$_rs_st
+    else TARGET=$(gr_would_pick "$_rs_s")
+    fi
+    _rs_t=$TARGET
+    [ -n "$ONCE_ID" ] || _rs_t="$TARGET $(gs_kv "$_rs_s/deploy" current) $(gs_kv "$_rs_s/deploy" previous)"
+    RW=$(gs_restart_word "$RUN_DIR" "$SYS_DIR" "$USERDATA_MNT/$USERDATA_PREFIX" "${GLASSINE_DEPLOY_CMDLINE:-/proc/cmdline}" \
+        "${GLASSINE_UNAME:-$(uname -r)}" "$_rs_t" "$RUN_DIR/kept")
+    [ -z "$RW" ] || return 0
+    _rs_m=${GLASSINE_LOADER_MARK:-/usr/sbin/glassine-loader-mark}
+    if [ -x "$_rs_m" ]; then
+        RW=$("$_rs_m" restart-check 2>/dev/null | head -n 1)
+        case $RW in *[!a-z-]*) RW=loader-unreadable ;; esac
+        [ -z "$RW" ] || return 0
+    fi
+    restart_init_ok || RW=init
+}
+
+# restart_space STAGED: the switch's space check on the running root, as the switch
+# will do it (a plain bind of the live root); 1 = not enough
+restart_space() {
+    ud_mounted || return 0
+    _rs_nb=$(gs_kv "$USERDATA_MNT/$USERDATA_PREFIX/deployments/$1/meta" base)
+    [ "$(gs_kv "$USERDATA_MNT/$USERDATA_PREFIX/deployments/$1/meta" carry)" = migrate ] || return 0
+    _rs_v=${GLASSINE_DEPLOY_ROOT:-/}
+    if [ -z "${GLASSINE_DEPLOY_FAKE_MOUNTS:-}" ]; then
+        TMP_VIEW=$RUN_DIR/view.$$
+        mkdir -p "$TMP_VIEW" && mount --bind "$_rs_v" "$TMP_VIEW" && mount -o remount,bind,ro "$TMP_VIEW" ||
+            { rmdir "$TMP_VIEW" 2>/dev/null; TMP_VIEW=''; return 0; }
+        _rs_v=$TMP_VIEW
+    fi
+    switch_space "$_rs_v" "${_rs_nb:+$SYSTEM_MNT/bases/$_rs_nb}"; _rs_r=$?
+    if [ -n "$TMP_VIEW" ]; then umount "$TMP_VIEW" && rmdir "$TMP_VIEW"; TMP_VIEW=''; fi
+    return $_rs_r
+}
+
+# restart_init_ok: PID 1 can hand over to the kept assembly: busybox init whose
+# inittab names the soft start as its restart action (docs/deployments.md, "What
+# the system needs")
+restart_init_ok() {
+    [ -z "${GLASSINE_DEPLOY_INIT_OK:-}" ] || { [ "$GLASSINE_DEPLOY_INIT_OK" = 1 ]; return; }
+    case $(readlink /proc/1/exe 2>/dev/null) in */busybox) ;; *) return 1 ;; esac
+    [ -x "$SOFT_START" ] || return 1
+    grep -qx "::restart:$SOFT_START" "${GLASSINE_INITTAB:-/etc/inittab}" 2>/dev/null
+}
+
+# restart_report: restart --check's fields
+restart_report() {
+    if [ -z "$RW" ]; then out restart soft; out restart_reason ''; else out restart cold; out restart_reason "$RW"; fi
+    out restart_target "$TARGET"
+    out switch "$SW"
+    out switch_reason "$SW_WHY"
+}
+
+# restart_cold: the orderly restart through the firmware, user-started (the switch
+# rule applies at its shutdown, 013 FR-009)
+restart_cold() {
+    echo "glassine-deploy: restarting${1:+ ($1)}"
+    "$SWITCH_HOOK" --user-shutdown || echo "glassine-deploy: the user-shutdown mark not written" >&2
+    cleanup
+    exec ${GLASSINE_DEPLOY_REBOOT:-reboot}
+}
+
+cmd_restart() {
+    case "$RS_MODE" in
+    check)
+        restart_decide
+        out type restart
+        restart_report
+        [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
+        emit
+        [ -z "$RW" ] && return 0
+        return 9
+        ;;
+    cold)
+        [ -z "$ONCE_ID" ] || fail 2 "--once starts a deployment by a soft restart; it doesn't go with --cold"
+        system_open || die "cannot mount $SYSTEM_DEV read-only"
+        format_check
+        restart_cold
+        ;;
+    esac
+    if [ -n "$ONCE_ID" ]; then
+        valid_name "$ONCE_ID" || fail 2 "not a deployment id: $ONCE_ID"
+        require_migrated
+        ud_mounted && [ -r "$USERDATA_MNT/$USERDATA_PREFIX/deployments/$ONCE_ID/meta" ] || die "no deployment $ONCE_ID on userdata"
+        [ "$ONCE_ID" != "$(gs_kv "$SYS_DIR/state/deploy" staged)" ] || die "$ONCE_ID is staged: it starts by a switch (restart), not by request"
+        _ro_b=$(gs_kv "$USERDATA_MNT/$USERDATA_PREFIX/deployments/$ONCE_ID/meta" base)
+        [ -n "$_ro_b" ] && [ -d "$SYS_DIR/bases/$_ro_b" ] || die "deployment $ONCE_ID cannot start: its base ${_ro_b:-?} is not on the system partition"
+        case $(gs_covers "$SYS_DIR" "$SYS_DIR/bases/$_ro_b" "${GLASSINE_UNAME:-$(uname -r)}") in
+        '') ;;
+        *) fail 8 "deployment $ONCE_ID is not covered by the running kernel $(uname -r) (its base needs what the kernel doesn't provide, or its modules are missing)" ;;
+        esac
+    fi
+    restart_decide
+    if [ -n "$RW" ]; then
+        [ "$RS_MODE" != soft ] && [ -z "$ONCE_ID" ] || fail 9 "the restart would not be soft ($RW): nothing stopped"
+        restart_cold "$RW"
+    fi
+    # phase 1 ends here (013 FR-021): the switch's space, the hibernate step's lock
+    [ "$SW_WHY" != space ] || fail 5 "not enough space on userdata for the switch of $(gs_kv "$SYS_DIR/state/deploy" staged): ${need:-?} KiB needed, ${avail:-?} KiB free; nothing stopped"
+    state_open_rw
+    [ ! -e "$RUN_DIR/restarting" ] || fail 6 "busy: a restart is running already"
+    _rs_c=$(gs_kv "$RUN_DIR/restart" count)
+    case $_rs_c in ''|*[!0-9]*) _rs_c=0 ;; esac
+    _rs_sd=$(awk -v m="$SYSTEM_MNT" '$2 == m { print $1; exit }' /proc/mounts)
+    _rs_ud=$(awk -v m="$USERDATA_MNT" '$2 == m { print $1; exit }' /proc/mounts)
+    [ -n "$_rs_sd" ] && [ -n "$_rs_ud" ] || [ -n "${GLASSINE_DEPLOY_FAKE_MOUNTS:-}" ] ||
+        die "the system partition or userdata is not mounted where deploy.conf says: nothing stopped"
+    printf 'from=%s\nonce=%s\ncount=%s\nsysdev=%s\nuddev=%s\nprefix=%s\nlimit=%s\n' \
+        "$(cat "$RUN_DIR/booted")" "$ONCE_ID" "$((_rs_c + 1))" "$_rs_sd" "$_rs_ud" "$USERDATA_PREFIX" \
+        "${RESTART_LIMIT_S:-20}" > "$RUN_DIR/restarting.new" && mv -f "$RUN_DIR/restarting.new" "$RUN_DIR/restarting" ||
+        die "cannot write $RUN_DIR/restarting: nothing stopped"
+    cleanup
+    # phase 2 (013 FR-021): from here the restart ends in the incoming session or a
+    # cold restart; this command doesn't return
+    if ! "$SWITCH_HOOK" --user-shutdown; then
+        rm -f "$RUN_DIR/restarting"; die "the user-shutdown mark not written: nothing stopped"
+    fi
+    echo "glassine-deploy: soft restart into ${ONCE_ID:-$TARGET}"
+    rm -f "$RUN_DIR/switch-result"
+    if [ -n "${GLASSINE_DEPLOY_SIGNAL_INIT:-}" ]; then "$GLASSINE_DEPLOY_SIGNAL_INIT"
+    else kill -HUP 1 && sleep 1 && kill -QUIT 1
+    fi
+    # the session's stop ends this process; one that is still here after
+    # RESTART_INIT_S seconds means PID 1 didn't act on the signal: restart cold
+    # (in the background: a TERM to this shell ends the wait at once, its trap exits)
+    sleep "${RESTART_INIT_S:-60}" & wait $!
+    rm -f "$RUN_DIR/restarting"
+    echo "glassine-deploy: PID 1 did not start the soft restart: restarting cold" >&2
+    echo init > "$USERDATA_MNT/$USERDATA_PREFIX/restart.cold" 2>/dev/null
+    exec ${GLASSINE_DEPLOY_REBOOT:-reboot}
 }
 
 # subvol_received DIR: DIR is a read-only subvolume with a received UUID
@@ -1434,7 +1615,7 @@ cmd_init() {
 [ $# -ge 1 ] || usage
 CMD=$1; shift
 PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 BOOT=0 SHA='' ARG='' NARG=0 FIRST='' KGATE=''
-NOREPLAY=0 ACCEPT_DOWN=0 WITHOUT='' MARKER=0
+NOREPLAY=0 ACCEPT_DOWN=0 WITHOUT='' MARKER=0 RS_MODE='' ONCE_ID='' RESTART=0
 while [ $# -gt 0 ]; do
     a=$1; shift
     case "$a" in
@@ -1451,18 +1632,31 @@ while [ $# -gt 0 ]; do
     --full) FULL=1 ;;
     --now) NOW=1 ;;
     --install-marker) MARKER=1 ;;
+    --check|--soft|--cold) [ -z "$RS_MODE" ] || usage; RS_MODE=${a#--} ;;
+    --once) [ $# -ge 1 ] || usage; ONCE_ID=$1; shift ;;
+    --restart) RESTART=1 ;;
     -*) usage ;;
     *) [ "$NARG" = 0 ] && FIRST=$a; ARG=$a; NARG=$((NARG + 1)) ;;
     esac
 done
+# --check/--soft/--cold/--once are restart's; --restart goes with the commands that
+# change what starts next (013 FR-009)
+case "$CMD" in
+restart) [ "$RESTART" = 0 ] || usage ;;
+select|rollback|reset|stage) [ -z "$RS_MODE" ] && [ -z "$ONCE_ID" ] || usage ;;
+*) [ -z "$RS_MODE" ] && [ -z "$ONCE_ID" ] && [ "$RESTART" = 0 ] || usage ;;
+esac
+# then_restart: the command, then restart (its exit code when it failed)
+then_restart() { [ "$RESTART" = 1 ] || return 0; cleanup; RS_MODE='' cmd_restart; }
 case "$CMD:$NARG" in
+restart:0) cmd_restart ;;
 status:0) cmd_status ;;
 list:0) cmd_list ;;
-select:1) cmd_select ;;
-rollback:0) cmd_rollback ;;
+select:1) cmd_select && then_restart ;;
+rollback:0) cmd_rollback && then_restart ;;
 hibernate-invalidate:0) cmd_hibernate_invalidate ;;
-reset:0) cmd_reset ;;
-stage:1) cmd_stage ;;
+reset:0) cmd_reset && then_restart ;;
+stage:1) cmd_stage && then_restart ;;
 receive:1) cmd_receive ;;
 bases:0) cmd_bases ;;
 bases:2) cmd_bases_remove ;;

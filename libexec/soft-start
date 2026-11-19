@@ -1,0 +1,28 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# soft-start: busybox init's restart action (inittab ::restart:, specs/013,
+# docs/deployments.md "Restart"). On SIGQUIT busybox init runs the shutdown actions
+# (OpenRC's shutdown runlevel), ends every process and then executes this, as PID 1.
+#
+# With a soft restart asked for (/run/glassine/restarting, glassine-deploy restart)
+# and the kept assembly complete, it hands PID 1 to the kept assembly's soft start
+# (/run/glassine/kept/soft): the running image's own code, kept in memory since the
+# cold start. Anything else (a SIGQUIT nobody asked for, no kept assembly) restarts
+# cold: both file systems synced and made read-only as glassine-mount-ro does, then
+# a reboot through the firmware.
+K=/run/glassine/kept
+if [ -e /run/glassine/restarting ] && [ -e "$K/.complete" ] && [ -x "$K/bin/busybox" ]; then
+    exec "$K/bin/busybox" sh "$K/soft"
+fi
+echo "<3>glassine-soft-start: no soft restart asked for, or no kept assembly: restarting cold" > /dev/kmsg 2>/dev/null
+CONF=/etc/glassine/deploy.conf SYSTEM_DEV='' USERDATA_DEV=''
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+sync
+if . /usr/lib/glassine-boot/glassine-state.sh 2>/dev/null && . /usr/lib/glassine-boot/glassine-root.sh 2>/dev/null; then
+    GR_TMP=/run/glassine
+    gr_log() { echo "<3>glassine-soft-start: $*" > /dev/kmsg 2>/dev/null; }
+    for d in "$USERDATA_DEV" "$SYSTEM_DEV"; do [ -z "$d" ] || gr_shutdown_ro "$d"; done
+fi
+sync
+exec /bin/busybox reboot -f

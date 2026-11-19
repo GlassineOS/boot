@@ -1,0 +1,30 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: GPL-2.0-or-later
+# The watchdog through a soft restart (specs/013 FR-026). In the shutdown runlevel,
+# before killprocs, and only while glassine-deploy restart runs one
+# (/run/glassine/restarting): the initramfs's busybox watchdog would be ended by
+# killprocs, and on SIGTERM it closes the device the magic way, which stops the
+# watchdog. So it is ended with SIGKILL (the device stays armed) and a feeder in
+# OpenRC's own session takes over: killprocs spares that session, the feeder ignores
+# SIGTERM, and busybox init's last SIGKILL ends it right before the soft start, which
+# opens the device itself. Without a restart, or without /dev/watchdog: nothing.
+
+description="glassine: keep the watchdog armed through a soft restart"
+
+depend() {
+	before killprocs savecache mount-ro glassine-switch
+}
+
+start() {
+	[ -e /run/glassine/restarting ] && [ -e /dev/watchdog ] || return 0
+	ebegin "glassine-restart: the watchdog stays armed through the soft restart"
+	killall -KILL watchdog 2>/dev/null
+	# the feeder: opens the device once it is free (the killed daemon's close)
+	/bin/sh -c 'trap "" TERM HUP INT
+		n=0
+		until command exec 7>/dev/watchdog 2>/dev/null; do
+			n=$((n + 1)); [ $n -lt 50 ] || exit 1; sleep 0.1
+		done
+		while :; do printf k >&7; sleep 2; done' </dev/null >/dev/null 2>&1 &
+	eend 0
+}

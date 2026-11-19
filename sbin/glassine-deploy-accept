@@ -49,6 +49,14 @@
 # judges it; a finishing boot still writes the healthy mark. Nothing is accepted
 # on a start of a deployment by request (/run/glassine/deploy-once, 010 FR-044).
 #
+# The healthy record (specs/013 FR-016, FR-017): every start of a deployment (not a
+# bare boot or a kernel trial) checks its health, also on a board with nothing to
+# accept, no slot and no loader record, and a healthy one writes /run/glassine/healthy
+# (at= its time on /proc/uptime); a soft restart starts only from such a start. The
+# wait counts from this session's start (/run/glassine/restart's at=), so a soft
+# start waits ACCEPT_AFTER seconds of its own; the rollback after the loader's limit
+# runs once per kernel run (/run/glassine/limit-done, carried by a soft start).
+#
 # Exit: 0 accepted or nothing to accept, 1 not accepted (logged).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
@@ -108,9 +116,14 @@ else
     [ "$booted" = "$(field candidate)" ] && cand=1
     slot_todo && slot=1
 fi
-[ $cand = 1 ] || [ $slot = 1 ] || [ $mark = 1 ] || exit 0
-
-while [ "$(cut -d. -f1 "$UPTIME")" -lt "$ACCEPT_AFTER" ]; do sleep 5; done
+# every start of a deployment checks its health, also with nothing to accept or mark:
+# the healthy record (RUN_DIR/healthy) is what a soft restart needs (013 FR-016).
+# The wait counts from this session's start (RUN_DIR/restart's at=, FR-017), the
+# kernel's start where no record says otherwise.
+since=$(sed -n 's/^at=//p' "$RUN_DIR/restart" 2>/dev/null)
+case $since in ''|*[!0-9.]*) since=0 ;; esac
+since=${since%%.*}
+while [ $(( $(cut -d. -f1 "$UPTIME") - since )) -lt "$ACCEPT_AFTER" ]; do sleep 5; done
 
 bad=''
 crashed=$(rc-status --crashed 2>/dev/null | tr '\n' ' ')
@@ -133,6 +146,8 @@ if [ -n "$bad" ]; then
     fi
     exit 1
 fi
+echo "at=$(cut -d' ' -f1 "$UPTIME")" > "$RUN_DIR/healthy" 2>/dev/null || say "the healthy record not written"
+[ $cand = 1 ] || [ $slot = 1 ] || [ $mark = 1 ] || exit 0
 if [ $slot = 1 ]; then
     if "$SLOT_TOOL" mark-successful >/dev/null; then
         say "boot slot marked successful"
@@ -145,7 +160,9 @@ if [ $mark = 1 ]; then
     if "$MARK_TOOL" healthy; then marked=1; else say "the healthy mark failed (exit $?)"; fi
     # a healthy start the limit caused (the loader started the previous set):
     # that set becomes the default by the kernel rollback (010 FR-013)
-    if [ -e "$RUN_DIR/limit-start" ]; then
+    # once per kernel run (013 FR-024): a soft start carries limit-done along
+    if [ -e "$RUN_DIR/limit-start" ] && [ ! -e "$RUN_DIR/limit-done" ]; then
+        : > "$RUN_DIR/limit-done"
         n=0
         while :; do
             "$BOOTIMG" rollback --limit && break
