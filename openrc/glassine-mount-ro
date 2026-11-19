@@ -15,6 +15,9 @@ depend() {
 }
 
 start() {
+	# a soft restart keeps both mounted and writable (specs/013 FR-023): its own
+	# cold fallback makes them read-only where it gives up
+	[ ! -e /run/glassine/restarting ] || return 0
 	ebegin "glassine: userdata and the system partition read-only"
 	(
 		CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}

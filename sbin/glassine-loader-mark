@@ -61,6 +61,14 @@
 #                                      request, 3 when it doesn't; reads only
 #                                      board.conf, writes nothing (the desktop's
 #                                      check before it offers the entry)
+#   glassine-loader-mark restart-check what the record says about the next cold
+#                                      start, for a soft restart (specs/013
+#                                      FR-001): nothing printed when it starts this
+#                                      boot's set, else loader-request,
+#                                      loader-default or loader-unreadable
+#                                      (gp_restart_word); exit 0 either way. Reads
+#                                      only (a FAT boot partition mounted
+#                                      read-only), takes no lock
 #
 # Under a parent (BOOT_FORM=raw) a request is written only when the region loader
 # holds a valid loader (else exit 3: the parent would boot its baseline and leave the
@@ -133,9 +141,9 @@ say() {
 }
 
 cmd=${1:-} what=${2:-}
-USAGE="usage: glassine-loader-mark has-record|healthy|shutdown|display-retry|display-sync|deploys|request menu|recovery|clear|can-request menu|recovery"
+USAGE="usage: glassine-loader-mark has-record|healthy|shutdown|display-retry|display-sync|deploys|restart-check|request menu|recovery|clear|can-request menu|recovery"
 case $cmd in
-has-record|healthy|shutdown|display-retry|display-sync|deploys) [ $# = 1 ] || { echo "$USAGE" >&2; exit 2; } ;;
+has-record|healthy|shutdown|display-retry|display-sync|deploys|restart-check) [ $# = 1 ] || { echo "$USAGE" >&2; exit 2; } ;;
 request) [ $# = 2 ] && case $what in menu|recovery|clear) ;; *) false ;; esac || { echo "$USAGE" >&2; exit 2; } ;;
 can-request) [ $# = 2 ] && case $what in menu|recovery) ;; *) false ;; esac || { echo "$USAGE" >&2; exit 2; } ;;
 *) echo "$USAGE" >&2; exit 2 ;;
@@ -161,6 +169,10 @@ case $cmd in request|can-request)
 esac
 gp_has_record "$kind" || { [ "$cmd" = has-record ] && exit 3; exit 0; }
 [ "$cmd" = has-record ] && exit 0
+if [ "$cmd" = restart-check ]; then
+    gp_restart_word "$kind" "$CMDLINE" "$BOOT_PART" "$MNT"
+    exit 0
+fi
 if [ "$cmd" = display-sync ]; then
     [ -n "$LOADER_DISPLAY$LOADER_TOUCH$LOADER_PARENT_CMDLINE$LOADER_PARENT_SETS$LOADER_OTHER" ] || exit 0
     case $LOADER_OTHER in *[!a-z0-9-]*) say "board.conf: LOADER_OTHER '$LOADER_OTHER' is not a value of the record: nothing written"; exit 1 ;; esac

@@ -146,6 +146,9 @@ steps from `lib/glassine-root.sh`:
      `/run/glassine/deploy-once` (empty otherwise; `glassine-deploy-accept` accepts
      nothing then, 010 FR-044). What the storage step did goes to
      `/run/glassine/storage`.
+   - The kept assembly (below) is copied to `/run/glassine/kept/`, or
+     `/run/glassine/kept.none` says why there is none (`test-role`, `kernel-trial`,
+     `bare`). The restart record `/run/glassine/restart` says `kind=cold`.
    - The lock is released.
 6. **Device data** (`gd_boot`, `lib/glassine-device.sh`), only when the root's
    `/usr/share/glassine/device-data.list` names files and the board has `DEVICE_PART`:
@@ -155,6 +158,41 @@ steps from `lib/glassine-root.sh`:
    it ([kernel-artifacts.md](kernel-artifacts.md#device-data-files-from-the-device-itself)).
    No list: no step, nothing logged.
 7. `switch_root`.
+
+### The soft start
+
+A soft restart (`glassine-deploy restart`, [deployments.md](deployments.md#restart))
+starts the next session without the firmware, the loader or a new kernel. The cold
+start leaves the **kept assembly** in `/run/glassine/kept/`: `init`, `soft`, the
+initramfs's busybox, `lib/glassine-boot/glassine-*.sh` and `board.conf`, `.complete`
+written last (no developer hooks, no boot modules). The steps:
+
+1. `glassine-deploy restart` writes `/run/glassine/restarting` and signals PID 1 (busybox
+   init: `SIGHUP` re-reads the inittab, `SIGQUIT` restarts). Init runs the `shutdown`
+   runlevel: `glassine-restart` takes over the watchdog for the whole stop; the
+   shutdown switch runs as at a cold shutdown; `glassine-mount-ro`,
+   `glassine-reboot-reason` and the loader's shutdown mark skip themselves while
+   `restarting` exists. Init then ends every process and execs its `::restart:`
+   action, `/usr/lib/glassine-boot/soft-start`.
+2. `soft-start` execs the kept `soft` with the kept busybox. Without `restarting` or a
+   complete kept assembly it makes both file systems read-only and reboots.
+3. **Stage 1** (`soft`): the mounts private, a tmpfs stage, the kept assembly and the
+   runtime files (`/carry`) copied onto it, `pivot_root` into it.
+4. **Stage 2**: `/dev`, `/proc` and `/sys` moved onto the stage; every process left is
+   killed and must be gone within `RESTART_LIMIT_S` (one in uninterruptible sleep turns
+   the restart cold); the system partition and userdata mounted again (the same live
+   file systems: userdata's mount count doesn't change); every mount of the old root
+   unmounted, none lazily; the decision of `restart --check` made again; the pick and
+   assembly of the cold start (`gr_soft_boot`, the same `gr_boot_pick`), a candidate's
+   try taken as at a cold start; the carry (`gr_carry`: `kind=soft`, `from`, `count`,
+   the switch's result, the runtime files that live per kernel run carried); the device
+   data step; `switch_root` into the new root's init.
+
+The watchdog is fed between the steps. A step that fails or takes longer than
+`RESTART_LIMIT_S` turns the restart cold: the reason goes to `restart.cold` under the
+userdata prefix (the next session's record shows it once as `cold_reason=`), both file
+systems are made read-only and the system reboots. Before the pick nothing is written,
+so a cold turn costs no try. Test hooks (`test.conf` beside `soft`): `docs/testing.md`.
 
 **The base must list `/` as `bind,ro` in `/etc/fstab`:** `overlay / overlay bind,ro 0 0`.
 OpenRC's `root` service (pulled in by `localmount`) remounts `/` read-write unless

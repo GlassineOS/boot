@@ -474,6 +474,33 @@ gp_close() {
     GP_DIR='' GP_MNTD=''
 }
 
+# gp_restart_word KIND CMDLINE BOOT_PART MNT: what the loader record says about the
+# next cold start, for a soft restart (specs/013 FR-001), read only (a FAT boot
+# partition mounted read-only for it): loader-request (it holds a request: the start
+# menu, the recovery, a kernel trial), loader-default (its default names another
+# kernel set than this boot's glassine.img=; under a parent, BOOT_FORM=raw, an empty
+# default is the parent's baseline, which this boot runs when it names no set either
+# slot names), loader-unreadable (no record in use can be read); nothing when the
+# next cold start would start this boot's set, and on a board that keeps no record.
+gp_restart_word() {
+    gp_has_record "$1" || return 0
+    _gp_rw=''
+    if ! gp_open "$1" "$2" "$3" "$4" ro || ! gp_in_use "$GP_DIR"; then
+        _gp_rw=loader-unreadable
+    else
+        _gp_run=$(tr ' ' '\n' < "$2" 2>/dev/null | sed -n 's/^glassine\.img=//p' | head -n 1)
+        _gp_def=$(gp_get "$GP_REC" default)
+        if [ -n "$(gp_get "$GP_REC" request)" ]; then _gp_rw=loader-request
+        elif [ -z "$_gp_def" ] && [ "$1" = raw ]; then
+            case " $(gp_names | tr '\n' ' ')" in *" $_gp_run "*) [ -z "$_gp_run" ] || _gp_rw=loader-default ;; esac
+        elif [ "$_gp_def" != "$_gp_run" ]; then _gp_rw=loader-default
+        fi
+    fi
+    gp_close >/dev/null 2>&1
+    gp_clean
+    [ -z "$_gp_rw" ] || echo "$_gp_rw"
+}
+
 # gp_raw_pull DIR: both slots of the device's region record into DIR/glassine
 # (loader.a, loader.b); a slot that can't be read is left out (not valid)
 gp_raw_pull() {

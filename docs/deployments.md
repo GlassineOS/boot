@@ -189,11 +189,12 @@ parent directories get the source's mode and owner).
 ```
 glassine-deploy status [--porcelain]
 glassine-deploy list [--porcelain]
-glassine-deploy select ID [--yes] [--discard-hibernation]
-glassine-deploy rollback [--yes] [--discard-hibernation]
+glassine-deploy select ID [--yes] [--discard-hibernation] [--restart]
+glassine-deploy rollback [--yes] [--discard-hibernation] [--restart]
 glassine-deploy hibernate-invalidate [--yes]
-glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation]
-glassine-deploy stage BASE [--no-replay] [--without NAME]… [--accept-downgrades] [--now] [--yes] [--discard-hibernation]
+glassine-deploy reset [--full] [--now] [--yes] [--discard-hibernation] [--restart]
+glassine-deploy stage BASE [--no-replay] [--without NAME]… [--accept-downgrades] [--now] [--yes] [--discard-hibernation] [--restart]
+glassine-deploy restart [--check [--porcelain] | --soft | --cold] [--once ID]
 glassine-deploy receive FILE|- [--modules] [--sha256 HEX] [--discard-hibernation]
 glassine-deploy receive FILE --boot [--sha256 HEX] [--discard-hibernation]
 glassine-deploy bases [--porcelain]
@@ -208,7 +209,7 @@ glassine-deploy init POOL_MOUNT [--install-marker]
 
 | Command | Does |
 |---|---|
-| `status` | format (state and supported), the system file system, current/previous/candidate/staged/tries, the kernels, `hibernated=yes\|no\|unknown`, `twrp_keep`, the person's storage as this boot left it (`home`, `flatpak`: `bound`, `failed` with `<name>_error`, or empty on a bare boot or outside a deployments boot; `<name>_hidden`; `vartmp`: `shared` or `failed`) |
+| `status` | format (state and supported), the system file system, current/previous/candidate/staged/tries, the kernels, `hibernated=yes\|no\|unknown`, `twrp_keep`, the person's storage as this boot left it (`home`, `flatpak`: `bound`, `failed` with `<name>_error`, or empty on a bare boot or outside a deployments boot; `<name>_hidden`; `vartmp`: `shared` or `failed`), what a restart now would be (`restart=soft\|cold`, `restart_reason=`; without the switch's space check, which only `restart --check` makes) and how this start came (`last_start=cold\|soft`, [Restart](#restart)) |
 | `list` | one record per deployment: id, state (`current`, `candidate`, `staged`, `previous`, `failed`, `kept`), base, kernel, created, size |
 | `select ID` | ID becomes the candidate with 2 tries; selecting current cancels a candidate. Never makes an untried deployment current. |
 | `rollback` | `select` previous |
@@ -225,6 +226,7 @@ glassine-deploy init POOL_MOUNT [--install-marker]
 | `publish` | the loader record's deployment list (`deploys`, `deployN`: previous, candidate, failed, kept; boot-partition.md) written through `glassine-loader-mark deploys` where the board has a loader record, only when it differs. Run by every command that changes the deployments (select, switch, accept, remove, stage) and by the boot-success service on a start that accepts nothing; never fails the command. |
 | `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous, then the clean-up (where userdata is mounted already). Refuses a non-candidate; accepting current is a no-op. |
 | `init POOL_MOUNT` | lays out an empty btrfs that the caller made and mounted (the image builder, for the pool image an installer writes to the system partition): `bases/`, `modules/`, `state/` with `deploy` and `kernel` naming nothing, `.lock`; `--install-marker` adds `state/install`. `state/format` is written last, so a cut `init` reads as not migrated. Refuses a path that is not a mount point, a file system other than btrfs, a subvolume mount (not the top level) and a pool that is not empty. Needs no `deploy.conf` (`GLASSINE_DEPLOY_CONF=/dev/null` on a build host) and no btrfs-progs. The caller then receives the base and the kernel's modules into it. |
+| `restart` | restarts: soft where the rules allow, else cold ([Restart](#restart)). `--check` reports which and why, writing nothing (exit 0 soft, 9 cold); `--soft` restarts only soft (exit 9 otherwise, nothing stopped); `--cold` always cold; `--once ID` starts ID for the incoming session only, by a soft restart. `--restart` on `select`, `rollback`, `reset` and `stage`: the command, then `restart`. |
 | `remove ID` | deletes a deployment's layers from userdata, the way the clean-up does. Refuses the current, candidate, staged and booted deployment and a mounted one. The previous one: asks first (`--yes`), naming the lost rollback, and clears `previous=`; the last failed one: clears `failed=`. |
 
 Where it reads and writes:
@@ -323,7 +325,12 @@ Keys may be added within a version, so readers ignore keys they don't know.
 
 ```
 glassine-deploy 1
-type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previous=…	candidate=…	staged=…	failed=…	tries=…	kernel_current=…	kernel_previous=…	hibernated=no	userdata_prefix=media/glassine	twrp_keep=yes	home=bound	home_hidden=no	flatpak=bound	flatpak_hidden=no	vartmp=shared	swapfile=…	guard=…
+type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previous=…	candidate=…	staged=…	failed=…	tries=…	kernel_current=…	kernel_previous=…	hibernated=no	userdata_prefix=media/glassine	twrp_keep=yes	home=bound	home_hidden=no	flatpak=bound	flatpak_hidden=no	vartmp=shared	restart=soft	restart_reason=	last_start=cold	swapfile=…	guard=…
+```
+
+```
+glassine-deploy 1
+type=restart	restart=cold	restart_reason=not-healthy	restart_target=…	switch=no	switch_reason=nothing-staged
 ```
 
 ```
@@ -362,6 +369,57 @@ no base. `status`'s `failed` is the last deployment that ran out of tries.
 | 5 | not enough space on userdata (`switch`: the deployment stays staged; `stage`: nothing staged) |
 | 6 | busy (another writer holds the lock) |
 | 7 | `stage`: the package replay stops: a package does not install or upgrade on the new base, or a version would go down (see `stage BASE` flags); nothing staged |
+| 8 | `select`, `stage`, `reset`: a kernel candidate is set (`glassine-bootimg cancel` drops it; `rollback` and `reset --now` cancel it themselves); `restart --once ID`: the running kernel doesn't cover ID |
+| 9 | `restart`: the restart would not be soft (`--check`), or `--soft`/`--once` refused for that reason; nothing stopped |
+
+## Restart
+
+`glassine-deploy restart` ends the session and starts the next one. **Soft** where the
+rules below allow: PID 1 re-enters the kept initramfs assembly, which mounts, picks and
+assembles as a cold start does and hands over to the new root's init, without the
+firmware, the loader or a kernel start ([boot.md](boot.md#the-soft-start)). Otherwise
+**cold**: the user's ordinary reboot. Both end the same way: a staged deployment is
+switched by the shutdown (with the switch's own rules), the next start is the pick's,
+and the incoming session sees the same state files and runtime keys a cold start would
+leave (`kind=` in `/run/glassine/restart` aside).
+
+The restart is cold, with this reason (`restart_reason`, first that applies), when:
+
+| Reason | |
+|---|---|
+| `off` | `SOFT_RESTART=no` |
+| `plain` | not a deployments boot, or userdata isn't mounted |
+| `bare` | the running session is a bare boot |
+| `first-start` | the first start hasn't finished (`state/install`) |
+| `test-role`, `kernel-trial`, `bare`, `no-assembly` | this kernel run left no kept assembly (`kept.none`) |
+| `kernel-trial` | the running start is a kernel trial or a finishing boot |
+| `kernel` | the kernel step is writing an image |
+| `kernel-candidate` | a kernel candidate waits for its test |
+| `no-target` | no deployment the pick would start (the pick's, then current, then previous) has its meta and base |
+| `modules`, `not-covered` | the running kernel has no modules subvolume, or doesn't provide what that deployment's base needs |
+| `not-healthy` | this session hasn't reached its health conditions (no `/run/glassine/healthy`) |
+| `loader-request`, `loader-default`, `loader-unreadable` | the loader has a request for the next start, a default other than the running kernel, or its record can't be read |
+| `init` | PID 1 isn't busybox init with the `::restart:` line, or the launcher is missing |
+
+A switch that the restart's shutdown will make counts too: the target is then the
+staged deployment. `switch=yes|no` with `switch_reason` (`nothing-staged`, `once`,
+`kernel-candidate`, `battery`, `space`) says whether it will. A soft restart that the
+switch's space check would stop is refused (exit 5), the deployment stays staged.
+
+- `--check` prints the decision (`type=restart` record) and writes nothing.
+- `--once ID` starts ID for the incoming session only, as `glassine.deploy.once=` does
+  at a cold start; refused (nothing stopped) for an id that isn't a deployment id (2), a
+  deployment that isn't there or is staged or whose base is missing (1), and one the
+  running kernel doesn't cover (8); `--cold --once` is a usage error.
+- The hibernate step refuses while `restarting` exists (exit 4).
+- If PID 1 doesn't begin within `RESTART_INIT_S` seconds, `restart` reboots cold and
+  leaves `init` as the next session's `cold_reason`.
+- A step of the soft start that fails turns it cold the same way, with the step's
+  word (`processes`, `mounts`, `assembly`, …). It turns cold before it writes anything
+  to the state, so no try is used.
+
+Needs busybox init from Alpine 3.23 or later (3.22's ignores `SIGQUIT`) and the inittab
+line `::restart:/usr/lib/glassine-boot/soft-start`, which the package adds.
 
 ## The shutdown switch
 
@@ -375,7 +433,9 @@ runlevel (after `killprocs`, before `mount-ro`). With a staged deployment it run
   (deploy.conf, default 30). A system without a battery counts as fine.
 
 Otherwise the deployment stays staged for the next shutdown. The hook never stops a
-shutdown. A hibernate never runs it, because the kernel powers off without the init
+shutdown. It writes what it did to `/run/glassine/switch-result` (`switch=yes|no`,
+`switch_reason=` `not-user`, `battery`, `space` or `failed`), which a soft restart
+carries into the incoming session's restart record. A hibernate never runs it, because the kernel powers off without the init
 system's shutdown.
 
 After it, the OpenRC service `glassine-mount-ro` (also in the `shutdown` runlevel, after
@@ -437,18 +497,23 @@ an installer ships must contain btrfs-progs and e2fsprogs.
 ## Accepting a candidate
 
 `glassine-deploy-accept`, started by the OpenRC service `glassine-deploy-accept` in the
-`default` runlevel (after every other service, as a background job). It acts only when
-the booted deployment is the candidate, and never on a start of a deployment by request
-(`/run/glassine/deploy-once`, [boot.md](boot.md#command-line-keys)). It waits until the system has been up
-`ACCEPT_AFTER` seconds (default 120), then checks health:
+`default` runlevel (after every other service, as a background job). It runs on every
+start of a deployment (not a bare boot, not a kernel trial): it waits until this session
+has been up `ACCEPT_AFTER` seconds (default 120; counted from the session's start, the
+`at=` of `/run/glassine/restart`, so a soft start waits its own time), then checks
+health:
 
 - no OpenRC service has crashed (`rc-status --crashed`);
 - every executable in `ACCEPT_HEALTH_DIR` (default `/etc/glassine-bootimg/health.d`,
   the same checks as a kernel test boot) exits 0 within 60 seconds. The first output
   line of a failing check is the logged reason.
 
-Healthy: `glassine-deploy accept`. Otherwise it logs `<id> not accepted: <reason>` to
-the kernel log and changes nothing, so the next boot uses the candidate's next try, and
+Healthy: it writes `/run/glassine/healthy` (`at=` the time on `/proc/uptime`), on every
+board, also with nothing to accept or mark: a soft restart starts only from such a start
+([Restart](#restart)). Then, when the booted deployment is the candidate and the start is
+not one by request (`/run/glassine/deploy-once`, [boot.md](boot.md#command-line-keys)),
+`glassine-deploy accept`. Unhealthy: it logs `<id> not accepted: <reason>` to the
+kernel log and changes nothing, so the next boot uses the candidate's next try, and
 after the last one the old deployment boots again.
 
 **The boot slot** (dual-boot boards, `SLOT_TOOL` = the path of `glassine-slot`, see
@@ -469,12 +534,13 @@ trial boot and a boot that fails a health check write none; the failure is noted
 the start as one that never became healthy. The write is `glassine-loader-mark healthy`
 (`GLASSINE_LOADER_MARK` in tests), in its own process, before the deployment accept; a
 failing write is logged and does not stop the accept. On a hand-off without a loader
-record (`bootpart-test`, `blocklist`, empty) nothing changes: the accept doesn't even wait when
-there is no candidate and no slot to mark. When the healthy start is the loader's
+record (`bootpart-test`, `blocklist`, empty) no mark is written. When the healthy start is the loader's
 start of the previous kernel set for its limit (`glassine-loader-mark` leaves
 `/run/glassine/limit-start`), the accept then runs `glassine-bootimg rollback --limit`
 (010 FR-013, [boot-partition.md](boot-partition.md#keys)): that set becomes the default
-kernel and the one that failed is listed as failed (`GLASSINE_BOOTIMG` in tests). Once
+kernel and the one that failed is listed as failed (`GLASSINE_BOOTIMG` in tests). It
+runs once per kernel run: `/run/glassine/limit-done`, which a soft start carries, keeps
+the next session's mark from running it again. Once
 the mark succeeded in this start (written, or `unmarked` was 0 already; and a candidate
 accepted), the accept runs the loader
 update (`glassine-loader-update`, `GLASSINE_LOADER_UPDATE` in tests; with `BOOT_FORM=raw`
@@ -492,7 +558,7 @@ mounted or the prefix is not under `media/`).
 
 See [`conf/deploy.conf.example`](../conf/deploy.conf.example): `SYSTEM_DEV`,
 `SYSTEM_MNT`, `USERDATA_DEV`, `USERDATA_MNT`, `USERDATA_PREFIX`, `RUN_DIR`,
-`USERDATA_RESERVE_KIB` (default 0: the KiB the first start leaves free at the end of userdata), `SWITCH_MIN_CAPACITY`, `ACCEPT_AFTER`, `ACCEPT_HEALTH_DIR`, `ACCEPT_BUSY_S` (default 600: how long the accept retries while the state is busy), `SLOT_TOOL` (default empty: no boot slot marking), `HIBERNATE_SIZE_MB`, `HIBERNATE_RESERVE_MB`. A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
+`USERDATA_RESERVE_KIB` (default 0: the KiB the first start leaves free at the end of userdata), `SWITCH_MIN_CAPACITY`, `SOFT_RESTART` (default `yes`; `no`: every restart is cold), `RESTART_LIMIT_S` (default 20: each step of a soft start gives up after this many seconds and the restart turns cold), `RESTART_INIT_S` (default 60: how long `restart` waits for PID 1 to start the soft restart before it restarts cold), `ACCEPT_AFTER`, `ACCEPT_HEALTH_DIR`, `ACCEPT_BUSY_S` (default 600: how long the accept retries while the state is busy), `SLOT_TOOL` (default empty: no boot slot marking), `HIBERNATE_SIZE_MB`, `HIBERNATE_RESERVE_MB`. A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
 
 ## Runtime directory: `/run/glassine/`
 
@@ -502,4 +568,10 @@ See [`conf/deploy.conf.example`](../conf/deploy.conf.example): `SYSTEM_DEV`,
 | `storage` | initramfs | key=value: `home`, `flatpak` (`bound` or `failed`, with `<name>_error`), `vartmp` (`shared` or `failed`); a bare boot has only `vartmp` |
 | `system/`, `userdata/`, `root/` | initramfs | the system partition, userdata and the merged overlay, moved there before `switch_root` |
 | `switching` | `glassine-deploy switch` | a switch is running; the hibernate step refuses while it exists |
+| `restart` | initramfs, soft start | how this start came: `kind=cold\|soft`, `from=` the outgoing deployment (soft), `count=` the soft starts in this kernel run, `at=` the start's time on `/proc/uptime`; after a soft restart `switch=`, `switch_reason=` (what its switch did); after a soft restart that turned cold `cold_reason=` once |
+| `healthy` | `glassine-deploy-accept` | this start reached its health conditions (`at=`); a soft restart needs it |
+| `restarting` | `glassine-deploy restart` | a soft restart runs (`from`, `once`, `count`, `sysdev`, `uddev`, `prefix`, `limit`); the hibernate step refuses (exit 4), the shutdown services skip what belongs to a cold shutdown |
+| `kept/`, `kept.none` | initramfs, soft start | the kept assembly (`.complete` when whole), or the word why there is none (`test-role`, `kernel-trial`, `bare`, `no-assembly`) |
+| `switch-result` | `glassine-switch-hook` | what the shutdown's switch did (above) |
+| `limit-done` | `glassine-deploy-accept` | the rollback after the loader's limit ran in this kernel run |
 | `user-shutdown` | the power menu, via `glassine-switch-hook --user-shutdown` | this shutdown may switch |
