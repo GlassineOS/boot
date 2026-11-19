@@ -19,7 +19,7 @@ records, which combinations boot), [docs/boot-partition.md](../../docs/boot-part
 
 The kernel is the device's, not the deployment's (0010): every deployment boots under the
 kernel the device selects. So moving from one deployment to another (an update, a reset,
-a rollback, a select) does not need a new kernel. Today it still costs a whole restart:
+a rollback, a select) does not need a new kernel. A cold restart costs all of it:
 the firmware, the bootloader, the kernel, every driver, every remote processor and every
 firmware load, only so that the initramfs can assemble another root.
 
@@ -127,11 +127,17 @@ accepted, and the next restart, soft or cold, runs the ordinary pick again.
 
 - **FR-001** A restart into the deployments layout is soft only when every one of these
   holds at the moment it is decided:
-  - the next cold start would run the running image: in `state/kernel`, `current_img`
-    is the running image, and no kernel candidate, trial, finishing boot or `writing`
-    is set (004); where the board keeps a loader record, its default set is the
-    running set and it holds no `request`. Image ids are compared, not releases: the
-    same release can come with another device tree or initramfs;
+  - nothing selects another kernel image for the next cold start: the kernel rule the
+    hibernate step already applies finds nothing (`state/kernel`'s `current_img` is the
+    running image, or, while no `current_img` is recorded, `current` is the running
+    release; no `writing`; not a kernel trial or finishing boot; kernel-artifacts.md
+    "Order on the device"), no kernel candidate is set (004; a kernel waiting for its
+    trial keeps a staged deployment staged, so it keeps the restart cold too), and,
+    where the board keeps a loader record, it holds no `request` and names no other
+    default set than the running one (an empty default under a parent is its baseline,
+    the running image; 012). Image ids are compared where they are recorded, not
+    releases: the same release can come with another device tree or initramfs. A board
+    with no kernel hand-off (`HANDOFF` empty) has only the running kernel and qualifies;
   - the running kernel covers the deployment the pick will start (the rule of
     `select`'s exit 8, kernel-artifacts.md "Which combinations boot"), and that
     deployment's modules subvolume `modules/<uname -r>` is on the system partition. A
@@ -142,8 +148,8 @@ accepted, and the next restart, soft or cold, runs the ordinary pick again.
     of 009, not the test role, not a kernel trial or finishing boot) and has reached the
     health conditions of 001 FR-018 (FR-016);
   - soft restarts aren't turned off (FR-004).
-- **FR-002** Otherwise the restart is a cold one, the orderly restart that exists
-  today. A restart that asks for something only a cold start can do is always cold:
+- **FR-002** Otherwise the restart is a cold one: the orderly restart through
+  the firmware. A restart that asks for something only a cold start can do is always cold:
   a kernel trial (`glassine-bootimg reboot-test`), the recovery, the loader's start
   menu, the other system, the bootloader, a power-off.
 - **FR-003** `glassine-deploy` decides, and nothing else does. It decides twice, with
@@ -184,7 +190,7 @@ accepted, and the next restart, soft or cold, runs the ordinary pick again.
   would do, the power menu also offers a cold one.
 - **FR-011** An update never restarts by itself. When it has staged a deployment, the
   shell's notice offers "Restart to update", which is `restart`; the person's choice
-  starts it, as today's switch waits for a user-started shutdown.
+  starts it, as the switch waits for a user-started shutdown.
 - **FR-012** A staged deployment is carried and selected by the same switch, at the same
   point and under the same conditions as at a user-started shutdown (001 FR-007 to
   FR-010): after the session's services have stopped and its processes have ended,
@@ -215,7 +221,9 @@ accepted, and the next restart, soft or cold, runs the ordinary pick again.
   that write is a failed start of the candidate and counts as one, as at a cold start.
 - **FR-016** A soft restart starts only from a start that has reached the health
   conditions of 001 FR-018 in its own session: the boot-success step records that in
-  `/run/glassine/healthy`. So a soft start never follows an unhealthy start, and a
+  `/run/glassine/healthy`. So it checks health on every start of a deployment, on
+  every board, also where it has nothing to accept, no slot and no loader record to
+  mark. So a soft start never follows an unhealthy start, and a
   candidate that isn't accepted is left only by a cold restart (Scenario 5). A start
   younger than its healthy time restarts cold.
 - **FR-017** The boot-success step waits `ACCEPT_AFTER` seconds from the start of its
@@ -245,7 +253,7 @@ accepted, and the next restart, soft or cold, runs the ordinary pick again.
   outgoing session's runtime directory survives except FR-024's.
 - **FR-021** It has two phases:
   1. **The check**, with nothing stopped: FR-001, the free space for a switch
-     (001 FR-023's estimate where a replay is due), the target's presence. A refusal
+     (the switch's own check, exit 5), the target's presence. A refusal
      leaves the session running (the exit codes of FR-028).
   2. **From the first stop on**, the restart ends in the incoming session or in a cold
      restart, nothing else. Each step has a time limit. Any step that fails or runs out
@@ -296,7 +304,7 @@ accepted, and the next restart, soft or cold, runs the ordinary pick again.
 - **FR-029** Every state write of a soft restart is the existing one (`gs_write` under
   `state/.lock`): the switch's, the pick's try, a failed mark. A power cut or a reset at
   any point leaves a state the next cold start picks from as from any other.
-- **FR-030** The clean-up (001 FR-020) runs where it runs today. The outgoing
+- **FR-030** The clean-up (001 FR-020) runs at the points 001 gives it. The outgoing
   deployment is unmounted by then, so after the restart it is removed if nothing else
   keeps it (it is current or previous in every path that leads here).
 
@@ -347,16 +355,16 @@ accepted, and the next restart, soft or cold, runs the ordinary pick again.
   watchdog, FR-026, or the person).
 - **Escape:** a cold restart is always one step away, and every failure ends in one; it
   depends on nothing a soft restart changes. `SOFT_RESTART=no` turns the feature off.
-  The recovery is reached as today.
+  The recovery is reached as from any session.
 
 ## Edge cases
 
 - **A restart soon after a cold start**, before the healthy time: cold (FR-016).
 - **A kernel rollback or a new initramfs waiting** (`current_img` isn't the running
   image): cold, and said (FR-006).
-- **A kernel candidate installed but its trial not asked for**: the next cold start
-  would run the running image, so a soft restart is allowed; the kernel's own restart
-  (`reboot-test`) is cold.
+- **A kernel candidate installed but its trial not asked for**: cold (FR-001), as the
+  switch leaves a staged deployment staged while a kernel candidate is set (004); the
+  kernel's own restart (`reboot-test`) is cold anyway.
 - **A start by request** (010 FR-043, FR-013 here) **restarts**: the incoming session
   runs the ordinary pick; the request is not repeated.
 - **A soft restart chain**: any number in one kernel run; `count` in the restart record
