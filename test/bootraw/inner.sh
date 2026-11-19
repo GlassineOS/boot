@@ -410,6 +410,24 @@ cp $MI $W/m1
 ok "display-sync: all equal: nothing written" "LDIR=$LU/none MBOARD=$MW/board.parent updm 2>/dev/null && cmp -s $MI $W/m1"
 mstart
 ok "display-sync: a LOADER_TOUCH that is no record value: said, nothing written" "LDIR=$LU/none MBOARD=$MW/board.touchbad updm 2>$W/err && grep -q \"LOADER_TOUCH 'yes' is not a value\" $W/err && cmp -s $MI $W/m0"
+# the record's other from the board's LOADER_OTHER (handback.md, "The other system"): the same write
+{ cat $MW/board.raw; echo LOADER_OTHER=android; } > $MW/board.other
+{ cat $MW/board.disp; echo LOADER_OTHER=android; } > $MW/board.both
+{ cat $MW/board.raw; echo "LOADER_OTHER=Android"; } > $MW/board.otherbad
+mstart display=headless
+ok "display-sync: LOADER_OTHER=android: other written, display left as it is, every other key kept" "LDIR=$LU/none MBOARD=$MW/board.other updm 2>$W/err && [ \"\$(rec other)\" = android ] && [ \"\$(rec display)\" = headless ] && [ \"\$(slot)\" = 'a 3 1' ] && [ \"\$(rec zz_unknown)\" = keep ] && grep -q \"other=android written (was '')\" $W/err"
+cp $MI $W/m1
+ok "display-sync: other already equal: nothing written" "LDIR=$LU/none MBOARD=$MW/board.other updm 2>/dev/null && cmp -s $MI $W/m1"
+mstart display=headless
+ok "display-sync: display and other both differ: one write holds both" "LDIR=$LU/none MBOARD=$MW/board.both updm 2>$W/err && [ \"\$(rec display)\" = epd-fw ] && [ \"\$(rec other)\" = android ] && [ \"\$(slot)\" = 'a 3 1' ] && grep -q 'display=epd-fw written' $W/err && grep -q 'other=android written' $W/err"
+mstart other=android
+ok "display-sync: no LOADER_OTHER: the record's other left as it is" "LDIR=$LU/none MBOARD=$MW/board.disp updm 2>/dev/null && [ \"\$(rec other)\" = android ] && [ \"\$(rec display)\" = epd-fw ]"
+mstart display=headless
+ok "display-sync: a LOADER_OTHER that is no record value: said, nothing written (display neither)" "LDIR=$LU/none MBOARD=$MW/board.otherbad updm 2>$W/err && grep -q \"LOADER_OTHER 'Android' is not a value of the record\" $W/err && [ -z \"\$(rec other)\" ] && cmp -s $MI $W/m0"
+mstart display=headless
+export GLASSINE_BI_AFTER_PUT='[ "$2" = 65536 ] && printf Z | dd of="$1" bs=1 seek=65600 conv=notrunc 2>/dev/null; :'
+ok "display-sync: other's slot doesn't read back (both tries): said, the loader reads no other" "LDIR=$LU/none MBOARD=$MW/board.other updm 2>$W/err && grep -q 'other=android not written' $W/err && [ -z \"\$(rec other)\" ]"
+unset GLASSINE_BI_AFTER_PUT
 cp $W/l20000 $LU/pkg/loader.efi
 # the accept step runs it only after a healthy mark it wrote, and a candidate once accepted
 cp $W/l20000 $LU/pkg/loader.efi
