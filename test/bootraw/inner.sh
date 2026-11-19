@@ -396,6 +396,20 @@ ok "display-sync: the slot doesn't read back (both tries): said, the loader read
 unset GLASSINE_BI_AFTER_PUT
 mstart display=headless; cp $LU/bad.gspl $LU/bad/splash-default.gspl
 ok "display-sync: not after a region the writer refuses (3): the record as it was" "LDIR=$LU/bad MBOARD=$MW/board.disp updm 2>/dev/null; [ \$? = 3 ] && [ \"\$(rec display)\" = headless ]"
+# the record's touch from the board's LOADER_TOUCH (display-sync, the same write)
+{ cat $MW/board.disp; echo LOADER_TOUCH=on; } > $MW/board.touch
+{ cat $MW/board.raw; echo LOADER_TOUCH=yes; } > $MW/board.touchbad
+mstart display=headless
+ok "display-sync: LOADER_TOUCH=on, touch empty: touch=on and display in one write, the loader reads both" "LDIR=$LU/none MBOARD=$MW/board.touch updm 2>$W/err && [ \"\$(rec touch)\" = on ] && [ \"\$(rec display)\" = epd-fw ] && [ \"\$(slot)\" = 'a 3 1' ] && grep -q \"touch=on written (was '')\" $W/err"
+mstart display=epd-fw touch=probe
+ok "display-sync: a person's touch value (probe) kept: nothing written" "LDIR=$LU/none MBOARD=$MW/board.touch updm 2>/dev/null && [ \"\$(rec touch)\" = probe ] && cmp -s $MI $W/m0"
+{ cat $MW/board.touch; echo LOADER_PARENT_CMDLINE=no; echo LOADER_PARENT_SETS=no; } > $MW/board.parent
+mstart
+ok "display-sync: LOADER_PARENT_CMDLINE=no, LOADER_PARENT_SETS=no: parent_cmdline=no, parent_sets=no with display and touch, one write" "LDIR=$LU/none MBOARD=$MW/board.parent updm 2>/dev/null && [ \"\$(rec parent_cmdline)\" = no ] && [ \"\$(rec parent_sets)\" = no ] && [ \"\$(rec touch)\" = on ] && [ \"\$(slot)\" = 'a 3 1' ]"
+cp $MI $W/m1
+ok "display-sync: all equal: nothing written" "LDIR=$LU/none MBOARD=$MW/board.parent updm 2>/dev/null && cmp -s $MI $W/m1"
+mstart
+ok "display-sync: a LOADER_TOUCH that is no record value: said, nothing written" "LDIR=$LU/none MBOARD=$MW/board.touchbad updm 2>$W/err && grep -q \"LOADER_TOUCH 'yes' is not a value\" $W/err && cmp -s $MI $W/m0"
 cp $W/l20000 $LU/pkg/loader.efi
 # the accept step runs it only after a healthy mark it wrote, and a candidate once accepted
 cp $W/l20000 $LU/pkg/loader.efi
@@ -505,6 +519,27 @@ for k in 0 1 100 8191 16383; do
     else [ "$got" = menu ] && [ "$both" = 1 ] || { rc_ok=0; echo "  cut at $k: request '$got', both $both"; }; fi
 done
 ok "request menu killed inside its slot: the replay's partition; no request the loader would take, or the whole new record" "[ $rc_ok = 1 ]"
+
+# --- 3c. the deployment list (glassine-loader-mark deploys, glassine-deploy publish) --
+# the text GlassineOS/loader's QEMU case menu_lists_every_deployment_of_the_record
+# reads (its DEPLOY_LIST), byte for byte
+printf '%s\n' '20261115-102217 previous e4ffb6ec 2026-11-15' '20261118-090000 candidate f00dcafe 2026-11-18' \
+    '20261116-120000 failed f00dcafe 2026-11-16' '20261101-080000 kept e4ffb6ec 2026-11-01' > $W/dl4
+printf 'deploys=4\ndeploy1=20261115-102217 previous e4ffb6ec 2026-11-15\ndeploy2=20261118-090000 candidate f00dcafe 2026-11-18\ndeploy3=20261116-120000 failed f00dcafe 2026-11-16\ndeploy4=20261101-080000 kept e4ffb6ec 2026-11-01\n' > $W/dl4.rec
+dlist() { $M item $MI record | grep -E '^deploys?[0-9]*=.' ; }
+mstart deploys=6 'deploy5=x5 kept old' 'deploy6=x6 kept old'
+ok "deploys: the list from stdin in one write, the loader reads exactly the loader fixture's keys; deploy5, deploy6 cleared; every other key kept" "mark deploys < $W/dl4 2>$W/err && dlist | cmp -s - $W/dl4.rec && [ -z \"\$(rec deploy5)\" ] && [ -z \"\$(rec deploy6)\" ] && [ \"\$(slot)\" = 'a 3 1' ] && [ \"\$(rec zz_unknown)\" = keep ] && [ \"\$(rec unmarked)\" = 2 ] && grep -q \"deploys=4 written (was '6')\" $W/err"
+cp $MI $W/m1
+ok "deploys: the same list again: nothing written" "mark deploys < $W/dl4 2>$W/err && cmp -s $MI $W/m1 && grep -q 'holds this list already' $W/err"
+ok "deploys: an empty list: deploys=0, every deployN cleared" "mark deploys < /dev/null 2>/dev/null && [ \"\$(rec deploys)\" = 0 ] && [ -z \"\$(dlist | grep '^deploy[0-9]')\" ]"
+{ echo '.hidden kept x'; echo 'd1 current x'; echo "d2 kept $(printf 'L%.0s' $(seq 1 65))"; printf 'd3 kept caf\303\251\n'; echo 'd4 kept'; echo 'd5 previous a b c'; } > $W/dlbad
+ok "deploys: lines that break the form left out and said; a line without a label kept" "mark deploys < $W/dlbad 2>$W/err && [ \"\$(rec deploys)\" = 2 ] && [ \"\$(rec deploy1)\" = 'd4 kept' ] && [ \"\$(rec deploy2)\" = 'd5 previous a b c' ] && [ \$(grep -c 'left out' $W/err) = 4 ]"
+for i in $(seq 1 33); do echo "d$i kept x"; done > $W/dl33
+ok "deploys: 33 deployments: the first 32, the rest said" "mark deploys < $W/dl33 2>$W/err && [ \"\$(rec deploys)\" = 32 ] && [ \"\$(rec deploy32)\" = 'd32 kept x' ] && grep -q 'more than 32' $W/err"
+mstart
+{ flock 7; LOCK_WAIT=1 mark deploys < $W/dl4 2>$W/err; lr=$?; GLASSINE_LOADER_MARK_LOCKED=1 mark deploys < $W/dl4 2>/dev/null; lr2=$?; flock -u 7; } 7>>$MS/state/.lock
+ok "deploys: the state lock held elsewhere: busy (6); with GLASSINE_LOADER_MARK_LOCKED=1 (the caller holds it) written" "[ $lr = 6 ] && [ $lr2 = 0 ] && dlist | cmp -s - $W/dl4.rec"
+ok "deploys on a board with no loader record: nothing" "MBOARD=$MW/board.none mark deploys < $W/dl4"
 
 # --- 5. a loop device (privileged) -------------------------------------------------
 if [ "${BR_PRIV:-}" = 1 ]; then

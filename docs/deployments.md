@@ -202,6 +202,7 @@ glassine-deploy remove ID [--yes] [--discard-hibernation]
 glassine-deploy packages [ID] [--porcelain]
 glassine-deploy switch [--discard-hibernation]
 glassine-deploy accept ID
+glassine-deploy publish
 glassine-deploy init POOL_MOUNT [--install-marker]
 ```
 
@@ -221,6 +222,7 @@ glassine-deploy init POOL_MOUNT [--install-marker]
 | `bases` | one record per subvolume under `bases/` and `modules/`, with the deployments whose meta names it |
 | `bases remove BASE` | deletes the subvolume and waits until its space is back. Refuses the base of the booted, current, candidate or staged deployment. Other deployments on it stay on userdata but can no longer be selected (`list` shows `base_present=no`); it asks first (`--yes`), naming them and a lost rollback. Then it removes the `boot/` files no kernel record names ([kernel-artifacts.md](kernel-artifacts.md#on-the-system-partition)). Modules are not removed. |
 | `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), merges the accounts (below), syncs, then sets `candidate=<id> tries=2 staged=`, then the clean-up. Interrupted = nothing selected, redone in full next time. |
+| `publish` | the loader record's deployment list (`deploys`, `deployN`: previous, candidate, failed, kept; boot-partition.md) written through `glassine-loader-mark deploys` where the board has a loader record, only when it differs. Run by every command that changes the deployments (select, switch, accept, remove, stage) and by the boot-success service on a start that accepts nothing; never fails the command. |
 | `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous, then the clean-up (where userdata is mounted already). Refuses a non-candidate; accepting current is a no-op. |
 | `init POOL_MOUNT` | lays out an empty btrfs that the caller made and mounted (the image builder, for the pool image an installer writes to the system partition): `bases/`, `modules/`, `state/` with `deploy` and `kernel` naming nothing, `.lock`; `--install-marker` adds `state/install`. `state/format` is written last, so a cut `init` reads as not migrated. Refuses a path that is not a mount point, a file system other than btrfs, a subvolume mount (not the top level) and a pool that is not empty. Needs no `deploy.conf` (`GLASSINE_DEPLOY_CONF=/dev/null` on a build host) and no btrfs-progs. The caller then receives the base and the kernel's modules into it. |
 | `remove ID` | deletes a deployment's layers from userdata, the way the clean-up does. Refuses the current, candidate, staged and booted deployment and a mounted one. The previous one: asks first (`--yes`), naming the lost rollback, and clears `previous=`; the last failed one: clears `failed=`. |

@@ -10,6 +10,8 @@ DISK=$(sed -n 's/.*qtest\.disk=\([^ ]*\).*/\1/p' /proc/cmdline)
 # the deployment this boot must run (default d1), and whether it runs by request
 WANT=$(sed -n 's/.*qtest\.booted=\([^ ]*\).*/\1/p' /proc/cmdline); WANT=${WANT:-d1}
 ONCE=$(sed -n 's/.*glassine\.deploy\.once=\([^ ]*\).*/\1/p' /proc/cmdline)
+# a request from the loader record (qtest.once=: the host put it there)
+[ -n "$ONCE" ] || ONCE=$(sed -n 's/.*qtest\.once=\([^ ]*\).*/\1/p' /proc/cmdline)
 ok "the boot modules loaded, none failed" "dmesg | grep -q 'glassine-boot: boot modules: [0-9]* of [0-9]* loaded\$'"
 for m in btrfs ext4 overlay $DISK; do
     ok "module $m loaded" "grep -q '^$m ' /proc/modules"

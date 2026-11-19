@@ -19,6 +19,12 @@
 #   5  glassine.deploy.once=d2: d2 boots this once, state/deploy not written
 #   6  the first partition named "system" again, the key naming an identity no
 #      partition has: not found, never taken by its name, the init powers off
+# Then a board with the raw boot partition (BOOT_FORM=raw; docs/handback.md, "A
+# deployment picked under a parent that passes no command line"): its glassine-boot
+# partition's loader record holds deploy_once=d2, the start menu's pick:
+#   7  no command-line request: d2 boots this once from the record (state/deploy not
+#      written), the key cleared in the record
+#   8  the next start: no request left, d1 (the default) boots
 # Every boot must have started under UEFI (the kernel's "efi: EFI v" line).
 #
 # Not part of `make check` (minutes per boot when QEMU emulates the CPU). Needs Docker
@@ -45,9 +51,12 @@ W=/w; mkdir -p $W/k/modules
 cp -a /lib/modules/$KREL $W/k/modules/$KREL; rm -f $W/k/modules/$KREL/build $W/k/modules/$KREL/source
 printf "ROOT_PART=system\nROOT_FSTYPE=btrfs\nROOT_LAYOUT=deployments\nUSERDATA_PART=userdata\nUSERDATA_PREFIX=media/glassine\nDEFAULT_ROLE_MATCH=\n" > $W/board.conf
 sh /p/build-initramfs.sh --board $W/board.conf /out/initramfs-only.cpio.gz
+{ cat $W/board.conf; echo BOOT_FORM=raw; } > $W/board-raw.conf
+sh /p/build-initramfs.sh --board $W/board-raw.conf /out/initramfs-raw-only.cpio.gz
 sh /p/build-boot-modules.sh $W/k/modules/$KREL /out/boot-modules.cpio.gz
 # the kernel set: the initramfs, then its kernel'"'"'s boot modules
 cat /out/initramfs-only.cpio.gz /out/boot-modules.cpio.gz > /out/initramfs.cpio.gz
+cat /out/initramfs-raw-only.cpio.gz /out/boot-modules.cpio.gz > /out/initramfs-raw.cpio.gz
 # the base: busybox and a check script as /sbin/init
 B=$W/base; mkdir -p $B/bin $B/sbin $B/etc $B/var $B/tmp $B/proc $B/sys $B/dev $B/run $B/lib/modules $B/lib/firmware/updates
 cp /bin/busybox.static $B/bin/busybox
@@ -60,8 +69,8 @@ echo "files: kernel $KREL"
 '
 
 # --- the disk (the host's own architecture: btrfs ioctls don't pass user emulation) ---
-docker run --rm --privileged --platform linux/$NATIVE -v "$OUT":/out alpine:3.22 sh -euc '
-apk add -q btrfs-progs e2fsprogs sgdisk tar coreutils >/dev/null
+docker run --rm --privileged --platform linux/$NATIVE -v "$P":/p:ro -v "$OUT":/out alpine:3.22 sh -euc '
+apk add -q btrfs-progs e2fsprogs sgdisk tar coreutils python3 util-linux >/dev/null
 KREL=$(cat /out/krel)
 W=/w; mkdir -p $W && mount -t tmpfs -o size=1200m tmpfs $W
 truncate -s 600M $W/sys.img; mkfs.btrfs -q -L system $W/sys.img
@@ -83,11 +92,17 @@ for d in d1 d2; do
     printf "base=b1\nkind=install\ncreated=qtest\n" > $W/ud/media/glassine/deployments/$d/meta
 done
 umount $W/ud
-rm -f /out/disk.img; truncate -s 840M /out/disk.img
+# the raw boot partition: a region table and a loader record holding deploy_once=d2
+truncate -s 16M $W/gb.img
+GLASSINE_BI_LIB=/p/lib GLASSINE_BI_TMP=/tmp sh /p/sbin/glassine-boot-raw init $W/gb.img >/dev/null
+python3 -I /p/test/bootraw/raw_model.py seed $W/gb.img /p/test/bootpart/golden/loader.a /p/test/bootpart/golden/loader.b
+python3 -I /p/test/bootraw/raw_model.py next $W/gb.img deploy_once=d2
+rm -f /out/disk.img; truncate -s 860M /out/disk.img
 sgdisk -o -n 1:2048:+600M -c 1:system -u 1:0F3E26A1-5C7B-4A55-9B8D-2C4F6E8A1B3D \
-    -n 2:0:+200M -c 2:userdata -u 2:6D1A5E2B-8C4F-4B3A-A9E7-1F2D3C4B5A69 /out/disk.img >/dev/null
+    -n 2:0:+200M -c 2:userdata -u 2:6D1A5E2B-8C4F-4B3A-A9E7-1F2D3C4B5A69 \
+    -n 3:0:+16M -c 3:glassine-boot /out/disk.img >/dev/null
 n=1
-for img in sys ud; do
+for img in sys ud gb; do
     s=$(sgdisk -i $n /out/disk.img | sed -n "s/^First sector: \([0-9]*\).*/\1/p")
     dd if=$W/$img.img of=/out/disk.img bs=512 seek="$s" conv=notrunc,sparse status=none
     n=$((n + 1))
@@ -148,7 +163,16 @@ names system pc-data
 boot 6 '-device virtio-blk-pci,drive=d' initramfs.cpio.gz "glassine.system=PARTUUID=00000000-0000-4000-8000-000000000000 glassine.userdata=PARTUUID=$UU"
 ck 6 'root partition glassine.system=PARTUUID=00000000-0000-4000-8000-000000000000 not found' 'an identity no partition has: not found'
 ck 6 'default boot FAILED' 'an identity no partition has: the partition named system is not taken, the default boot fails'
+names system userdata
+boot 7 '-device virtio-blk-pci,drive=d' initramfs-raw.cpio.gz "qtest.disk=virtio_blk qtest.booted=d2 qtest.once=d2"
+ck 7 'glassine-boot: deployment request d2 from the loader record (deploy_once, cleared): for this start only' 'deploy_once=d2 in the loader record: taken and cleared, said by the initramfs'
+ck 7 'glassine-boot: deployment d2 by request, for this start only' 'deploy_once=d2: d2 by request'
+ck 7 'QTEST DONE' 'deploy_once=d2: the check script ran to its end'
+boot 8 '-device virtio-blk-pci,drive=d' initramfs-raw.cpio.gz "qtest.disk=virtio_blk"
+if grep -aq 'from the loader record' "$OUT/boot8.log"; then echo "QTEST FAIL boot 8: the record's request was used up" | tee -a "$OUT/boot8.log"
+else echo "QTEST ok boot 8: the record's request was used up" | tee -a "$OUT/boot8.log"; fi
+ck 8 'QTEST DONE' 'the next start: the default d1, the check script ran to its end'
 pass=$(cat "$OUT"/boot*.log | grep -ac 'QTEST ok' || true)
 fail=$(cat "$OUT"/boot*.log | grep -ac 'QTEST FAIL' || true)
 echo "qemu x86_64 (UEFI): $pass ok, $fail FAIL"
-[ "$fail" = 0 ] && [ "$pass" -ge 60 ]
+[ "$fail" = 0 ] && [ "$pass" -ge 80 ]
