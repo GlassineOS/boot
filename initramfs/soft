@@ -1,0 +1,249 @@
+#!/bin/busybox sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# GlassineOS soft start (specs/013, docs/boot.md "Soft start"). Part of the boot
+# initramfs; the cold start keeps a copy of it, with busybox, the boot libraries and
+# board.conf, in /run/glassine/kept (the kept assembly, lib/glassine-root.sh gr_keep).
+# busybox init runs it as PID 1 through soft-start (its inittab restart action) once
+# glassine-deploy restart has asked for a soft restart and the session has stopped:
+# every service, then every process (busybox init's SIGTERM and SIGKILL).
+#
+# Stage 1 (from the kept copy, the old root still mounted): a tmpfs stage gets the
+# kept files, /dev, /proc and /sys move onto it, and PID 1 pivots its root there.
+# Stage 2 (from the stage): no process may be left (killed, waited for), the system
+# partition and userdata mounted again on their live file systems (no fsck, no
+# remount, no journal replay: their ext4 mount count stays), the old root and
+# every mount below it unmounted, none lazily; both synced. The second decision
+# (gs_restart_word, gp_restart_word: the state as the switch left it), then the
+# cold start's own pick and assembly (gr_soft_boot), the device data step, the
+# hand-over files (gr_carry: the try written last), and switch_root into the new
+# root's init. Not here (cold start only): boot modules, hibernation, pstore,
+# developer hooks, the command line's deployment request, the loader record's.
+#
+# Every step has a time limit (limit= in /run/glassine/restarting, deploy.conf
+# RESTART_LIMIT_S). Any step that fails or runs out of time restarts cold: what is
+# left is killed, why is noted on userdata (<prefix>/restart.cold, said once by the
+# next start's /run/glassine/restart cold_reason=), both file systems synced and
+# made read-only (gr_shutdown_ro), reboot -f. A hardware watchdog stays armed: this
+# script feeds it between its steps (fd 7), and arms the busybox watchdog again
+# before the hand-over, as the cold initramfs does.
+#
+# Test hook: a file test.conf next to this script (never in a kept assembly the
+# boot made) is sourced first: GLASSINE_SOFT_REBOOT (the cold restart's command),
+# GLASSINE_SOFT_STAGE (the stage's mount point), GLASSINE_SOFT_INIT (the new
+# root's init), GLASSINE_SOFT_CMDLINE, GLASSINE_SOFT_CUT (a step name: the restart
+# fails there, as a cut would; the steps are the names given to step below),
+# GLASSINE_SOFT_KMSG (the log), GLASSINE_SOFT_KEEP_RW=1 (the cold restart leaves the
+# file systems writable: a test shares them with its host).
+
+HERE=${0%/*}
+STAGE2=0
+[ "${1:-}" = --stage2 ] && STAGE2=1
+# stage 2 starts with /dev, /proc and /sys still under the old root: moved onto
+# the stage first, before any redirection needs /dev/null
+MOVED=''
+if [ $STAGE2 = 1 ]; then
+    for _m in dev proc sys; do
+        /bin/busybox mount --move "/oldroot/$_m" "/$_m" && MOVED="$MOVED $_m"
+    done
+fi
+# shellcheck disable=SC2034  # read in the applet wrappers (eval)
+B=$HERE/bin/busybox
+GLASSINE_SOFT_REBOOT='' GLASSINE_SOFT_STAGE=/run/glassine/stage GLASSINE_SOFT_INIT=/sbin/init GLASSINE_SOFT_CMDLINE=/proc/cmdline GLASSINE_SOFT_CUT='' GLASSINE_SOFT_KMSG=/dev/kmsg GLASSINE_SOFT_KEEP_RW=''
+# the kernel puts command-line words of the form A=B into PID 1's environment:
+# none of the libraries' test hooks is taken from there
+unset GLASSINE_BI_BOOTPART_DIR GLASSINE_BI_BOOTPART_DEV GLASSINE_BI_SYSBLOCK GLASSINE_BI_DEVDIR
+# shellcheck source=/dev/null
+[ ! -r "$HERE/test.conf" ] || . "$HERE/test.conf"
+
+# stage 1 runs the kept busybox's applets by name (nothing of the old root's own);
+# stage 2 has the stage's busybox as its only PATH
+if [ $STAGE2 = 1 ]; then
+    /bin/busybox --install -s /bin 2>/dev/null
+    export PATH=/bin
+else
+    for _a in awk cat cp cut grep head kill ls mkdir mount mountpoint pivot_root readlink reboot rm sed sleep sort sync tr umount uname; do
+        eval "$_a() { \"\$B\" $_a \"\$@\"; }"
+    done
+fi
+
+log() {
+    echo "<3>glassine-soft: $*" > "$GLASSINE_SOFT_KMSG" 2>/dev/null
+    echo "glassine-soft: $*" 2>/dev/null
+}
+# step NAME: the restart reaches step NAME (the test hook's cut)
+step() { [ "$GLASSINE_SOFT_CUT" != "$1" ] || cold cut "cut at $1 (test)"; }
+# where the device nodes are: /dev, or the stage's once stage 1 moved /dev there
+DEVP=''
+WD=0
+feed() { [ $WD = 0 ] || printf k >&7 2>/dev/null; }
+# shellcheck disable=SC2034  # read by the library
+GR_FEED=feed
+
+R=/run/glassine/restarting
+[ $STAGE2 = 0 ] || R=/carry/restarting
+kv() { sed -n "s/^$1=//p" "$R" 2>/dev/null | head -n 1; }
+FROM=$(kv from) ONCE=$(kv once) COUNT=$(kv count) SYSDEV=$(kv sysdev) UDDEV=$(kv uddev) PREFIX=$(kv prefix) LIMIT=$(kv limit)
+case $LIMIT in ''|*[!0-9]*) LIMIT=20 ;; esac
+case $COUNT in ''|*[!0-9]*) COUNT=1 ;; esac
+[ -n "$PREFIX" ] || PREFIX=media/glassine
+
+# cold WORD [DETAIL]: the cold restart (013 FR-021); WORD is what the next start
+# says (restart's cold_reason=): a reason of the decision, or the step that gave up
+# (record, kept, stage, processes, mounts, assembly, handover, cut)
+cold() {
+    log "the soft restart turns cold: $1${2:+ ($2)}"
+    kill -9 -1 2>/dev/null
+    feed
+    # why, for the next start (said once): userdata as it is mounted now, else a
+    # mount of the live file system for it
+    _cw=/run/glassine-cold.$$
+    [ $STAGE2 = 0 ] || _cw=/cold.$$
+    if [ -n "$UDDEV" ] && mkdir -p "$_cw" && mount -t ext4 -o rw,noatime "$DEVP$UDDEV" "$_cw" 2>/dev/null; then
+        [ ! -d "$_cw/$PREFIX" ] || echo "$1" > "$_cw/$PREFIX/restart.cold"
+        sync
+        umount "$_cw" 2>/dev/null
+    fi
+    sync
+    if [ -z "$GLASSINE_SOFT_KEEP_RW" ] && command -v gr_shutdown_ro >/dev/null; then
+        # shellcheck disable=SC2034  # read by the library
+        GR_TMP=${_cw%/*}
+        for _cd in "$UDDEV" "$SYSDEV"; do [ -z "$_cd" ] || gr_shutdown_ro "$DEVP$_cd"; done
+    fi
+    sync
+    if [ -n "$GLASSINE_SOFT_REBOOT" ]; then $GLASSINE_SOFT_REBOOT
+    else reboot -f
+    fi
+    while :; do sleep 60; done          # PID 1 never exits
+}
+
+# the boot libraries (the kept copies)
+LIBDIR=$HERE/lib/glassine-boot
+for _l in glassine-state glassine-root glassine-bootpart glassine-device; do
+    if [ -r "$LIBDIR/$_l.sh" ]; then
+        # shellcheck source=/dev/null
+        . "$LIBDIR/$_l.sh" || cold kept "the kept $_l.sh does not load"
+    fi
+done
+gr_log() { log "$*"; }
+BOARD=$HERE/etc/glassine-boot/board.conf
+HANDOFF='' BOOT_FORM='' BOOT_PART=glassine-boot DEVICE_PART=''
+# shellcheck source=/dev/null
+[ ! -r "$BOARD" ] || . "$BOARD"
+
+# the watchdog: the feeder glassine-restart started is gone (busybox init's
+# SIGKILL); open the device once its close is through
+if [ -e /dev/watchdog ]; then
+    if [ -e /proc/self/fd/7 ]; then WD=1
+    else
+        _n=0
+        until command exec 7>/dev/watchdog 2>/dev/null; do
+            _n=$((_n + 1)); [ $_n -lt 50 ] || break; sleep 0.1
+        done
+        [ $_n -lt 50 ] && WD=1 || log "cannot open /dev/watchdog: no watchdog through the restart"
+    fi
+fi
+feed
+
+if [ $STAGE2 = 0 ]; then
+    # --- stage 1: onto a tmpfs stage ----------------------------------------------
+    [ -n "$SYSDEV" ] && [ -n "$UDDEV" ] || cold record "the restart record names no system partition or userdata"
+    S=$GLASSINE_SOFT_STAGE
+    log "soft restart from $FROM (start $COUNT of this kernel run)"
+    step private
+    mount --make-rprivate / || cold stage "cannot make the mounts private"
+    mkdir -p "$S" && mount -t tmpfs -o mode=0755 tmpfs "$S" || cold stage "cannot mount the stage"
+    step copy
+    cp -a "$HERE/." "$S/" || cold stage "cannot copy the kept assembly to the stage"
+    mkdir -p "$S/carry" "$S/dev" "$S/proc" "$S/sys" "$S/oldroot" "$S/tmp" "$S/bin" || cold stage "cannot lay out the stage"
+    # the kernel run's files and the restart's (013 FR-024): the old /run goes
+    for _f in /run/glassine/*; do [ ! -f "$_f" ] || cp "$_f" "$S/carry/" || cold stage "cannot save $_f"; done
+    feed
+    step pivot
+    cd "$S" && pivot_root . oldroot || cold stage "pivot_root failed"
+    cd / || cold stage "no / after pivot_root"
+    # stage 2 runs from the stage's own copy: the old root holds nothing open
+    exec /bin/busybox sh /soft --stage2
+fi
+
+# --- stage 2: on the stage --------------------------------------------------------
+case " $MOVED " in *" dev "*) ;; *) DEVP=/oldroot ;; esac
+[ "$MOVED" = " dev proc sys" ] || cold stage "cannot move /dev, /proc and /sys onto the stage (moved:$MOVED)"
+step move
+NEWROOT=/newroot
+KREL=$(uname -r)
+
+step procs
+gr_procs_end "$LIMIT" || cold processes "$GR_WHY"
+feed
+mkdir -p $NEWROOT $NEWROOT.sys $NEWROOT.ud || cold mounts "cannot lay out $NEWROOT"
+# the live file systems, mounted again before the old root lets go of them: the
+# same super blocks (013 FR-023)
+step mount
+mount -t btrfs -o rw,noatime "$SYSDEV" $NEWROOT.sys || cold mounts "cannot mount the system partition $SYSDEV"
+mount -t ext4 -o rw,noatime "$UDDEV" $NEWROOT.ud || cold mounts "cannot mount userdata $UDDEV"
+# what the outgoing session mounted in /dev, /proc and /sys goes, as at a cold
+# start (devtmpfs, proc, sysfs and /dev/pts stay)
+for _m in $(awk '$2 ~ "^/(dev|proc|sys)/" && $2 != "/dev/pts" { print $2 }' /proc/mounts | sort -r); do
+    umount "$(printf '%b' "$_m")" 2>/dev/null || log "$_m stays mounted"
+done
+step umount
+gr_umount_strict /oldroot "$LIMIT" || cold mounts "$GR_WHY"
+rmdir /oldroot 2>/dev/null
+sync
+feed
+
+# the second decision (013 FR-003): the state as the outgoing session and the
+# switch left it
+step decide
+if [ -n "$ONCE" ]; then TARGET=$ONCE
+else TARGET="$(gr_would_pick $NEWROOT.sys/state) $(gs_kv $NEWROOT.sys/state/deploy current) $(gs_kv $NEWROOT.sys/state/deploy previous)"
+fi
+WORD=$(gs_restart_word /carry $NEWROOT.sys "$NEWROOT.ud/$PREFIX" "$GLASSINE_SOFT_CMDLINE" "$KREL" "$TARGET" /)
+if [ -z "$WORD" ] && command -v gp_restart_word >/dev/null && _k=$(gp_kind "$HANDOFF" "$BOOT_FORM" 2>/dev/null); then
+    # shellcheck disable=SC2034  # read by the library
+    GP_TMP=/tmp
+    WORD=$(gp_restart_word "$_k" "$GLASSINE_SOFT_CMDLINE" "$BOOT_PART" /tmp/boot-partition 2>/dev/null)
+fi
+[ -z "$WORD" ] || cold "$WORD"
+feed
+
+# the cold start's pick and assembly (013 FR-014), on the live mounts
+step assemble
+gr_soft_boot "$PREFIX" $NEWROOT "$KREL" "$ONCE" || cold assembly "no deployment assembles"
+[ -x $NEWROOT$GLASSINE_SOFT_INIT ] || [ -L $NEWROOT$GLASSINE_SOFT_INIT ] || cold assembly "no $GLASSINE_SOFT_INIT in $GR_BOOTED"
+feed
+step carry
+# shellcheck disable=SC2034  # read by gr_carry
+GR_RS_KIND=soft GR_RS_FROM=$FROM GR_RS_COUNT=$COUNT GR_CARRY_FROM=/carry GR_KEEP_SRC=/
+# shellcheck disable=SC2034  # read by gr_carry
+GR_RS_SWITCH=$(cat /carry/switch-result 2>/dev/null)
+gr_carry $NEWROOT || cold handover "cannot hand the mounts to the new root"
+log "soft start: deployment $GR_BOOTED"
+step handover
+
+# the device data step (013 FR-025), as at a cold start
+if command -v gd_boot >/dev/null && [ -n "$DEVICE_PART" ] && gd_has_entries "$NEWROOT/usr/share/glassine/device-data.list"; then
+    _dp=''
+    for _u in /sys/class/block/*/uevent; do
+        grep -qx "PARTNAME=$DEVICE_PART" "$_u" 2>/dev/null && { _dp=$(sed -n 's/^DEVNAME=//p' "$_u"); break; }
+    done
+    if [ -n "$_dp" ]; then
+        gd_boot $NEWROOT "/dev/$_dp" "$GLASSINE_SOFT_CMDLINE" /sys/module/firmware_class/parameters/path 2>/tmp/gd.log
+        while read -r _l; do log "device data: ${_l#glassine-device: }"; done < /tmp/gd.log
+    else log "device data: no partition $DEVICE_PART"
+    fi
+fi
+
+# the watchdog daemon again, as the cold initramfs leaves it (its fd closed
+# without the magic character first: the device stays armed)
+exec 7>&-
+WD=0
+if [ -e /dev/watchdog ]; then
+    watchdog -t 5 -T 20 /dev/watchdog && log "watchdog armed (20 s)" || log "the watchdog daemon did not start"
+fi
+log "soft start: switch_root $(cut -d' ' -f1 /proc/uptime)"
+for _m in /proc /sys /dev; do mkdir -p $NEWROOT$_m; done
+mount --move /dev $NEWROOT/dev
+mount --move /sys $NEWROOT/sys
+mount --move /proc $NEWROOT/proc
+exec switch_root $NEWROOT "$GLASSINE_SOFT_INIT"

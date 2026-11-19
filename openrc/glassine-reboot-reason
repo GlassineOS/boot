@@ -14,6 +14,8 @@ depend() {
 start() {
 	_f=${GLASSINE_REBOOT_REASON_FILE:-/run/glassine-reboot.reason}
 	[ -s "$_f" ] || return 0
+	# a soft restart has no reboot (specs/013): the reason waits for a cold one
+	[ ! -e /run/glassine/restarting ] || return 0
 	_why=$(cat "$_f")
 	case "$_why" in
 	'' | *[!a-z0-9-]*) ewarn "glassine: bad reboot reason in $_f, ignored"; return 0 ;;

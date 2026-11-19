@@ -27,7 +27,9 @@ stop() {
 		kill "$(cat "$JOBPID")" 2>/dev/null
 		rm -f "$JOBPID"
 	fi
-	if yesno "${RC_GOINGDOWN:-NO}" && [ -x /usr/sbin/glassine-loader-mark ]; then
+	# the loader's shutdown step belongs to the end of the kernel run: a soft
+	# restart is none (specs/013 FR-018)
+	if yesno "${RC_GOINGDOWN:-NO}" && [ ! -e /run/glassine/restarting ] && [ -x /usr/sbin/glassine-loader-mark ]; then
 		/usr/sbin/glassine-loader-mark shutdown
 	fi
 	return 0

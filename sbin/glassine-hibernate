@@ -29,8 +29,8 @@
 # Exit: 0 done (resumed; setup: the file is ready), 1 failed (the kernel did
 # not hibernate, a write failed), 2 usage, 3 not possible here (no deployments
 # boot, no swap file, block size, no kernel support, no space, the next boot
-# could run another kernel image), 4 busy (a switch is running, the deployment
-# state is locked).
+# could run another kernel image), 4 busy (a switch or a restart is running:
+# /run/glassine/switching, restarting; the deployment state is locked).
 #
 # Configuration: deploy.conf (SYSTEM_MNT, USERDATA_DEV, USERDATA_MNT: a real
 # mount point, on another device than its parent directory,
@@ -86,6 +86,7 @@ swap_active() { awk -v f="$SWAP" '$1 == f { on = 1 } END { exit !on }' "$SWAPS" 
 # ready: every refusal of `now` before anything is written; sets BLOCK and MM
 ready() {
     [ -e "$RUN_DIR/switching" ] && die 4 "a deployment switch is running"
+    [ -e "$RUN_DIR/restarting" ] && die 4 "a restart is running (glassine-deploy restart)"
     # the device seed's partition: an image would freeze a write to it half done
     # (docs/kernel-artifacts.md, "Device data")
     # shellcheck source=/dev/null
@@ -196,6 +197,8 @@ cmd_now() {
     case ${1:-} in --reboot) mode=reboot ;; '') ;; *) exit 2 ;; esac
     ready
     gs_lock "$SYSTEM_MNT/state" || die 4 "the deployment state is locked (glassine-deploy is running)"
+    # a restart that wrote its mark between the check and the lock (013 FR-027)
+    [ -e "$RUN_DIR/restarting" ] && die 4 "a restart is running (glassine-deploy restart)"
     on=no
     undo() {
         rm -f "$GUARD"

@@ -17,13 +17,20 @@
 # battery percent without a charger). Never fails a shutdown: exit 0 unless
 # the switch itself failed (then glassine-deploy's exit code; the deployment
 # stays staged).
+#
+# What it did goes to RUN_DIR/switch-result (switch=yes|no, switch_reason=: not-user,
+# battery, space, failed), so a soft restart (glassine-deploy restart, which makes
+# its restart a user-started one) can tell the incoming session (specs/013 FR-012).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
+LIB=${GLASSINE_DEPLOY_LIB:-/usr/lib/glassine-boot/glassine-state.sh}
 DEPLOY=${GLASSINE_DEPLOY:-/usr/sbin/glassine-deploy}
 PSDIR=${GLASSINE_POWER_SUPPLY:-/sys/class/power_supply}
 RUN_DIR=/run/glassine SWITCH_MIN_CAPACITY=30
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
+# shellcheck source=../lib/glassine-state.sh
+. "$LIB" || { echo "glassine-switch: cannot read $LIB" >&2; exit 0; }
 MARK=$RUN_DIR/user-shutdown
 
 say() {
@@ -38,35 +45,28 @@ if [ "${1:-}" = --user-shutdown ]; then
 fi
 [ $# = 0 ] || { echo "usage: glassine-switch-hook [--user-shutdown]" >&2; exit 2; }
 
-# power_ok: a charger online, or a battery at SWITCH_MIN_CAPACITY or more;
-# no battery at all (a board without one) = ok. Sets WHY.
-power_ok() {
-    bat=''
-    for p in "$PSDIR"/*; do
-        [ -r "$p/type" ] || continue
-        case $(cat "$p/type") in
-        Mains|USB|USB_*|Wireless) [ "$(cat "$p/online" 2>/dev/null)" = 1 ] && { WHY="charger ${p##*/}"; return 0; } ;;
-        Battery) bat=$(cat "$p/capacity" 2>/dev/null) ;;
-        esac
-    done
-    [ -n "$bat" ] || { WHY="no battery"; return 0; }
-    case $bat in *[!0-9]*) WHY="battery capacity unreadable"; return 1 ;; esac
-    WHY="battery $bat %"
-    [ "$bat" -ge "$SWITCH_MIN_CAPACITY" ]
-}
+# result yes|no [WORD]: what this shutdown's switch did, for a soft restart
+result() { printf 'switch=%s\nswitch_reason=%s\n' "$1" "${2:-}" > "$RUN_DIR/switch-result" 2>/dev/null; return 0; }
 
 staged=$("$DEPLOY" status --porcelain 2>/dev/null | sed -n 2p | tr '\t' '\n' | sed -n 's/^staged=//p')
 [ -n "$staged" ] || exit 0
 if [ ! -e "$MARK" ]; then
     say "$staged stays staged: this shutdown was not started by the user"
+    result no not-user
     exit 0
 fi
-if ! power_ok; then
-    say "$staged stays staged: $WHY, below $SWITCH_MIN_CAPACITY % without a charger"
+# the rule glassine-deploy restart --check reports beforehand (gs_power_ok)
+if ! gs_power_ok "$PSDIR" "$SWITCH_MIN_CAPACITY"; then
+    say "$staged stays staged: $GS_POWER_WHY, below $SWITCH_MIN_CAPACITY % without a charger"
+    result no battery
     exit 0
 fi
-say "switching to $staged ($WHY)"
+say "switching to $staged ($GS_POWER_WHY)"
 "$DEPLOY" switch; rc=$?
-[ $rc = 0 ] && say "$staged boots next" || say "switch failed (exit $rc): $staged stays staged"
+if [ $rc = 0 ]; then say "$staged boots next"; result yes
+else
+    say "switch failed (exit $rc): $staged stays staged"
+    [ $rc = 5 ] && result no space || result no failed
+fi
 rm -f "$MARK"
 exit $rc

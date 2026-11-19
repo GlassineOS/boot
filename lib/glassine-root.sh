@@ -339,7 +339,7 @@ gr_resume() {
 # Sets GR_BOOTED (the id, or bare:<base>), GR_KBOOT, GR_ONCE (ONCE, when it
 # booted) and GR_STORAGE. 1 = nothing bootable, nothing left mounted.
 gr_boot() {
-    _gr_sm=$4.sys _gr_um=$4.ud GR_BOOTED='' GR_KBOOT='' GR_ONCE='' GR_STORAGE='' _gr_ud=''
+    _gr_sm=$4.sys _gr_um=$4.ud GR_BOOTED='' GR_KBOOT='' GR_ONCE='' GR_STORAGE='' GR_TRY='' GR_NOTE='' _gr_ud=''
     mkdir -p "$_gr_sm" && mount -t btrfs -o rw,noatime "$1" "$_gr_sm" || { gr_log "cannot mount $1"; return 1; }
     _gr_f=$(gs_format_version "$_gr_sm")
     [ "$_gr_f" != none ] || { gr_log "the system partition has no state/ (not migrated)"; umount "$_gr_sm"; return 1; }
@@ -358,8 +358,45 @@ gr_boot() {
         if mkdir -p "$_gr_um" && mount -t ext4 -o rw,noatime "$2" "$_gr_um"; then _gr_ud=$_gr_um/$3
             # gr_resume left no image: a guard still here belongs to none
             rm -f "$_gr_ud/swap/hibernate.guard"
+            # a soft restart that turned cold left why (gr_soft_cold_note): said once
+            if [ -e "$_gr_ud/restart.cold" ]; then
+                GR_NOTE=$(head -n 1 "$_gr_ud/restart.cold" 2>/dev/null)
+                case $GR_NOTE in ''|*[!a-z-]*) GR_NOTE=unknown ;; esac
+                rm -f "$_gr_ud/restart.cold"
+            fi
         else gr_log "userdata does not mount: bare boot"; fi
     fi
+    GR_SOFT=0
+    gr_boot_pick "$@"
+}
+
+# gr_soft_boot PREFIX NEWROOT KREL [ONCE]: the assembly of a soft start (specs/013):
+# the same pick and assembly as gr_boot, on the system partition and userdata that
+# stayed mounted through the restart (NEWROOT.sys, NEWROOT.ud: mounts of the live
+# file systems, made by the restart step: no fsck, no mount count, no journal
+# replay, FR-023). No kernel trial (a restart that would be one is cold), no
+# command-line request (FR-018); ONCE is the restart's own (FR-013). Differences
+# from a cold start: the candidate's try is not written here but by gr_carry right
+# before the hand-over (GR_TRY, FR-015), and where the pick would end in a bare
+# boot nothing is assembled (FR-014: the restart turns cold). 1 = nothing
+# assembled, nothing of it left mounted (the two mounts stay), 2 = the same, and
+# the state can't be written (a newer format, a held lock).
+gr_soft_boot() {
+    _gr_sm=$2.sys _gr_um=$2.ud GR_BOOTED='' GR_KBOOT='' GR_ONCE='' GR_STORAGE='' GR_TRY='' GR_NOTE='' _gr_ud=''
+    mountpoint -q "$_gr_sm" || { gr_log "soft start: the system partition is not at $_gr_sm"; return 1; }
+    mountpoint -q "$_gr_um" || { gr_log "soft start: userdata is not at $_gr_um"; return 1; }
+    _gr_ud=$_gr_um/$1
+    _gr_f=$(gs_format_version "$_gr_sm")
+    gs_format_ok "$_gr_f" || { gr_log "soft start: state format $_gr_f is not this initramfs's"; return 2; }
+    gs_lock "$_gr_sm/state" || { gr_log "soft start: the state is locked"; return 2; }
+    _gr_rw=1 GR_SOFT=1
+    gr_boot_pick "$_gr_sm" "$_gr_um" "$1" "$2" "$3" '' "${4:-}"
+}
+
+# gr_boot_pick SYSDEV UDDEV PREFIX NEWROOT KREL [IMG] [ONCE]: gr_boot's pick,
+# assembly and storage, with the system partition at NEWROOT.sys and userdata's
+# prefix at _gr_ud (empty: not mounted), _gr_rw and GR_SOFT set by the caller
+gr_boot_pick() {
     _gr_st=$_gr_sm/state/deploy
     _gr_o=${7:-}
     if [ -n "$_gr_o" ]; then
@@ -379,11 +416,19 @@ gr_boot() {
         if [ -n "$GR_KBOOT" ]; then
             _gr_id=$(gs_kv "$_gr_st" current)
             gr_log "kernel $GR_KBOOT boot: the current deployment ${_gr_id:-(none)}, no pick"
+        elif [ "$GR_SOFT" = 1 ]; then _gr_id=$(gr_pick_soft "$_gr_sm/state")
         elif [ $_gr_rw = 1 ]; then _gr_id=$(gr_pick "$_gr_sm/state"); else _gr_id=$(gr_would_pick "$_gr_sm/state"); fi
         for _gr_try in "$_gr_id" "$(gs_kv "$_gr_st" current)" "$(gs_kv "$_gr_st" previous)"; do
             [ -n "$_gr_try" ] || continue
             if gr_assemble "$_gr_sm" "$_gr_ud" "$_gr_try" "$4" "$5"; then
                 GR_BOOTED=$_gr_try
+                # a soft start's try, written by gr_carry (FR-015): what gr_pick
+                # writes at a cold start, so the state ends the same byte for byte
+                if [ "$GR_SOFT" = 1 ] && [ "$_gr_try" = "$(gs_kv "$_gr_st" candidate)" ] && [ "$_gr_try" != "$(gs_kv "$_gr_st" current)" ]; then
+                    _gr_t=$(gs_kv "$_gr_st" tries)
+                    case "$_gr_t" in ''|*[!0-9]*) _gr_t=0 ;; esac
+                    [ "$_gr_t" -gt 0 ] && GR_TRY="tries=$((_gr_t - 1))"
+                fi
                 gr_storage "$_gr_ud" "$4"
                 return 0
             fi
@@ -391,6 +436,11 @@ gr_boot() {
             [ $_gr_rw = 1 ] && [ "$_gr_try" = "$(gs_kv "$_gr_st" candidate)" ] &&
                 gs_update "$_gr_st" candidate= tries=0 "failed=$_gr_try"
         done
+    fi
+    if [ "$GR_SOFT" = 1 ]; then
+        gr_log "soft start: no deployment assembles (a cold start would boot bare): the restart turns cold"
+        exec 9>&-
+        return 1
     fi
     _gr_base=''
     [ -z "$_gr_ud" ] || _gr_base=$(gs_kv "$_gr_ud/deployments/$(gs_kv "$_gr_st" current)/meta" base)
@@ -406,6 +456,21 @@ gr_boot() {
     gr_log "nothing to boot"
     gr_boot_umount "$4"
     return 1
+}
+
+# gr_pick_soft STATEDIR: gr_pick for a soft start: the same choice and the same
+# failed mark, but the candidate's try is left to gr_carry (GR_TRY, FR-015)
+gr_pick_soft() {
+    _gr_s=$1/deploy
+    _gr_cur=$(gs_kv "$_gr_s" current)
+    _gr_cand=$(gs_kv "$_gr_s" candidate)
+    _gr_t=$(gs_kv "$_gr_s" tries)
+    case "$_gr_t" in ''|*[!0-9]*) _gr_t=0 ;; esac
+    if [ -n "$_gr_cand" ] && [ "$_gr_cand" != "$_gr_cur" ]; then
+        [ "$_gr_t" -gt 0 ] && { echo "$_gr_cand"; return 0; }
+        gs_update "$_gr_s" candidate= tries=0 "failed=$_gr_cand" || return 1
+    fi
+    if [ -n "$_gr_cur" ]; then echo "$_gr_cur"; else gs_kv "$_gr_s" previous; fi
 }
 
 # gr_boot_umount NEWROOT: undo gr_boot (and gr_carry), the lock released
@@ -439,5 +504,104 @@ gr_carry() {
     echo "${GR_KBOOT:-}" > "$_gr_r/kernel-boot"
     echo "${GR_ONCE:-}" > "$_gr_r/deploy-once"
     printf '%s' "${GR_STORAGE:-}" > "$_gr_r/storage"
+    # how this start came (013 FR-008): kind, the outgoing deployment, the soft
+    # starts in this kernel run, the start's time on /proc/uptime; what a soft
+    # restart's switch did; why the soft restart before this cold start turned cold
+    read -r _gr_up _gr_x < /proc/uptime || _gr_up=''
+    {
+        echo "kind=${GR_RS_KIND:-cold}"
+        echo "from=${GR_RS_FROM:-}"
+        echo "count=${GR_RS_COUNT:-0}"
+        echo "at=$_gr_up"
+        [ -z "${GR_RS_SWITCH:-}" ] || printf '%s\n' "$GR_RS_SWITCH"
+        [ -z "${GR_NOTE:-}" ] || echo "cold_reason=$GR_NOTE"
+    } > "$_gr_r/restart" || return 1
+    # the kernel run's files a soft start carries (FR-024)
+    if [ -n "${GR_CARRY_FROM:-}" ]; then
+        for _gr_c in kernel-boot loader-marked health-failed limit-done; do
+            [ ! -e "$GR_CARRY_FROM/$_gr_c" ] || cp "$GR_CARRY_FROM/$_gr_c" "$_gr_r/$_gr_c" || return 1
+        done
+    fi
+    # the kept assembly (FR-025), or why there is none
+    if [ -n "${GR_KEEP_SRC:-}" ]; then
+        gr_keep "$GR_KEEP_SRC" "$_gr_r/kept" || { rm -rf "$_gr_r/kept"; echo no-assembly > "$_gr_r/kept.none"; }
+    else echo "${GR_KEEP_NONE:-no-assembly}" > "$_gr_r/kept.none"
+    fi
+    # a soft start's try, the last write before the hand-over (FR-015)
+    if [ -n "${GR_TRY:-}" ]; then
+        gs_update "$_gr_r/system/state/deploy" "$GR_TRY" || return 1
+        gr_log "deployment $GR_BOOTED: its try taken ($GR_TRY)"
+    fi
     exec 9>&-
+}
+
+# gr_keep SRC DEST: the kept assembly (013 FR-025): of the image at SRC (the
+# initramfs's root, or a soft start's stage, which holds the same files) what a soft
+# start runs: /init, /soft, busybox, the boot libraries and board.conf; not the boot
+# modules, the developer hooks or their files (steps of a cold start only). DEST/.complete
+# last, so a cut copy is never taken. Kept in /run (a tmpfs: memory) for the kernel run.
+gr_keep() {
+    rm -rf "$2" && mkdir -p "$2/bin" "$2/lib/glassine-boot" || return 1
+    cp "$1/init" "$1/soft" "$2/" && cp "$1/bin/busybox" "$2/bin/busybox" &&
+        cp "$1"/lib/glassine-boot/glassine-*.sh "$2/lib/glassine-boot/" || return 1
+    if [ -r "$1/etc/glassine-boot/board.conf" ]; then
+        mkdir -p "$2/etc/glassine-boot" && cp "$1/etc/glassine-boot/board.conf" "$2/etc/glassine-boot/" || return 1
+    fi
+    : > "$2/.complete"
+}
+
+# gr_umount_strict DIR SECONDS: every mount at or below DIR unmounted, deepest
+# first, none lazily (013 FR-022), retried for up to SECONDS; GR_FEED (a command,
+# may be empty) runs between tries. 1 = a mount stayed (GR_WHY names it).
+gr_umount_strict() {
+    _gr_n=0
+    while :; do
+        _gr_left=''
+        for _gr_m in $(awk -v r="$1" '$2 == r || index($2, r "/") == 1 { print $2 }' /proc/mounts | sort -r); do
+            _gr_m=$(printf '%b' "$_gr_m")
+            umount "$_gr_m" 2>/dev/null || _gr_left="$_gr_left $_gr_m"
+        done
+        [ -n "$_gr_left" ] || return 0
+        [ "$_gr_n" -lt "$2" ] || { GR_WHY="still mounted:$_gr_left"; return 1; }
+        ${GR_FEED:-:}
+        sleep 1; _gr_n=$((_gr_n + 1))
+    done
+}
+
+# gr_procs_left: GR_LEFT = the processes other than this shell and the kernel's
+# threads (PF_KTHREAD in /proc/PID/stat), as "PID:COMM" words; empty when none is
+# left. No command substitution (its own subshell would count): builtins only.
+gr_procs_left() {
+    GR_LEFT=''
+    for _gr_p in /proc/[0-9]*; do
+        _gr_i=${_gr_p#/proc/}
+        [ "$_gr_i" != "$$" ] || continue
+        read -r _gr_s < "$_gr_p/stat" 2>/dev/null || continue
+        _gr_c=${_gr_s#*\(}; _gr_c=${_gr_c%\)*}
+        # the fields after the command name's closing parenthesis; flags is the 7th
+        set -f; set -- ${_gr_s##*) }; set +f
+        [ $# -ge 7 ] || continue
+        # a zombie holds nothing (its parent, this shell, reaps it); a kernel thread
+        [ "$1" != Z ] || continue
+        [ $(( $7 & 0x00200000 )) = 0 ] || continue
+        GR_LEFT="$GR_LEFT $_gr_i:$_gr_c"
+    done
+    GR_LEFT=${GR_LEFT# }
+}
+
+# gr_procs_end SECONDS: every process but PID 1 and the kernel's threads ended
+# (013 FR-020, FR-022): killed, waited for up to SECONDS; GR_FEED between tries.
+# 1 = some remain (GR_WHY names them: one in uninterruptible sleep, one the kill
+# can't reach).
+gr_procs_end() {
+    _gr_n=0
+    while :; do
+        kill -9 -1 2>/dev/null
+        gr_procs_left
+        [ -n "$GR_LEFT" ] || return 0
+        # shellcheck disable=SC2034  # read by the caller
+        [ "$_gr_n" -lt "$1" ] || { GR_WHY="processes left: $GR_LEFT"; return 1; }
+        ${GR_FEED:-:}
+        sleep 1; _gr_n=$((_gr_n + 1))
+    done
 }

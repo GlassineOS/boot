@@ -174,3 +174,101 @@ gs_guard_file() { gs_kv "$1" "$2"; }
 gs_guard_dev() {
     debugfs -R "cat /$2" "$1" 2>/dev/null | sed -n "s/^$3=//p" | head -n 1
 }
+
+# --- soft restart (specs/013, docs/deployments.md "Restart") -------------------
+# The reasons are fixed words (013 FR-006); a shell words them.
+
+# gs_kernel_word FILE CMDLINEFILE KREL: why the next cold start could run another
+# kernel image than this kernel run, as a word: kernel (another image is selected,
+# or a write of the default slot is unfinished), kernel-trial (this boot is a
+# kernel trial), kernel-candidate (a kernel candidate waits for its trial); empty
+# if the next cold start runs the running image. The rule gs_kernel_refusal
+# applies for the hibernate step, plus the candidate (004: a kernel waiting for
+# its trial keeps a staged deployment staged, so it keeps a restart cold too).
+gs_kernel_word() {
+    [ -r "$1" ] || return 0
+    _gs_run=$(gs_img_id "$2")
+    [ -z "$(gs_kv "$1" writing)" ] || { echo kernel; return 0; }
+    _gs_v=$(gs_kv "$1" candidate_img)
+    [ -n "$_gs_v" ] && [ "$_gs_run" = "$_gs_v" ] && { echo kernel-trial; return 0; }
+    [ -z "$(gs_kernel_candidate "$1")" ] || { echo kernel-candidate; return 0; }
+    _gs_v=$(gs_kv "$1" current_img)
+    if [ -n "$_gs_v" ]; then
+        [ "$_gs_run" = "$_gs_v" ] || echo kernel
+        return 0
+    fi
+    _gs_v=$(gs_kv "$1" current)
+    [ -z "$_gs_v" ] || [ "$_gs_v" = "$3" ] || echo kernel
+}
+
+# gs_covers SYSDIR BASEDIR KREL: does the running kernel KREL cover a deployment
+# on the base at BASEDIR (docs/kernel-artifacts.md, "Which combinations boot")?
+# Prints nothing when it does, else a word: modules (no modules/KREL on the system
+# partition at SYSDIR), not-covered (the base's manifest needs a feature the
+# kernel's manifest doesn't provide; a base without a manifest needs nothing).
+gs_covers() {
+    [ -d "$1/modules/$3" ] || { echo modules; return 0; }
+    _gs_need=$(gs_kv "$2/usr/share/glassine/base.manifest" needs)
+    [ -n "$_gs_need" ] || return 0
+    _gs_prov=" $(gs_kv "$1/modules/$3/kernel.manifest" provides) "
+    for _gs_n in $_gs_need; do
+        case "$_gs_prov" in *" $_gs_n "*) ;; *) echo not-covered; return 0 ;; esac
+    done
+}
+
+# gs_power_ok PSDIR MIN: a charger online, or a battery at MIN percent or more; no
+# battery at all (a board without one) = ok. Sets GS_POWER_WHY. The shutdown
+# switch's rule (glassine-switch-hook), shared with `glassine-deploy restart
+# --check`, so both say the same.
+gs_power_ok() {
+    _gs_bat=''
+    for _gs_p in "$1"/*; do
+        [ -r "$_gs_p/type" ] || continue
+        case $(cat "$_gs_p/type") in
+        Mains|USB|USB_*|Wireless) [ "$(cat "$_gs_p/online" 2>/dev/null)" = 1 ] && { GS_POWER_WHY="charger ${_gs_p##*/}"; return 0; } ;;
+        Battery) _gs_bat=$(cat "$_gs_p/capacity" 2>/dev/null) ;;
+        esac
+    done
+    [ -n "$_gs_bat" ] || { GS_POWER_WHY="no battery"; return 0; }
+    case $_gs_bat in *[!0-9]*) GS_POWER_WHY="battery capacity unreadable"; return 1 ;; esac
+    # shellcheck disable=SC2034  # read by the caller
+    GS_POWER_WHY="battery $_gs_bat %"
+    [ "$_gs_bat" -ge "$2" ]
+}
+
+# gs_restart_word RUNDIR SYSMNT UDDIR CMDLINEFILE KREL TARGETS KEPTDIR: the rules of a
+# soft restart (013 FR-001) that the state, the runtime directory and the system
+# partition decide, for the start of the first of TARGETS (ids in the pick's order:
+# the pick's, then current, previous) that can assemble; prints the first reason it
+# finds as a word, nothing when the restart may be soft. RUNDIR = this session's
+# /run/glassine (booted, kernel-boot, healthy, kept.none), SYSMNT = the system
+# partition's top level, UDDIR = <userdata>/<prefix>, KEPTDIR = the kept assembly.
+# The loader record (gp_restart_word), SOFT_RESTART and PID 1 are the caller's: the
+# restart step reads them, the soft start's second decision has the record only.
+# Words: plain (no deployments start), bare, first-start, test-role and
+# no-assembly (no kept assembly, or the word the initramfs left why), kernel-trial,
+# kernel, kernel-candidate, no-target, not-covered, modules, not-healthy.
+gs_restart_word() {
+    _gs_b=$(cat "$1/booted" 2>/dev/null)
+    case $_gs_b in '') echo plain; return 0 ;; bare:*) echo bare; return 0 ;; esac
+    [ ! -e "$2/state/install" ] || { echo first-start; return 0; }
+    if [ ! -e "$7/.complete" ]; then
+        _gs_v=$(cat "$1/kept.none" 2>/dev/null)
+        case $_gs_v in ''|*[!a-z-]*) _gs_v=no-assembly ;; esac
+        echo "$_gs_v"; return 0
+    fi
+    case $(cat "$1/kernel-boot" 2>/dev/null) in '') ;; *) echo kernel-trial; return 0 ;; esac
+    _gs_v=$(gs_kernel_word "$2/state/kernel" "$4" "$5")
+    [ -z "$_gs_v" ] || { echo "$_gs_v"; return 0; }
+    # the first of TARGET's ids that can assemble (its meta, its base): the pick
+    # marks one that can't failed and starts the next (FR-014)
+    _gs_b=''
+    for _gs_t in $6; do
+        _gs_v=$(gs_kv "$3/deployments/$_gs_t/meta" base)
+        [ -n "$_gs_v" ] && [ -d "$2/bases/$_gs_v" ] && { _gs_b=$_gs_v; break; }
+    done
+    [ -n "$_gs_b" ] || { echo no-target; return 0; }
+    _gs_v=$(gs_covers "$2" "$2/bases/$_gs_b" "$5")
+    [ -z "$_gs_v" ] || { echo "$_gs_v"; return 0; }
+    [ -e "$1/healthy" ] || echo not-healthy
+}
