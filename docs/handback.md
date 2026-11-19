@@ -75,6 +75,7 @@ differences:
 | `deploy_once` | a deployment picked in the start menu under a parent that passes no command line: its id, for the next start only. Written by the loader in the pick's write only; every other write of the loader clears one it finds (a pick whose start never reached the initramfs); taken and cleared by the boot's initramfs before it starts that deployment (below) |
 | `request` | also `menu`: open the start menu at this start (below); cleared by the loader in its first write of the start, whether the menu opens or not |
 | `deploys`, `deploy1` … | kept as read; the start menu offers them, a headless loader offers no list |
+| `other` | the parent's other system, by name (`android`): the start menu offers it when the parent also announces it ("The other system", below); anything else, or empty: no such entry. Set by the running system from the board's `LOADER_OTHER` ([boot-partition.md](boot-partition.md#the-running-systems-writer)); the loader never changes it |
 
 The other keys (`format`, `seq`, `unmarked`, `started`, `started_why`) are the same,
 with the same writers. With `default` empty, the loader's count writes
@@ -159,7 +160,8 @@ on such a machine, so it opens only when asked, and only with a tap source:
 - **The entries** are the list 010 FR-039 and FR-040 give, from the record read at
   entry: GlassineOS, the previous deployment, "More deployments" (the candidate, the
   last failed and the kept ones, then "Back"), the previous kernel when `previous` is
-  set, the recovery. Nothing else: no firmware set-up, no other system.
+  set, the other system when both the record and the parent name it ("The other
+  system", below), the recovery. Nothing else: no firmware set-up.
 - **The picks.** Each pick's write is the one the same choice makes at a start without
   the menu, computed from the record read at entry and written over the menu write,
   with `unmarked` written explicitly and `drew` cleared:
@@ -169,11 +171,14 @@ on such a machine, so it opens only when asked, and only with a tap source:
   | GlassineOS | as a start without the menu: by the request or the count (`baseline` when `default` is empty, the previous set or the recovery at the limit) | that start's: `unmarked` one more, `started`, `started_why` (`default` or `limit`); a request taken as there |
   | a deployment (the previous one, or one under "More") | the same, with `cmdline_add=glassine.deploy.once=<id>`; with `parent_cmdline=no` the same without it | the same as GlassineOS; with `parent_cmdline=no` also `deploy_once=<id>` |
   | the previous kernel (offered only when `previous` is set and `parent_sets` isn't `no`) | `set:<previous>`, `why=choice` | `unmarked` one more, `started=<previous>`, `started_why=choice` |
+  | the other system (only as "The other system" says) | `other:<name>`, `why=choice` | not counted: `unmarked` as read |
   | the recovery | `recovery`, `why=choice` | not counted: `unmarked` as read; a `request=recovery` cleared |
 
   No input for 60 seconds is the GlassineOS pick. When the pick's write fails, the
-  answer is the recovery for the recovery pick, else `baseline` (`why=not-written`);
-  the start stays counted by the menu write.
+  answer is the recovery for the recovery pick, else `baseline` (`why=not-written`),
+  the other system's pick included (its start would leave the menu write's count and
+  `drew=1` behind for a system that never marks GlassineOS healthy); the start stays
+  counted by the menu write.
 - **The order:** the menu write; the menu's refreshes; the splash (the override used up
   as above, one whole-panel refresh); the pick's write; the answer. No refresh comes
   after the write that clears `drew`.
@@ -222,6 +227,37 @@ is cleared by that start's first loader write, so it never outlives the start it
 picked for. On a PC nothing changes: its parent is the
 firmware, and the loader passes the word on its kernel's command line.
 
+
+### The other system
+
+A machine may keep another system beside GlassineOS that its parent can start: on the
+Note Air, the stock Android on slot A. The start menu offers it, and the loader answers
+`boot=other:<name>`; the parent starts it **at this start only**. The next start is the
+parent's ordinary one again (the GlassineOS slot, the loader), with nothing to undo.
+
+- **Two conditions, both needed.** The record's `other` names it (the board declares
+  the system, `LOADER_OTHER`), and the parent announces it in the load options
+  (`glassine.answers=` with `other:<name>`, "Starting the loader", below). A record
+  that names it under a parent that doesn't announce it (an older parent) shows no
+  entry; a parent that announces it on a board whose record names nothing shows none
+  either (the system may be gone from the machine).
+- **Names:** lower-case letters, digits and `-`, 1 to 31 bytes. Defined now: `android`,
+  shown as "Android".
+- **The pick's write** is not counted (`unmarked` as read, `drew` cleared), as the
+  recovery's: the other system never marks a GlassineOS start healthy.
+- **The parent's duties:** it boots that system without changing which system it boots
+  by default. It writes no state for the pick: no slot switch, no retry count, no
+  active flag, nothing a later start reads. When the other system can't be started
+  before its kernel runs, it boots its baseline. What the other system itself writes
+  while it runs is that system's.
+- **On the Note Air:** the ABL from `v3.4-android-once` (GlassineOS/abl branch
+  `glassine/android-once`; **not flashed**) announces `other:android` and boots `boot_a`
+  with `androidboot.slot_suffix=_a` and slot A's verity backing, held in RAM for that
+  start: it calls none of its slot-attribute writers, so the GPT keeps slot B active.
+  The ABL on the device today (`v3.3-handback`) announces nothing and boots its baseline
+  (slot B) for this answer; a loader under it shows no entry. Stock Android 10 on this
+  machine has no boot-control service that would mark or switch a slot (found during the
+  A/B migration, not re-checked on the device).
 
 ### The loader's touch driver
 
@@ -325,8 +361,8 @@ loader.
    `LoadImage` returns a handle with an error (`EFI_SECURITY_VIOLATION`), unload it.
 3. In the child's `EFI_LOADED_IMAGE_PROTOCOL`: set `DeviceHandle` to the boot
    partition's handle (the one with its `EFI_BLOCK_IO_PROTOCOL`) and `LoadOptions` to
-   the UCS-2 text `glassine.handback=1`, with its terminating zero counted in
-   `LoadOptionsSize`.
+   the UCS-2 text of its load options (below; at least `glassine.handback=1`), with its
+   terminating zero counted in `LoadOptionsSize`.
 4. If the parent can, arm the firmware's watchdog (`SetWatchdogTimer`) for 30 seconds
    before `StartImage`, and disarm it when `StartImage` returns.
 5. `StartImage`, with both exit-data arguments. Read the answer (below), then free the
@@ -344,6 +380,7 @@ ignores words it doesn't know. Defined now:
 | `glassine.handback=1` | hand-back mode, the record on the partition of `DeviceHandle` |
 | `glassine.log=serial` | the loader also writes its log through the firmware's serial I/O protocol. A parent whose serial line nobody reads leaves it out, and the loader then calls no serial protocol |
 | `glassine.pick=recovery` | *proposed, not built:* the person asked for the recovery at power-on (on the Note Air, a cover gesture). The loader treats it as the recovery picked in the list (boot-partition.md, 010 FR-032) |
+| `glassine.answers=<form>,…` | the `boot=` forms the parent acts on besides `baseline`, comma-separated, each once: `recovery`, `set`, `other:<name>`. The loader offers only what the parent can do where the list matters (today: the other system's entry). Absent: `baseline` and `recovery` (a parent from before this word; the first ABL, `v3.3-handback`, passes only `glassine.handback=1`). The record's `parent_cmdline` and `parent_sets` are the board's statement of the same kind for a parent that says nothing; where both exist, an entry needs both to allow it |
 
 The parent passes no other state. It never writes the boot partition.
 
@@ -373,7 +410,7 @@ follows that line.
 | Key | Value |
 |---|---|
 | `format` | `1` |
-| `boot` | `baseline`: the parent boots what it boots today · `recovery`: the parent's recovery path · `set:<id>`: the kernel set of that id (16 lower-case hex digits) |
+| `boot` | `baseline`: the parent boots what it boots today · `recovery`: the parent's recovery path · `set:<id>`: the kernel set of that id (16 lower-case hex digits) · `other:<name>`: the parent's other system, this start only ("The other system"); written only when the parent announced it |
 | `set_rec` | with `set:`, the `_rec` value the record names for the set (64 hex digits), or empty; the parent may use it to check its source |
 | `cmdline_add` | optional: words the parent adds to the kernel's command line at this start, separated from it by one space. Only `glassine.deploy.once=<deployment id>` (010 FR-042) is allowed. A parent that can't add it ignores it: it is a one-shot request, and the ordinary pick is never wrong |
 | `why` | informative: `default`, `limit`, `request`, `choice`, `no-record`, `not-written` |
@@ -386,11 +423,12 @@ The record in use already carries the loader's own writes for this start (the co
 | Answer | The parent |
 |---|---|
 | exit data missing, shorter than 36 bytes or longer than 36 + 4096 bytes, or a prefix other than `GLASSINE-HANDBACK` | boots its baseline |
-| an answer whose CRC line is missing or wrong, whose first line isn't `format=1`, or whose `boot` is missing, repeated or not one of the three forms | boots its baseline |
+| an answer whose CRC line is missing or wrong, whose first line isn't `format=1`, or whose `boot` is missing, repeated or not one of the four forms | boots its baseline |
 | `format` newer than it knows | boots its baseline |
 | `boot=baseline` | boots its baseline |
 | `boot=recovery` | takes its recovery path, as if its own recovery request were set |
 | `boot=set:<id>` | boots the set if it has a source for that id whose own checks pass (on the Note Air, the block-list record of [blocklist.md](blocklist.md) naming that image id); else, and on any failure on the way, its baseline |
+| `boot=other:<name>` | a name it announced: starts that system at this start only, writing nothing that changes a later start ("The other system"); a name it didn't announce, and any failure before that system's kernel runs: its baseline |
 
 A parent checks at least what the table names. It may also refuse an answer that breaks
 the record's other rules (a key twice, a line without `=`); it need not check the keys

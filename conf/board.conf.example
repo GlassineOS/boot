@@ -65,6 +65,14 @@ LOADER_DISPLAY=
 LOADER_TOUCH=
 LOADER_PARENT_CMDLINE=
 LOADER_PARENT_SETS=
+# The loader record's other system on the raw form (docs/handback.md, "The other
+# system"): the name of a system beside GlassineOS that the parent can start once from
+# the start menu (android: this board's stock Android on slot A). The loader update
+# writes it into the record with display when it differs. The loader offers the entry
+# only when the parent announces it too, which this board's ABL does from
+# v3.4-android-once (not flashed; v3.3-handback doesn't). Empty: the record's other is
+# left as it is.
+LOADER_OTHER=
 # The blocklist hand-off (docs/blocklist.md, "Board keys"), read only with
 # HANDOFF=blocklist. The default slot's partition name, which holds the record;
 # the reboot reason that asks the bootloader for the one-shot; the bootloader's
