@@ -60,8 +60,7 @@ exactly as a cold start does.
 **When** the person chooses "Restart to update",
 **Then** the apps close, the screen shows that the system restarts, and the session
 starts again in the new deployment, as its candidate, with one try used. The kernel's
-uptime goes on, the network devices and remote processors were not restarted, and the
-time from the choice to the new session is a fraction of a cold restart's. After
+uptime goes on, and the network devices and remote processors were not restarted. After
 120 seconds healthy, the candidate is accepted as after a cold start.
 
 ### Scenario 2 – A rollback by a soft restart (P1)
@@ -404,34 +403,28 @@ waiting deployment change is applied by the switch as at any user-started restar
 
 ## Success criteria
 
-The time targets are relative to a cold restart measured the same way on the same
-machine, and untested until a device run.
-
-- **SC-001** On the Note Air and on one PC: from the person's confirmation to the
-  incoming session's first frame, a soft restart takes at most half the time of a cold
-  restart into the same deployment (median of five each).
-- **SC-002** On the same machines: after a soft restart the kernel's boot id is
+- **SC-001** On the Note Air and on one PC: after a soft restart the kernel's boot id is
   unchanged and its uptime continuous, no remote processor or firmware was started
   again (the kernel log shows none), and the network devices keep their interface
   index.
-- **SC-003** Host test: for the same starting state and target, the `state/deploy`
+- **SC-002** Host test: for the same starting state and target, the `state/deploy`
   after a soft start equals byte for byte the one after a cold start, for each pick
   case (candidate with tries, without, not assembling, current, previous).
-- **SC-004** Host test: the loader record is byte for byte the same before and after a
+- **SC-003** Host test: the loader record is byte for byte the same before and after a
   soft restart that runs no publishing command.
-- **SC-005** Host test: the incoming session's mount table, `/run/glassine` contents
+- **SC-004** Host test: the incoming session's mount table, `/run/glassine` contents
   (FR-024) and person's storage binds equal a cold start's of the same deployment, and
   no mount of the old root is left.
-- **SC-006** Host test: a process that doesn't end (one in uninterruptible sleep, one
+- **SC-005** Host test: a process that doesn't end (one in uninterruptible sleep, one
   that ignores signals in a mount namespace of its own) and a mount that doesn't
   unmount each make the restart cold, with no try used and the switch's result kept.
-- **SC-007** Host test: a restart cut at every step of phase 2 leaves either the
+- **SC-006** Host test: a restart cut at every step of phase 2 leaves either the
   incoming session or a cold start whose pick is that of the state as written; never a
   session on a half-assembled root.
-- **SC-008** Host test: a hibernate image made after a soft start resumes into the
+- **SC-007** Host test: a hibernate image made after a soft start resumes into the
   soft-started deployment, and one made while a candidate is on its last try is
   refused (exit 3).
-- **SC-009** On an e-ink panel: one whole-panel refresh for the restart picture and
+- **SC-008** On an e-ink panel: one whole-panel refresh for the restart picture and
   none from then until the incoming session's first frame.
 
 ## Assumptions
@@ -451,8 +444,3 @@ machine, and untested until a device run.
   hand-overs this feature avoids.
 - Restarting single services or the person's session without restarting the system.
 - Keeping apps or the person's session across a restart.
-
-## Open questions
-
-- **SC-001:** absolute time targets for the Note Air and a PC, once a cold restart has
-  been measured on each.
