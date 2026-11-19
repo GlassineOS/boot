@@ -16,7 +16,7 @@ glassine-slot: src/glassine-slot.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 initramfs: initramfs.cpio.gz
-initramfs.cpio.gz: initramfs/init build-initramfs.sh lib/glassine-state.sh lib/glassine-root.sh
+initramfs.cpio.gz: initramfs/init initramfs/soft build-initramfs.sh lib/glassine-state.sh lib/glassine-root.sh
 	sh build-initramfs.sh $@
 
 install: glassine-reboot glassine-slot
@@ -30,6 +30,8 @@ install: glassine-reboot glassine-slot
 	install -Dm755 openrc/glassine-hibernate-setup $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-hibernate-setup
 	install -Dm755 openrc/glassine-switch $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-switch
 	install -Dm755 openrc/glassine-mount-ro $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-mount-ro
+	install -Dm755 openrc/glassine-restart $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-restart
+	install -Dm755 libexec/soft-start $(DESTDIR)$(PREFIX)/lib/glassine-boot/soft-start
 	install -Dm755 sbin/glassine-first-start $(DESTDIR)$(PREFIX)/sbin/glassine-first-start
 	install -Dm755 openrc/glassine-first-start $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-first-start
 	install -Dm755 sbin/glassine-deploy-accept $(DESTDIR)$(PREFIX)/sbin/glassine-deploy-accept
@@ -68,6 +70,7 @@ check:
 	sh test/modules/test.sh
 	sh test/deploy/test.sh
 	sh test/root/test.sh
+	sh test/restart/test.sh
 	sh test/firststart/test.sh
 	sh test/replay/test.sh
 	sh test/slot/test.sh

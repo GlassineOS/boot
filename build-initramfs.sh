@@ -75,7 +75,7 @@ if [ -n "$HELPERS" ]; then
         strip "$I/bin/$t"
     done
 fi
-for a in insmod watchdog ifconfig seq reboot head sed mount mountpoint flock stat killall blockdev awk sha256sum find sort cut tail grep od cmp tr wc dd; do
+for a in insmod watchdog ifconfig seq reboot head sed mount mountpoint flock stat killall blockdev awk sha256sum find sort cut tail grep od cmp tr wc dd pivot_root switch_root readlink; do
     "$I/bin/busybox" --list | grep -qx "$a" || { echo "busybox.static lacks $a" >&2; exit 1; }
 done
 for a in telnetd udhcpd httpd; do

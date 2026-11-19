@@ -31,6 +31,18 @@ RUN_DIR=/run/glassine
 # measurements set it).
 SWITCH_MIN_CAPACITY=30
 
+# Soft restart (glassine-deploy restart): yes = a restart re-enters the kept
+# initramfs assembly where the rules allow (no firmware, no loader, no kernel
+# start); no = every restart is cold. Each step of a soft start gives up after
+# RESTART_LIMIT_S seconds and turns the restart cold; restart waits
+# RESTART_INIT_S seconds for PID 1 to begin before it restarts cold. A soft
+# restart needs busybox init with the line
+#   ::restart:/usr/lib/glassine-boot/soft-start
+# in /etc/inittab (busybox from Alpine 3.23 on: older ones ignore SIGQUIT).
+SOFT_RESTART=yes
+RESTART_LIMIT_S=20
+RESTART_INIT_S=60
+
 # The boot-success step (glassine-deploy-accept): a candidate is accepted once
 # it has been up this long and healthy (the same health.d checks as a kernel
 # test boot).
