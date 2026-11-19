@@ -599,6 +599,7 @@ gr_procs_end() {
         kill -9 -1 2>/dev/null
         gr_procs_left
         [ -n "$GR_LEFT" ] || return 0
+        # shellcheck disable=SC2034  # read by the caller
         [ "$_gr_n" -lt "$1" ] || { GR_WHY="processes left: $GR_LEFT"; return 1; }
         ${GR_FEED:-:}
         sleep 1; _gr_n=$((_gr_n + 1))

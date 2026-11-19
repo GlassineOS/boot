@@ -231,6 +231,7 @@ gs_power_ok() {
     done
     [ -n "$_gs_bat" ] || { GS_POWER_WHY="no battery"; return 0; }
     case $_gs_bat in *[!0-9]*) GS_POWER_WHY="battery capacity unreadable"; return 1 ;; esac
+    # shellcheck disable=SC2034  # read by the caller
     GS_POWER_WHY="battery $_gs_bat %"
     [ "$_gs_bat" -ge "$2" ]
 }
