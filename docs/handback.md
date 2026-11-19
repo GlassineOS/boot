@@ -69,6 +69,7 @@ differences:
 | `display_failed` | set (the count it was set at): a start that drew was never marked healthy, so the loader no longer draws, whatever `unmarked` says. Written by the loader; cleared only by the person's retry, `glassine-loader-mark display-retry`, never by a healthy mark |
 | `touch` | the loader's own touch driver ("The loader's touch driver", below): `probe`: bring the touch controller up once at this start and write what it read into the probe report; the loader clears it in its own write before it touches the controller; `on`: the driver is the start menu's tap source; anything else, or empty: the loader never touches the controller. Set by the running system (`probe`, `on`) or the installer (`on`); the loader only clears `probe` |
 | `touch_rail` | with `touch` `probe` or `on`: `on`: the loader turns the touch controller's two supplies on through the firmware's PMIC regulator protocol when they are off, before its power switches, and off again with the controller ("The loader's touch driver", below); anything else, or empty: it only reads them. Set by the person or the running system for a device run; the loader never writes it |
+| `touch_rpm` | with `touch` `probe` or `on`: `locate`, `install`, `kvp` or `vote`: how far the loader's touch driver goes with the firmware's RPM request protocols ("The loader's touch driver", below); `vote` switches pm660l LDO3 on through the RPM (software enable only, no level) before the power switches and takes the vote back with the controller; with it `touch_rail` is not used; anything else, or empty: none. Set by the person or the running system for a device run; the loader clears it in its write before its first RPM call (`touch=probe`'s clearing write, or the menu write) |
 | `request` | also `menu`: open the start menu at this start (below); cleared by the loader in its first write of the start, whether the menu opens or not |
 | `deploys`, `deploy1` … | kept as read; the start menu offers them, a headless loader offers no list |
 
@@ -219,15 +220,25 @@ switches, 66 its reset, 67 its interrupt). The protocols' layout is the loader's
   regulator protocol it reads (status and level only) the controller's two supplies;
   only with `touch_rail=on` does it
   switch the two supplies (pm660l LDO3 and pm660 LDO11) on, and only ones it found off
-  with their set level already within the controller's range; it never sets a level. No other GPIO, bus, regulator or
-  register. Every regulator call is logged. Every GPIO and I2C call is logged, except the polls while it waits for the
+  with their set level already within the controller's range; it never sets a level.
+  With `touch_rpm` it doesn't, and goes through the firmware's RPM request protocols
+  instead (`docs/firmware-rpm.md` in GlassineOS/loader). It looks them up and checks
+  them, and installs the raw request protocol through the RPM services when it is
+  absent (uninstalling it when done). At `vote`, with pm660l LDO3 off, it sends one
+  active-set request for it with only the software enable on: no level, no load,
+  never any other resource. It goes on to the power switches only when LDO3 then
+  reads on within the controller's range. When it is done it sends the same request
+  with the enable off. It re-arms the firmware watchdog (30 seconds) before each
+  request, whose wait for the RPM's answer has no timeout. No other GPIO, bus,
+  regulator, RPM resource or register. Every regulator and RPM call is logged. Every GPIO and I2C call is logged, except the polls while it waits for the
   controller (its interrupt pin read, and reads of its input register with nothing
   waiting), which are counted. It reads that register only while the interrupt pin is
   asserted, as Linux does, or every 50 ms until it has seen it asserted.
 - **As found:** before it drives anything the loader reads the four pins' levels
   (read-only). When both power switches already read high, the controller was powered
   and stays so; else the loader powers it and, when it is done, powers it down again
-  (its reset low, then both switches low, then the supplies it turned on off) before it
+  (its reset low, then both switches low, then the supplies it turned on off, then its
+  RPM vote taken back) before it
   answers, and leaves the three pins it drove configured as inputs (the firmware's
   protocol can't read a pin's configuration to restore the one found).
 - **Time:** the whole bring-up has one deadline (at most 10 seconds from its first
@@ -434,7 +445,7 @@ which a reader treats as no report.
 | `i2c.in`, `gpio.in`, `vreg.in` | for each word after the first: `image<k>`, `0` or `-`, as `gop<n>.in` |
 | `i2c.check`, `gpio.check`, `vreg.check` | `ok` when the first word is the revision the loader knows (I2C `0x10000`, GPIO `1`, regulator `0x10005`) and the function words point into one loaded image; else the first check that failed (`not-ram`, `revision=0x<n>`, `outside`). No regulator function is called for the report |
 | `gpio.pin<n>` | for each of the touch controller's GPIOs (61, 62, 66, 67), only after `gpio.check=ok`: `<0 or 1>` from the pin read, or `error <status>` |
-| `touch.*` | with `touch=probe` only: the bring-up's steps and results (`touch.found`, `touch.rail.*`, `touch.power`, `touch.open`, `touch.hid`, `touch.desc`, `touch.sysinfo`, `touch.res`, `touch.down`, `touch.release`, `touch.result`; the loader's spec 005 names them), each a line of text |
+| `touch.*` | with `touch=probe` only: the bring-up's steps and results (`touch.found`, `touch.rail.*`, `touch.power`, `touch.open`, `touch.hid`, `touch.desc`, `touch.sysinfo`, `touch.res`, `touch.rpm.*`, `touch.down`, `touch.release`, `touch.result`; the loader's spec 005 names them), each a line of text |
 | `boot_fs` | `1` when the firmware offers a file system (`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`) on the boot partition, so the loader uses the FAT form; `0` when not |
 | `fs_handles` | the number of handles with a file system, on any device: `0` means the firmware has no file system driver it has used, which decides that the machine needs the raw form |
 | `fs<n>` | `handle=<index> part=<GPT partition GUID or -> <partition number or ->`, one per handle with a file system |
