@@ -203,13 +203,13 @@ on such a machine, so it opens only when asked, and only with a tap source:
 A parent that ignores `cmdline_add` boots a deployment pick as the GlassineOS pick, and
 one that can't boot a `set:` answer boots its baseline (see "What the parent does with
 it"). A board says so in its `board.conf`: `LOADER_PARENT_CMDLINE=no` and
-`LOADER_PARENT_SETS=no` (the Note Air's ABL, which boots `boot_b` whatever the answer),
+`LOADER_PARENT_SETS=no` (the Note Air's ABL, which boots its own boot image whatever the answer),
 which the running system writes into the record as `parent_cmdline=no` and
 `parent_sets=no` ([boot-partition.md](boot-partition.md#the-running-systems-writer)).
 
 **A deployment picked under a parent that passes no command line.** With
 `parent_cmdline=no` the pick's write holds `deploy_once=<id>` and the answer is the
-GlassineOS pick's. The parent boots what it boots (on the Note Air, `boot_b`); that
+GlassineOS pick's. The parent boots what it boots (on the Note Air, its own boot image); that
 boot's initramfs, with `BOOT_FORM=raw`, in the default role and with no
 `glassine.deploy.once=` on its command line, reads the record from `glassine-boot`,
 writes it with `deploy_once` cleared (read back), and only then starts that deployment
