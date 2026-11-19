@@ -197,7 +197,28 @@ echo failed=d1 >> $W/sysmnt/state/deploy
 ok "list: a failed deployment that is also previous shows failed" "[ \"\$(lst d1 state)\" = failed ]"
 ok "status: failed=" "$G status --porcelain | grep -q '	failed=d1'"
 sed -i '/^failed=d1$/d' $W/sysmnt/state/deploy
+
+# --- publish: the loader's deployment list (glassine-loader-mark deploys, a stub) ----
+MK=$W/markstub
+printf '#!/bin/sh\ncase $1 in\nhas-record) [ -e %s/norec ] && exit 3; exit 0 ;;\ndeploys) cat > %s/list; echo "locked=${GLASSINE_LOADER_MARK_LOCKED:-}" > %s/lenv ;;\nesac\n' $W $W $W > $MK; chmod +x $MK
+export GLASSINE_LOADER_MARK=$MK
+L3=$(printf 'd1 previous v3.22.1 2026-10-21\nd3 failed v3.22.3 2026-10-23\nd4 kept v3.22.4 2026-10-24')
+ok "publish: previous, failed, kept as '<id> <state> <base> <date>', the current one left out, under the state lock" "$G publish && [ \"\$(cat $W/list)\" = \"$L3\" ] && grep -qx locked=1 $W/lenv"
+rmdir $W/sysmnt/bases/v3.22.4
+ok "publish: a deployment whose base is gone (it can't start) left out" "$G publish && ! grep -q '^d4 ' $W/list && grep -q '^d3 failed' $W/list"
+mkdir -p $W/sysmnt/bases/v3.22.4
+printf 'created=2026-10-25T08:00:00Z\nbase=%s\n' "$(printf 'b%.0s' $(seq 1 70))" > $U/deployments/d5meta; mkdir -p $U/deployments/d5 $W/sysmnt/bases/"$(printf 'b%.0s' $(seq 1 70))"; mv $U/deployments/d5meta $U/deployments/d5/meta
+ok "publish: a label over 64 characters: the base cut, the date kept" "$G publish && l=\$(sed -n 's/^d5 kept //p' $W/list) && [ \${#l} = 64 ] && [ \"\${l% *}\" = \"\$(printf 'b%.0s' \$(seq 1 53))\" ] && [ \"\${l##* }\" = 2026-10-25 ]"
+rm -rf $U/deployments/d5 $W/sysmnt/bases/"$(printf 'b%.0s' $(seq 1 70))"
+sed -i 's/^current=d2$/current=dx/' $D
+rm -f $W/list
+ok "publish: the current deployment not on userdata: the record's list left as it was, said" "$G publish 2>$W/err && [ ! -e $W/list ] && grep -q 'dx is not on userdata' $W/err"
+sed -i 's/^current=dx$/current=d2/' $D
+: > $W/norec
+ok "publish: a board without a loader record: nothing" "$G publish && [ ! -e $W/list ]"
+rm -f $W/norec
 $G select d4 >/dev/null
+ok "select publishes the list: the candidate after the previous one" "[ \"\$(sed -n 2p $W/list)\" = 'd4 candidate v3.22.4 2026-10-24' ] && grep -qx locked=1 $W/lenv"
 ok "select d4: candidate=d4 tries=2, current kept, other keys kept" "[ \"\$(gs_kv \$D candidate)\" = d4 ] && [ \"\$(gs_kv \$D tries)\" = 2 ] && [ \"\$(gs_kv \$D current)\" = d2 ] && [ \"\$(gs_kv \$D extra)\" = keep ]"
 ok "list: d4 is the candidate" "[ \"\$(lst d4 state)\" = candidate ]"
 $G select d2 >/dev/null
@@ -368,6 +389,7 @@ export GLASSINE_DEPLOY_MOUNTINFO=$W/mi
 deps() { ls $U/deployments | tr '\n' ' '; }
 ok "accept: the clean-up keeps current, previous, candidate, staged, the last failed one, the booted and the mounted one; the rest goes" "$G accept n >$W/out 2>$W/err && [ \"\$(deps)\" = 'bt c f mt n s ' ] && grep -q 'clean-up: removed k1 k2 oldf p' $W/out && grep -q 'deployment mt is mounted; not removed' $W/err"
 ok "accept: the state is the accept's (previous = the old current), nothing else touched" "[ \"\$(gs_kv \$D current)\" = n ] && [ \"\$(gs_kv \$D previous)\" = c ] && [ \"\$(gs_kv \$D staged)\" = s ] && [ \"\$(gs_kv \$D failed)\" = f ] && [ -z \"\$(gs_kv \$D candidate)\" ]"
+ok "accept publishes the list after its clean-up: previous c, failed f, kept bt and mt (no date: the base alone); not the current n nor the staged s" "[ \"\$(tr '\\n' ' ' < $W/list)\" = 'c previous gb f failed gb bt kept gb mt kept gb ' ] && grep -qx locked=1 $W/lenv"
 ok "clean-up: nothing left in deployments.removing; list shows the mounted one as kept" "[ -z \"\$(ls -A $U/deployments.removing)\" ] && [ \"\$(lst mt state)\" = kept ] && [ \"\$(lst f state)\" = failed ]"
 # a switch (carry=none) is a clean-up point too; an rm that is cut off leaves the
 # removal out of deployments/, and the next clean-up finishes it

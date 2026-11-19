@@ -20,6 +20,7 @@
 #   glassine-deploy packages [ID] [--porcelain]
 #   glassine-deploy switch [--discard-hibernation]
 #   glassine-deploy accept ID
+#   glassine-deploy publish
 #   glassine-deploy init POOL_MOUNT [--install-marker]
 #
 # select makes ID the candidate for the next boot (2 tries, then the current
@@ -67,6 +68,16 @@
 # Flatpak's system data are on userdata, outside the deployments, and never
 # touched. accept ID is the
 # boot-success service's: the booted candidate ID becomes current.
+# publish writes the deployment list into the loader record (010 FR-039 to
+# FR-041, docs/boot-partition.md "Keys": deploys, deploy1 ...) on a board that
+# keeps one (glassine-loader-mark has-record): the previous deployment, the
+# candidate, the last failed one and the kept ones that can start (their base on
+# the system partition), each "<id> <state> <base> <created date>". accept,
+# switch, select, rollback, remove and stage publish it too, after their state
+# write; the boot-success step runs publish on every healthy start (a list a
+# failed boot changed). Only a list that differs is written; a failed write
+# never fails the command. Userdata that can't be read, or that doesn't hold the
+# current deployment, leaves the record's list as it was.
 # init lays out an empty btrfs pool, made and mounted by the caller (the image
 # builder): bases/, modules/, state/ with an empty deployment and kernel state,
 # and with --install-marker state/install, which makes the first start
@@ -430,6 +441,77 @@ gc_deployments() {
     return 0
 }
 
+# loader_rows SYSDIR: the loader's deployment list (see publish), one
+# "<id> <state> <label>" line each, previous, candidate, failed, then the kept
+# ones by id; the label "<base> <date>", at most 64 characters (the base cut)
+loader_rows() {
+    _lr_cur=$(gs_kv "$1/state/deploy" current) _lr_prev=$(gs_kv "$1/state/deploy" previous)
+    _lr_cand=$(gs_kv "$1/state/deploy" candidate) _lr_failed=$(gs_kv "$1/state/deploy" failed)
+    _lr_staged=$(gs_kv "$1/state/deploy" staged)
+    _lr_p='' _lr_c='' _lr_f='' _lr_k=''
+    for _lr_id in $(ud_dirs deployments | sort); do
+        valid_name "$_lr_id" || continue
+        [ "$_lr_id" = "$_lr_cur" ] || [ "$_lr_id" = "$_lr_staged" ] && continue
+        _lr_m=$(ud_cat "deployments/$_lr_id/meta")
+        _lr_b=$(meta_kv "$_lr_m" base)
+        [ -z "$_lr_b" ] || [ -d "$1/bases/$_lr_b" ] || continue
+        _lr_d=$(meta_kv "$_lr_m" created); _lr_d=${_lr_d%%T*}
+        _lr_l="$_lr_b${_lr_b:+${_lr_d:+ }}$_lr_d"
+        if [ ${#_lr_l} -gt 64 ]; then
+            _lr_l=$(printf '%s' "$_lr_b" | cut -c1-$((64 - ${#_lr_d} - 1)))" $_lr_d"
+            [ ${#_lr_l} -le 64 ] || _lr_l=$(printf '%s' "$_lr_l" | cut -c1-64)
+        fi
+        if [ "$_lr_id" = "$_lr_cand" ]; then _lr_c="$_lr_c$_lr_id candidate $_lr_l
+"
+        elif [ "$(meta_kv "$_lr_m" failed)" = 1 ] || [ "$_lr_id" = "$_lr_failed" ]; then _lr_f="$_lr_f$_lr_id failed $_lr_l
+"
+        elif [ "$_lr_id" = "$_lr_prev" ]; then _lr_p="$_lr_p$_lr_id previous $_lr_l
+"
+        else _lr_k="$_lr_k$_lr_id kept $_lr_l
+"
+        fi
+    done
+    printf '%s' "$_lr_p$_lr_c$_lr_f$_lr_k"
+}
+
+# loader_publish SYSDIR [locked]: the list into the loader record (publish);
+# "locked": the caller holds the state lock. Never fails.
+loader_publish() {
+    _lp_m=${GLASSINE_LOADER_MARK:-/usr/sbin/glassine-loader-mark}
+    [ -x "$_lp_m" ] || return 0
+    "$_lp_m" has-record >/dev/null 2>&1 || return 0
+    if ! ud_mounted && ! ud_dev; then
+        echo "glassine-deploy: userdata can't be read: the loader's deployment list left as it was" >&2
+        return 0
+    fi
+    _lp_cur=$(gs_kv "$1/state/deploy" current)
+    if [ -n "$_lp_cur" ] && ! ud_dirs deployments | grep -qx -- "$_lp_cur"; then
+        echo "glassine-deploy: the current deployment $_lp_cur is not on userdata: the loader's deployment list left as it was" >&2
+        return 0
+    fi
+    _lp_l=''; [ "${2:-}" = locked ] && _lp_l=1
+    loader_rows "$1" | GLASSINE_LOADER_MARK_LOCKED=$_lp_l "$_lp_m" deploys ||
+        echo "glassine-deploy: the loader's deployment list not written (glassine-loader-mark exit $?)" >&2
+    return 0
+}
+
+cmd_publish() {
+    require_migrated
+    _pd=$SYS_DIR
+    # the state lock while the list is read and written, when it can be taken here
+    if : >>"$_pd/state/.lock" 2>/dev/null; then
+        _pn=0
+        exec 9>>"$_pd/state/.lock"
+        until flock -n 9; do
+            [ $_pn -lt 10 ] || fail 6 "busy: $_pd/state/.lock is held"
+            sleep 1; _pn=$((_pn + 1))
+        done
+        loader_publish "$_pd" locked
+    else
+        loader_publish "$_pd"
+    fi
+}
+
 # meta_kv META KEY: one key of a deployment's meta (key=value text)
 meta_kv() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1; }
 
@@ -570,6 +652,7 @@ do_select() {
         gs_update "$S/deploy" "candidate=$1" tries=2 || die "cannot write $S/deploy"
         echo "glassine-deploy: $1 boots next (2 tries, then ${cur:-the current one} again)"
     fi
+    loader_publish "$SYSTEM_MNT" locked
 }
 
 cmd_select() { do_select "$ARG"; }
@@ -866,6 +949,7 @@ stage_new() {
     if [ "$NOW" = 1 ]; then
         do_switch
     else
+        loader_publish "$SYSTEM_MNT" locked
         if [ "$carry" = none ]; then
             echo "glassine-deploy: $id ($kind${cur:+ of $cur}, base $base) is staged; the next shutdown selects it, with no settings carried over"
         else
@@ -946,6 +1030,7 @@ do_switch() {
         echo "glassine-deploy: $id boots next (2 tries, then a bare boot again)"
     fi
     gc_deployments
+    loader_publish "$SYSTEM_MNT" locked
 }
 
 # switch: the shutdown hook's step (after services stop; the hook decides
@@ -1279,6 +1364,7 @@ cmd_accept() {
         UD=$USERDATA_MNT/$USERDATA_PREFIX
         gc_deployments
     fi
+    loader_publish "$SYSTEM_MNT" locked
 }
 
 cmd_remove() {
@@ -1304,6 +1390,7 @@ cmd_remove() {
     trash_purge
     dep_remove "$ARG" || exit 1
     echo "glassine-deploy: deployment $ARG removed"
+    loader_publish "$SYSTEM_MNT" locked
 }
 
 # pool_mount DIR: DIR is the top level of a mounted btrfs (a mount point of this
@@ -1383,6 +1470,7 @@ remove:1) cmd_remove ;;
 packages:0|packages:1) cmd_packages ;;
 switch:0) cmd_switch ;;
 accept:1) cmd_accept ;;
+publish:0) cmd_publish ;;
 init:1) cmd_init ;;
 *) usage ;;
 esac

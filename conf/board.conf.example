@@ -57,6 +57,14 @@ BOOT_FORM=
 # the loader update writes it into the record when it differs, never clearing
 # display_failed. Empty: the record's display is left as it is.
 LOADER_DISPLAY=
+# The same step's other keys (docs/boot-partition.md, "The running system's writer"):
+# LOADER_TOUCH=on: the loader's touch driver in the start menu (an empty touch set to
+# on); LOADER_PARENT_CMDLINE=no: the parent passes no command line (a start menu's
+# deployment pick goes through the record's deploy_once, which the initramfs takes);
+# LOADER_PARENT_SETS=no: the parent boots no kernel set (no "Previous kernel").
+LOADER_TOUCH=
+LOADER_PARENT_CMDLINE=
+LOADER_PARENT_SETS=
 # The blocklist hand-off (docs/blocklist.md, "Board keys"), read only with
 # HANDOFF=blocklist. The default slot's partition name, which holds the record;
 # the reboot reason that asks the bootloader for the one-shot; the bootloader's

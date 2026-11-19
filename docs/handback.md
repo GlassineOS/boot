@@ -67,9 +67,12 @@ differences:
 | `display_partial` | `0`: every refresh of the start menu is the whole panel; `1` or empty: only the changed rectangles ("The start menu"). Set by the running system or the installer; the loader never changes it |
 | `drew` | `1`: a start drew through the firmware's refresh and its last refresh hasn't returned (yet); empty otherwise. Written by the loader only (below) |
 | `display_failed` | set (the count it was set at): a start that drew was never marked healthy, so the loader no longer draws, whatever `unmarked` says. Written by the loader; cleared only by the person's retry, `glassine-loader-mark display-retry`, never by a healthy mark |
-| `touch` | the loader's own touch driver ("The loader's touch driver", below): `probe`: bring the touch controller up once at this start and write what it read into the probe report; the loader clears it in its own write before it touches the controller; `on`: the driver is the start menu's tap source; anything else, or empty: the loader never touches the controller. Set by the running system (`probe`, `on`) or the installer (`on`); the loader only clears `probe` |
-| `touch_rail` | with `touch` `probe` or `on`: `on`: the loader turns the touch controller's two supplies on through the firmware's PMIC regulator protocol when they are off, before its power switches, and off again with the controller ("The loader's touch driver", below); anything else, or empty: it only reads them. Set by the person or the running system for a device run; the loader never writes it |
-| `touch_rpm` | with `touch` `probe` or `on`: `locate`, `install`, `kvp` or `vote`: how far the loader's touch driver goes with the firmware's RPM request protocols ("The loader's touch driver", below); `vote` switches pm660l LDO3 on through the RPM (software enable only, no level) before the power switches and takes the vote back with the controller; with it `touch_rail` is not used; anything else, or empty: none. Set by the person or the running system for a device run; the loader clears it in its write before its first RPM call (`touch=probe`'s clearing write, or the menu write) |
+| `touch` | the loader's own touch driver ("The loader's touch driver", below): `probe`: bring the touch controller up once at this start and write what it read into the probe report; the loader clears it in its own write before it touches the controller; `on`: the driver is the start menu's tap source; anything else, or empty: the loader never touches the controller. Set by the running system (`probe`; `on` from the board's `LOADER_TOUCH`, [boot-partition.md](boot-partition.md#the-running-systems-writer), only into an empty `touch`), the installer (`on`) or the person (`off`, any other value: the driver stays off); the loader only clears `probe` |
+| `touch_rpm` | a diagnostic for a device run, with `touch` `probe` or `on`: `locate`, `install` or `kvp`: the RPM steps up to that one whatever LDO3 reads, and no vote (no message); `off`: no RPM call at all; empty, `vote` or anything else: the power path, the vote when LDO3 reads off ("The loader's touch driver", below). Set by the person; the loader clears it in its write before its first RPM call (`touch=probe`'s clearing write, or the menu write) |
+| `touch_voting` | `1`: the start menu's touch driver may vote; set in the menu write, cleared in the pick's write. Found set at entry, the last menu never closed (a vote whose answer never came ends in the watchdog's reset): that menu makes no RPM call and clears it, so no two menus in a row hang there. Written by the loader only |
+| `parent_cmdline` | `no`: the parent passes no command line (it ignores `cmdline_add`): a deployment pick goes into the record as `deploy_once` instead (below). Empty: the parent adds `cmdline_add`. From the board's `LOADER_PARENT_CMDLINE` (the running system's writer); the loader never writes it |
+| `parent_sets` | `no`: the parent can't boot a kernel set (`set:`): the start menu offers no "Previous kernel". From the board's `LOADER_PARENT_SETS`; the loader never writes it |
+| `deploy_once` | a deployment picked in the start menu under a parent that passes no command line: its id, for the next start only. Written by the loader in the pick's write only; every other write of the loader clears one it finds (a pick whose start never reached the initramfs); taken and cleared by the boot's initramfs before it starts that deployment (below) |
 | `request` | also `menu`: open the start menu at this start (below); cleared by the loader in its first write of the start, whether the menu opens or not |
 | `deploys`, `deploy1` … | kept as read; the start menu offers them, a headless loader offers no list |
 
@@ -164,8 +167,8 @@ on such a machine, so it opens only when asked, and only with a tap source:
   | Pick | Answer | The pick's write |
   |---|---|---|
   | GlassineOS | as a start without the menu: by the request or the count (`baseline` when `default` is empty, the previous set or the recovery at the limit) | that start's: `unmarked` one more, `started`, `started_why` (`default` or `limit`); a request taken as there |
-  | a deployment (the previous one, or one under "More") | the same, with `cmdline_add=glassine.deploy.once=<id>` | the same as GlassineOS |
-  | the previous kernel (offered only when `previous` is set) | `set:<previous>`, `why=choice` | `unmarked` one more, `started=<previous>`, `started_why=choice` |
+  | a deployment (the previous one, or one under "More") | the same, with `cmdline_add=glassine.deploy.once=<id>`; with `parent_cmdline=no` the same without it | the same as GlassineOS; with `parent_cmdline=no` also `deploy_once=<id>` |
+  | the previous kernel (offered only when `previous` is set and `parent_sets` isn't `no`) | `set:<previous>`, `why=choice` | `unmarked` one more, `started=<previous>`, `started_why=choice` |
   | the recovery | `recovery`, `why=choice` | not counted: `unmarked` as read; a `request=recovery` cleared |
 
   No input for 60 seconds is the GlassineOS pick. When the pick's write fails, the
@@ -199,7 +202,25 @@ on such a machine, so it opens only when asked, and only with a tap source:
 
 A parent that ignores `cmdline_add` boots a deployment pick as the GlassineOS pick, and
 one that can't boot a `set:` answer boots its baseline (see "What the parent does with
-it"): the menu offers what the record names, not what the parent can do.
+it"). A board says so in its `board.conf`: `LOADER_PARENT_CMDLINE=no` and
+`LOADER_PARENT_SETS=no` (the Note Air's ABL, which boots `boot_b` whatever the answer),
+which the running system writes into the record as `parent_cmdline=no` and
+`parent_sets=no` ([boot-partition.md](boot-partition.md#the-running-systems-writer)).
+
+**A deployment picked under a parent that passes no command line.** With
+`parent_cmdline=no` the pick's write holds `deploy_once=<id>` and the answer is the
+GlassineOS pick's. The parent boots what it boots (on the Note Air, `boot_b`); that
+boot's initramfs, with `BOOT_FORM=raw`, in the default role and with no
+`glassine.deploy.once=` on its command line, reads the record from `glassine-boot`,
+writes it with `deploy_once` cleared (read back), and only then starts that deployment
+for this start only, as `glassine.deploy.once=` would (010 FR-042 to FR-047: no state
+written, not accepted, the next start the ordinary pick). A `deploy_once` it can't clear
+is not taken, so it can never repeat; one that is no deployment id is cleared and
+dropped. A start that fails falls back as any start does. A `deploy_once` still in the
+record at a later start (that start never reached the initramfs: a reset, a power cut)
+is cleared by that start's first loader write, so it never outlives the start it was
+picked for. On a PC nothing changes: its parent is the
+firmware, and the loader passes the word on its kernel's command line.
 
 
 ### The loader's touch driver
@@ -217,19 +238,18 @@ switches, 66 its reset, 67 its interrupt). The protocols' layout is the loader's
   its reset low and high), and only the controller's bus, which the firmware's I2C
   protocol powers when the loader opens it (its clock and its two pins, set by the
   firmware) and releases when the loader closes it. Through the firmware's PMIC
-  regulator protocol it reads (status and level only) the controller's two supplies;
-  only with `touch_rail=on` does it
-  switch the two supplies (pm660l LDO3 and pm660 LDO11) on, and only ones it found off
-  with their set level already within the controller's range; it never sets a level.
-  With `touch_rpm` it doesn't, and goes through the firmware's RPM request protocols
-  instead (`docs/firmware-rpm.md` in GlassineOS/loader). It looks them up and checks
-  them, and installs the raw request protocol through the RPM services when it is
-  absent (uninstalling it when done). At `vote`, with pm660l LDO3 off, it sends one
-  active-set request for it with only the software enable on: no level, no load,
-  never any other resource. It goes on to the power switches only when LDO3 then
-  reads on within the controller's range. When it is done it sends the same request
-  with the enable off. It re-arms the firmware watchdog (30 seconds) before each
-  request, whose wait for the RPM's answer has no timeout. No other GPIO, bus,
+  regulator protocol it only reads (status and level) the controller's two supplies,
+  pm660l LDO3 and pm660 LDO11; it never writes that protocol (on the Note Air both its
+  writes, set level and enable, ended the firmware). When LDO3 reads off it is switched
+  on through the firmware's RPM request protocols (`docs/firmware-rpm.md` in
+  GlassineOS/loader), which own it: the loader looks them up and checks them, installs
+  the raw request protocol through the RPM services when it is absent (uninstalling it
+  when done), and sends one active-set request for LDO3 with only the software enable
+  on: no level, no load, never any other resource. It goes on to the power switches
+  only when LDO3 then reads on within the controller's range. When it is done it sends
+  the same request with the enable off. It re-arms the firmware watchdog (30 seconds)
+  before each request, whose wait for the RPM's answer has no timeout. LDO3 found on,
+  or not readable: no RPM call. No other GPIO, bus,
   regulator, RPM resource or register. Every regulator and RPM call is logged. Every GPIO and I2C call is logged, except the polls while it waits for the
   controller (its interrupt pin read, and reads of its input register with nothing
   waiting), which are counted. It reads that register only while the interrupt pin is
@@ -237,8 +257,7 @@ switches, 66 its reset, 67 its interrupt). The protocols' layout is the loader's
 - **As found:** before it drives anything the loader reads the four pins' levels
   (read-only). When both power switches already read high, the controller was powered
   and stays so; else the loader powers it and, when it is done, powers it down again
-  (its reset low, then both switches low, then the supplies it turned on off, then its
-  RPM vote taken back) before it
+  (its reset low, then both switches low, then its RPM vote taken back) before it
   answers, and leaves the three pins it drove configured as inputs (the firmware's
   protocol can't read a pin's configuration to restore the one found).
 - **Time:** the whole bring-up has one deadline (at most 10 seconds from its first
@@ -258,7 +277,8 @@ switches, 66 its reset, 67 its interrupt). The protocols' layout is the loader's
 - **`touch=on`:** the driver is the start menu's tap source when the firmware's I2C and
   GPIO protocols pass their checks (the probe report's, below); the bring-up runs inside
   the menu, after the menu write, so a hang in it is a hang in the menu (`drew=1`: the
-  next start sets `display_failed`). It polls the controller's input register (no
+  next start sets `display_failed`; a vote that never returns leaves `touch_voting=1`,
+  and the next menu doesn't vote). It polls the controller's input register (no
   interrupt), maps the first contact to the portrait panel, and powers the controller
   down when the menu closes. A bring-up that fails leaves the menu without taps: it ends
   at its timeout as with no input. When the menu closes the loader logs what it read

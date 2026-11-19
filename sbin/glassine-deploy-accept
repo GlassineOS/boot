@@ -32,6 +32,9 @@
 # RUN_DIR/limit-start) then runs glassine-bootimg rollback --limit (FR-013): that
 # set becomes the default kernel, the one that failed is listed as failed.
 #
+# The deployment list: after that mark, a start that accepts nothing runs
+# glassine-deploy publish (the accept publishes it itself), so the loader record's
+# list follows what changed at boot (a candidate that failed).
 # The loader update (BOOT_FORM=raw; LOADER_UPDATE = glassine-loader-update, specs/012
 # FR-026): only after this start's healthy mark succeeded (written, or the count
 # was 0 already; so the deployment
@@ -67,6 +70,13 @@ say() {
 loader_update() {
     [ "$marked" = 1 ] && [ -x "$LOADER_UPDATE" ] || return 0
     "$LOADER_UPDATE" || say "the loader update failed (exit $?)"
+}
+# the deployment list in the loader record (glassine-deploy publish, 010 FR-041), on
+# a healthy start that wrote its mark and accepted nothing (an accept publishes
+# itself): what changed without a command (a candidate that failed at boot)
+publish() {
+    [ "$marked" = 1 ] || return 0
+    "$DEPLOY" publish || say "the loader's deployment list not published (exit $?)"
 }
 field() { "$DEPLOY" status --porcelain 2>/dev/null | sed -n 2p | tr '\t' '\n' | sed -n "s/^$1=//p"; }
 
@@ -145,7 +155,7 @@ if [ $mark = 1 ]; then
         done
     fi
 fi
-[ $cand = 1 ] || { loader_update; exit 0; }
+[ $cand = 1 ] || { publish; loader_update; exit 0; }
 # busy (exit 6: another writer, or a hibernate holding the state lock across
 # the sleep): try again for up to ACCEPT_BUSY_S seconds
 n=0
