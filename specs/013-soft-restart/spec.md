@@ -121,6 +121,22 @@ picks as the state says.
 **Then** it starts by a soft restart, `state/deploy` is not written, nothing is
 accepted, and the next restart, soft or cold, runs the ordinary pick again.
 
+### Scenario 9 – A plain restart (P1)
+
+**Given** a running deployment that has been healthy, with no deployment change
+waiting,
+**When** the person chooses "Restart",
+**Then** the session restarts by a soft restart into the same deployment: the apps
+close, the kernel keeps running. Where FR-001 doesn't allow a soft restart, "Restart"
+is a cold one, and the entry said so before the person confirmed.
+
+### Scenario 10 – Restart fully (P1)
+
+**Given** a running system,
+**When** the person chooses "Restart fully",
+**Then** the device restarts cold, through the firmware, whatever FR-001 says. A
+waiting deployment change is applied by the switch as at any user-started restart.
+
 ## Requirements
 
 ### When a restart is soft
@@ -167,9 +183,11 @@ accepted, and the next restart, soft or cold, runs the ordinary pick again.
   `status` (`restart=soft|cold`, `restart_reason=`). The reasons are fixed words
   (`kernel`, `kernel-trial`, `loader-request`, `not-covered`, `modules`, `not-healthy`,
   `bare`, `off`, …), so a shell can word them.
-- **FR-007** The shell's restart entries say which kind they will be before the person
-  confirms: a soft restart as a restart in which the apps close and the device stays on;
-  a cold one as an ordinary restart. A restart that turns cold after all (FR-003, FR-021)
+- **FR-007** The power menu has two restart entries: "Restart" (`restart`: soft where
+  FR-001 allows, else cold) and "Restart fully" (`restart --cold`: always cold). Before
+  the person confirms, "Restart" says which kind it will be: a soft restart as a
+  restart in which the apps close and the device stays on; a cold one as an ordinary
+  restart, with the reason in the shell's words (FR-006). A restart that turns cold after all (FR-003, FR-021)
   is said on the screen while it happens, and the next session says why, once.
 - **FR-008** The incoming session can tell how it started: `/run/glassine/restart`
   (`kind=cold|soft`, `from=` the outgoing deployment, `count=` the soft starts in this
@@ -183,11 +201,12 @@ accepted, and the next restart, soft or cold, runs the ordinary pick again.
   (exit 9, nothing stopped). `select`, `rollback`, `reset` and `stage` take `--restart`:
   the command, then `restart`. A restart that the person starts is a user-started
   restart in the sense of 001 FR-009, so the switch rule applies to it (FR-012).
-- **FR-010** The shell's "Restart" applies a waiting deployment change (a staged or
-  selected deployment) by `restart`, so it is soft where it can be. With no change
-  waiting, "Restart" is a cold restart, because a person who restarts with nothing to
-  apply may want the hardware started again. Where a soft restart is what "Restart"
-  would do, the power menu also offers a cold one.
+- **FR-010** The shell's "Restart" is `restart`, with or without a deployment change
+  waiting (a staged or selected deployment): soft where FR-001 allows, else cold. With
+  no change waiting, the soft restart starts the deployment the pick gives, which is
+  the running one. "Restart fully" is `restart --cold`, always there beside it, for a
+  person who wants the hardware and the kernel started again; it applies a waiting
+  change through the same switch.
 - **FR-011** An update never restarts by itself. When it has staged a deployment, the
   shell's notice offers "Restart to update", which is `restart`; the person's choice
   starts it, as the switch waits for a user-started shutdown.
@@ -435,10 +454,5 @@ machine, and untested until a device run.
 
 ## Open questions
 
-- **FR-010:** should "Restart" with no deployment change waiting also be soft, with
-  "Restart fully" beside it? This spec keeps it cold.
 - **SC-001:** absolute time targets for the Note Air and a PC, once a cold restart has
   been measured on each.
-- **FR-016:** is requiring the outgoing start to be healthy (a cold restart within the
-  first 120 seconds of a start) acceptable, or should a shorter healthy time apply
-  before a soft restart?
