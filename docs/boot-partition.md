@@ -767,6 +767,12 @@ what they are (switch, accept, select, rollback, remove, stage), and on every he
 start that accepts nothing (010 FR-041). `deploy_once` is cleared by the initramfs
 before it starts that deployment (handback.md).
 
+`LOADER_OTHER` (board key, raw form only): the record's `other` for this board, the
+parent's other system that the start menu may offer (handback.md, "The other system"):
+`android` on a board whose parent keeps a stock Android it can start once. The same step
+writes it, in the same write as `display` when both differ; a value outside
+`[a-z0-9-]` is said and nothing is written. Empty or absent: `other` is left as it is.
+
 Every write of `glassine-boot-raw` and of the record's writers holds an exclusive
 lock (`flock`) on the device, so a region write and a record write never overlap; the
 record's writers also hold the system partition's state lock, as on FAT.
