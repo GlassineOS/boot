@@ -83,6 +83,7 @@ ok "gr_keep: a copy that fails leaves no .complete" "! gr_keep $W/nothere $W/kep
 # --- SC-002: the soft start's state/deploy equals a cold start's, byte for byte ---
 # cold NAME STATE / soft NAME STATE: one start of each kind from STATE; the state it
 # leaves in $W/<kind>.NAME, what booted in $W/<kind>.NAME.booted
+# shellcheck disable=SC2034  # read by gr_carry
 unset_rs() { GR_RS_KIND='' GR_RS_FROM='' GR_RS_COUNT='' GR_RS_SWITCH='' GR_CARRY_FROM='' GR_KEEP_SRC='' GR_KEEP_NONE=''; }
 mtab() { awk -v r="$R" '$2 == r || index($2, r "/") == 1 || $2 == r ".rw" { sub(r, "R", $2); print $2, $3 }' /proc/mounts | sort; }
 cold() {
@@ -95,6 +96,7 @@ cold() {
 soft() {
     printf "$2" > $S/state/deploy; unset_rs
     mkdir -p $R.sys $R.ud && mount -t btrfs -o rw,noatime $SD $R.sys && mount -t ext4 -o rw,noatime $UDEV $R.ud || return 1
+    # shellcheck disable=SC2034  # read by gr_carry
     GR_RS_KIND=soft GR_RS_FROM=d1 GR_RS_COUNT=1
     if ! gr_soft_boot $P $R $KR; then exec 9>&-; umount $R.ud $R.sys; return 1; fi
     gr_carry $R || return 1
