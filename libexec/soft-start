@@ -20,6 +20,7 @@ CONF=/etc/glassine/deploy.conf SYSTEM_DEV='' USERDATA_DEV=''
 [ -r "$CONF" ] && . "$CONF"
 sync
 if . /usr/lib/glassine-boot/glassine-state.sh 2>/dev/null && . /usr/lib/glassine-boot/glassine-root.sh 2>/dev/null; then
+    # shellcheck disable=SC2034  # read by the library
     GR_TMP=/run/glassine
     gr_log() { echo "<3>glassine-soft-start: $*" > /dev/kmsg 2>/dev/null; }
     for d in "$USERDATA_DEV" "$SYSTEM_DEV"; do [ -z "$d" ] || gr_shutdown_ro "$d"; done

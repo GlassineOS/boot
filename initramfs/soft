@@ -46,6 +46,7 @@ if [ $STAGE2 = 1 ]; then
         /bin/busybox mount --move "/oldroot/$_m" "/$_m" && MOVED="$MOVED $_m"
     done
 fi
+# shellcheck disable=SC2034  # read in the applet wrappers (eval)
 B=$HERE/bin/busybox
 GLASSINE_SOFT_REBOOT='' GLASSINE_SOFT_STAGE=/run/glassine/stage GLASSINE_SOFT_INIT=/sbin/init GLASSINE_SOFT_CMDLINE=/proc/cmdline GLASSINE_SOFT_CUT='' GLASSINE_SOFT_KMSG=/dev/kmsg GLASSINE_SOFT_KEEP_RW=''
 # the kernel puts command-line words of the form A=B into PID 1's environment:
@@ -75,6 +76,7 @@ step() { [ "$GLASSINE_SOFT_CUT" != "$1" ] || cold cut "cut at $1 (test)"; }
 DEVP=''
 WD=0
 feed() { [ $WD = 0 ] || printf k >&7 2>/dev/null; }
+# shellcheck disable=SC2034  # read by the library
 GR_FEED=feed
 
 R=/run/glassine/restarting
@@ -103,6 +105,7 @@ cold() {
     fi
     sync
     if [ -z "$GLASSINE_SOFT_KEEP_RW" ] && command -v gr_shutdown_ro >/dev/null; then
+        # shellcheck disable=SC2034  # read by the library
         GR_TMP=${_cw%/*}
         for _cd in "$UDDEV" "$SYSDEV"; do [ -z "$_cd" ] || gr_shutdown_ro "$DEVP$_cd"; done
     fi
@@ -210,7 +213,9 @@ gr_soft_boot "$PREFIX" $NEWROOT "$KREL" "$ONCE" || cold assembly "no deployment 
 [ -x $NEWROOT$GLASSINE_SOFT_INIT ] || [ -L $NEWROOT$GLASSINE_SOFT_INIT ] || cold assembly "no $GLASSINE_SOFT_INIT in $GR_BOOTED"
 feed
 step carry
+# shellcheck disable=SC2034  # read by gr_carry
 GR_RS_KIND=soft GR_RS_FROM=$FROM GR_RS_COUNT=$COUNT GR_CARRY_FROM=/carry GR_KEEP_SRC=/
+# shellcheck disable=SC2034  # read by gr_carry
 GR_RS_SWITCH=$(cat /carry/switch-result 2>/dev/null)
 gr_carry $NEWROOT || cold handover "cannot hand the mounts to the new root"
 log "soft start: deployment $GR_BOOTED"

@@ -9,6 +9,7 @@
 # SIGTERM, and busybox init's last SIGKILL ends it right before the soft start, which
 # opens the device itself. Without a restart, or without /dev/watchdog: nothing.
 
+# shellcheck disable=SC2034  # read by openrc-run
 description="glassine: keep the watchdog armed through a soft restart"
 
 depend() {
