@@ -335,7 +335,7 @@ type=restart	restart=cold	restart_reason=not-healthy	restart_target=…	switch=n
 
 ```
 glassine-deploy 1
-type=deployment	id=…	state=current	base=…	base_present=yes	kernel=…	created=…	size_kib=…
+type=deployment	id=…	state=current	base=…	base_present=yes	version=…	kernel=…	created=…	size_kib=…
 ```
 
 ```
@@ -355,7 +355,10 @@ applies, so a failed deployment that is also previous shows failed). A `kept` on
 there only until the next clean-up (one that was mounted, or left by an older tool). `base_present` is
 `yes` when the deployment's base is a subvolume under the system partition's `bases/`,
 `no` when it is not, empty when the system partition is not readable or the meta names
-no base. `status`'s `failed` is the last deployment that ran out of tries.
+no base. `version` is the base's version: `VERSION_ID` of the base's `usr/lib/os-release`
+(else its `etc/os-release` when that is a file, not a link), only letters, digits and
+`._+~-`, at most 32 characters; empty when the base is not there or holds none.
+`status`'s `failed` is the last deployment that ran out of tries.
 
 ### Exit codes
 

@@ -193,6 +193,12 @@ mkdir -p $W/sysmnt/bases/v3.22.2
 ok "list: base_present yes for d2, no for d4" "[ \"\$(lst d2 base_present)\" = yes ] && [ \"\$(lst d4 base_present)\" = no ]"
 rmdir $W/sysmnt/bases/v3.22.2; rmdir $W/sysmnt/bases 2>/dev/null || :
 for n in 1 2 3 4; do mkdir -p $W/sysmnt/bases/v3.22.$n; done     # select needs the base
+# the bases' versions as an Alpine base holds them: usr/lib/os-release, etc/os-release
+# a relative link to it; v3.22.3 only an etc/os-release file, v3.22.4 a quoted value
+for n in 1 2 4; do mkdir -p $W/sysmnt/bases/v3.22.$n/usr/lib $W/sysmnt/bases/v3.22.$n/etc; printf 'NAME="Alpine Linux"\nID=alpine\nVERSION_ID=3.24.%s\nPRETTY_NAME="Alpine Linux v3.24"\n' $n > $W/sysmnt/bases/v3.22.$n/usr/lib/os-release; ln -s ../usr/lib/os-release $W/sysmnt/bases/v3.22.$n/etc/os-release; done
+mkdir -p $W/sysmnt/bases/v3.22.3/etc; printf 'ID=alpine\nVERSION_ID=3.24.3\n' > $W/sysmnt/bases/v3.22.3/etc/os-release
+sed -i 's/^VERSION_ID=.*/VERSION_ID="3.24.4"/' $W/sysmnt/bases/v3.22.4/usr/lib/os-release
+ok "list: version from the base's os-release (a quoted value unquoted; etc/os-release without usr/lib)" "[ \"\$(lst d4 version)\" = 3.24.4 ] && [ \"\$(lst d3 version)\" = 3.24.3 ] && [ \"\$(lst d4 base)\" = v3.22.4 ]"
 echo failed=d1 >> $W/sysmnt/state/deploy
 ok "list: a failed deployment that is also previous shows failed" "[ \"\$(lst d1 state)\" = failed ]"
 ok "status: failed=" "$G status --porcelain | grep -q '	failed=d1'"
@@ -202,14 +208,29 @@ sed -i '/^failed=d1$/d' $W/sysmnt/state/deploy
 MK=$W/markstub
 printf '#!/bin/sh\ncase $1 in\nhas-record) [ -e %s/norec ] && exit 3; exit 0 ;;\ndeploys) cat > %s/list; echo "locked=${GLASSINE_LOADER_MARK_LOCKED:-}" > %s/lenv ;;\nesac\n' $W $W $W > $MK; chmod +x $MK
 export GLASSINE_LOADER_MARK=$MK
-L3=$(printf 'd1 previous v3.22.1 2026-10-21\nd3 failed v3.22.3 2026-10-23\nd4 kept v3.22.4 2026-10-24')
-ok "publish: previous, failed, kept as '<id> <state> <base> <date>', the current one left out, under the state lock" "$G publish && [ \"\$(cat $W/list)\" = \"$L3\" ] && grep -qx locked=1 $W/lenv"
-rmdir $W/sysmnt/bases/v3.22.4
+L3=$(printf 'd1 previous 3.24.1 2026-10-21\nd3 failed 3.24.3 2026-10-23\nd4 kept 3.24.4 2026-10-24')
+ok "publish: previous, failed, kept as '<id> <state> <version> <date>', the current one left out, under the state lock" "$G publish && [ \"\$(cat $W/list)\" = \"$L3\" ] && grep -qx locked=1 $W/lenv"
+mv $W/sysmnt/bases/v3.22.4 $W/v3.22.4.away
 ok "publish: a deployment whose base is gone (it can't start) left out" "$G publish && ! grep -q '^d4 ' $W/list && grep -q '^d3 failed' $W/list"
-mkdir -p $W/sysmnt/bases/v3.22.4
-printf 'created=2026-10-25T08:00:00Z\nbase=%s\n' "$(printf 'b%.0s' $(seq 1 70))" > $U/deployments/d5meta; mkdir -p $U/deployments/d5 $W/sysmnt/bases/"$(printf 'b%.0s' $(seq 1 70))"; mv $U/deployments/d5meta $U/deployments/d5/meta
-ok "publish: a label over 64 characters: the base cut, the date kept" "$G publish && l=\$(sed -n 's/^d5 kept //p' $W/list) && [ \${#l} = 64 ] && [ \"\${l% *}\" = \"\$(printf 'b%.0s' \$(seq 1 53))\" ] && [ \"\${l##* }\" = 2026-10-25 ]"
-rm -rf $U/deployments/d5 $W/sysmnt/bases/"$(printf 'b%.0s' $(seq 1 70))"
+mv $W/v3.22.4.away $W/sysmnt/bases/v3.22.4
+# the label never holds the base id, and a version that is unknown or not plain is left out
+ok "publish: no base id in a label" "! grep -q 'v3\\.22' $W/list"
+B5=20261119-b56f7a79be473e08; mkdir -p $U/deployments/d5 $W/sysmnt/bases/$B5/usr/lib $W/sysmnt/bases/$B5/etc
+printf 'created=2026-11-19T08:00:00Z\nbase=%s\n' $B5 > $U/deployments/d5/meta
+lab() { $G publish && sed -n "s/^d5 kept//p" $W/list; }
+ok "publish: a base without an os-release: the date alone" "[ \"\$(lab)\" = ' 2026-11-19' ]"
+ln -s /etc/os-release $W/sysmnt/bases/$B5/etc/os-release
+ok "publish: an os-release that links out of the base is not followed" "[ \"\$(lab)\" = ' 2026-11-19' ]"
+rm $W/sysmnt/bases/$B5/etc/os-release
+printf 'VERSION_ID=%s\n' "$(printf '9%.0s' $(seq 1 33))" > $W/sysmnt/bases/$B5/usr/lib/os-release
+ok "publish: a version over 32 characters left out" "[ \"\$(lab)\" = ' 2026-11-19' ]"
+printf 'VERSION_ID=3.24 edge\n' > $W/sysmnt/bases/$B5/usr/lib/os-release
+ok "publish: a version with a space left out" "[ \"\$(lab)\" = ' 2026-11-19' ]"
+printf 'VERSION_ID=\047%s\047\n' "$(printf '9%.0s' $(seq 1 32))" > $W/sysmnt/bases/$B5/usr/lib/os-release
+ok "publish: the longest label: 32 + 1 + 10 characters, within the record's 64" "l=\$(lab) && [ \"\$l\" = \" \$(printf '9%.0s' \$(seq 1 32)) 2026-11-19\" ]"
+printf 'base=%s\n' $B5 > $U/deployments/d5/meta; rm $W/sysmnt/bases/$B5/usr/lib/os-release
+ok "publish: neither version nor date: no label (the loader shows the id)" "$G publish && grep -qx 'd5 kept' $W/list"
+rm -rf $U/deployments/d5 $W/sysmnt/bases/$B5
 sed -i 's/^current=d2$/current=dx/' $D
 rm -f $W/list
 ok "publish: the current deployment not on userdata: the record's list left as it was, said" "$G publish 2>$W/err && [ ! -e $W/list ] && grep -q 'dx is not on userdata' $W/err"
@@ -218,7 +239,7 @@ sed -i 's/^current=dx$/current=d2/' $D
 ok "publish: a board without a loader record: nothing" "$G publish && [ ! -e $W/list ]"
 rm -f $W/norec
 $G select d4 >/dev/null
-ok "select publishes the list: the candidate after the previous one" "[ \"\$(sed -n 2p $W/list)\" = 'd4 candidate v3.22.4 2026-10-24' ] && grep -qx locked=1 $W/lenv"
+ok "select publishes the list: the candidate after the previous one" "[ \"\$(sed -n 2p $W/list)\" = 'd4 candidate 3.24.4 2026-10-24' ] && grep -qx locked=1 $W/lenv"
 ok "select d4: candidate=d4 tries=2, current kept, other keys kept" "[ \"\$(gs_kv \$D candidate)\" = d4 ] && [ \"\$(gs_kv \$D tries)\" = 2 ] && [ \"\$(gs_kv \$D current)\" = d2 ] && [ \"\$(gs_kv \$D extra)\" = keep ]"
 ok "list: d4 is the candidate" "[ \"\$(lst d4 state)\" = candidate ]"
 $G select d2 >/dev/null
@@ -389,7 +410,7 @@ export GLASSINE_DEPLOY_MOUNTINFO=$W/mi
 deps() { ls $U/deployments | tr '\n' ' '; }
 ok "accept: the clean-up keeps current, previous, candidate, staged, the last failed one, the booted and the mounted one; the rest goes" "$G accept n >$W/out 2>$W/err && [ \"\$(deps)\" = 'bt c f mt n s ' ] && grep -q 'clean-up: removed k1 k2 oldf p' $W/out && grep -q 'deployment mt is mounted; not removed' $W/err"
 ok "accept: the state is the accept's (previous = the old current), nothing else touched" "[ \"\$(gs_kv \$D current)\" = n ] && [ \"\$(gs_kv \$D previous)\" = c ] && [ \"\$(gs_kv \$D staged)\" = s ] && [ \"\$(gs_kv \$D failed)\" = f ] && [ -z \"\$(gs_kv \$D candidate)\" ]"
-ok "accept publishes the list after its clean-up: previous c, failed f, kept bt and mt (no date: the base alone); not the current n nor the staged s" "[ \"\$(tr '\\n' ' ' < $W/list)\" = 'c previous gb f failed gb bt kept gb mt kept gb ' ] && grep -qx locked=1 $W/lenv"
+ok "accept publishes the list after its clean-up: previous c, failed f, kept bt and mt (no version, no date: no label); not the current n nor the staged s" "[ \"\$(tr '\\n' ' ' < $W/list)\" = 'c previous f failed bt kept mt kept ' ] && grep -qx locked=1 $W/lenv"
 ok "clean-up: nothing left in deployments.removing; list shows the mounted one as kept" "[ -z \"\$(ls -A $U/deployments.removing)\" ] && [ \"\$(lst mt state)\" = kept ] && [ \"\$(lst f state)\" = failed ]"
 # a switch (carry=none) is a clean-up point too; an rm that is cut off leaves the
 # removal out of deployments/, and the next clean-up finishes it
