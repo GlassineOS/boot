@@ -171,7 +171,7 @@ write; the loader runs when no system does.
 | `started` | id of the set the loader started last | the loader, in the same write as the count or the cleared request |
 | `started_why` | why: `default`, `limit` (the previous set, because the count reached the limit), `choice` (the previous kernel set, picked in the list), `request` (a trial) | the loader, with `started` |
 | `deploys` | the number of entries in the deployment list, `0` to `32` | `glassine-deploy publish` (through `glassine-loader-mark deploys`), in the running system and in the recovery; the installer (`0`) |
-| `deploy1` … `deploy<n>` | `<deployment id> <state> <label>`, separated by single spaces: the state `previous`, `candidate`, `failed` or `kept` (never the current or a staged one, never one whose base is gone), in that order, the kept ones by id; the label `<version> <created date>`: the base's version as `glassine-deploy list` reports it (`version`) and the deployment's created date, each left out when unknown (no label at all when both are), never the base id; where labels would read the same, each of those also carries the created time, ` HH:MM`, or ` HH:MM:SS` where the minute matches too (UTC); at most 52 printable ASCII characters, within the 64 the loader takes | with `deploys` |
+| `deploy1` … `deploy<n>` | `<deployment id> <state> <label>`, separated by single spaces: the state `previous`, `candidate`, `failed` or `kept` (never the current or a staged one, never one whose base is gone), in that order, the kept ones by id; the label: the base's version as `glassine-deploy list` reports it (`version`), no label when it is unknown, never the base id; where labels would read the same, each of those also carries the deployment's created time (UTC) after a space, `HH:MM`, or `HH:MM:SS` where the minute matches too; at most 41 printable ASCII characters, within the 64 the loader takes | with `deploys` |
 
 - **The healthy mark** is the write of `unmarked=0`. The boot-success step makes it on
   every start that reaches the health conditions (010 FR-023), whichever set and
@@ -232,8 +232,8 @@ write; the loader runs when no system does.
 - **The deployment list** holds the deployments the loader's list offers (010 FR-040):
   the previous one first, then the candidate, the last failed one and the kept ones,
   newest first. `<state>` is `previous`, `candidate`, `failed` or `kept`. `<label>` is
-  the base's version and the deployment's date as `glassine-deploy list` prints them,
-  in printable ASCII (0x20 to 0x7E), at most 64 bytes. Past 32 entries, the oldest kept
+  the base's version as `glassine-deploy list` prints it, with the deployment's created
+  time where two labels would read the same (see `deploy1` above), in printable ASCII (0x20 to 0x7E), at most 64 bytes. Past 32 entries, the oldest kept
   ones are left out. The current deployment and a staged one are not in the list.
 - A record must fit its slot with its check line. A writer whose record would not fit
   refuses and writes nothing.
