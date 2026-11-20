@@ -78,7 +78,7 @@
 # FR-041, docs/boot-partition.md "Keys": deploys, deploy1 ...) on a board that
 # keeps one (glassine-loader-mark has-record): the previous deployment, the
 # candidate, the last failed one and the kept ones that can start (their base on
-# the system partition), each "<id> <state> <base version> <created date>", equal ones kept apart
+# the system partition), each "<id> <state> <base version>", equal ones kept apart
 # by the created time (loader_rows). accept,
 # switch, select, rollback, remove and stage publish it too, after their state
 # write; the boot-success step runs publish on every healthy start (a list a
@@ -478,12 +478,11 @@ plain_version() {
 
 # loader_rows SYSDIR: the loader's deployment list (see publish), one
 # "<id> <state> <label>" line each, previous, candidate, failed, then the kept
-# ones by id; the label "<version> <date>": the base's version (base_version)
-# and the deployment's created date, either left out when unknown, never the
-# base id (the id stays the line's first field). Rows whose labels would read
-# the same also get their created time, "HH:MM", or "HH:MM:SS" where the minute
-# matches too (010 FR-040). At most 32 + 1 + 10 + 1 + 8 characters, within the
-# record's 64.
+# ones by id; the label is the base's version (base_version), left out when
+# unknown, never the base id (the id stays the line's first field). Rows whose
+# labels would read the same also get their created time (UTC), "HH:MM", or
+# "HH:MM:SS" where the minute matches too (010 FR-040). At most 32 + 1 + 8
+# characters, within the record's 64.
 loader_rows() {
     _lr_cur=$(gs_kv "$1/state/deploy" current) _lr_prev=$(gs_kv "$1/state/deploy" previous)
     _lr_cand=$(gs_kv "$1/state/deploy" candidate) _lr_failed=$(gs_kv "$1/state/deploy" failed)
@@ -497,14 +496,12 @@ loader_rows() {
         [ -z "$_lr_b" ] || [ -d "$1/bases/$_lr_b" ] || continue
         _lr_v=$(base_version "$1" "$_lr_b")
         _lr_t=$(meta_kv "$_lr_m" created)
-        _lr_d=${_lr_t%%T*}
-        case $_lr_d in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) _lr_d='' ;; esac
         case $_lr_t in
-            ????-??-??T[0-2][0-9]:[0-5][0-9]:[0-6][0-9]*) _lr_t=${_lr_t#*T} _lr_t=${_lr_t%"${_lr_t#????????}"} ;;
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-2][0-9]:[0-5][0-9]:[0-6][0-9]*)
+                _lr_t=${_lr_t#*T} _lr_t=${_lr_t%"${_lr_t#????????}"} ;;
             *) _lr_t='' ;;
         esac
-        [ -n "$_lr_d" ] || _lr_t=''
-        _lr_l="$_lr_v${_lr_v:+${_lr_d:+ }}$_lr_d"
+        _lr_l=$_lr_v
         if [ "$_lr_id" = "$_lr_cand" ]; then _lr_s=candidate
         elif [ "$(meta_kv "$_lr_m" failed)" = 1 ] || [ "$_lr_id" = "$_lr_failed" ]; then _lr_s=failed
         elif [ "$_lr_id" = "$_lr_prev" ]; then _lr_s=previous
