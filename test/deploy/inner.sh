@@ -217,17 +217,17 @@ mv $W/v3.22.4.away $W/sysmnt/bases/v3.22.4
 ok "publish: no base id in a label" "! grep -q 'v3\\.22' $W/list"
 B5=20261119-b56f7a79be473e08; mkdir -p $U/deployments/d5 $W/sysmnt/bases/$B5/usr/lib $W/sysmnt/bases/$B5/etc
 printf 'created=2026-11-19T08:00:00Z\nbase=%s\n' $B5 > $U/deployments/d5/meta
-lab() { $G publish && sed -n "s/^d5 kept//p" $W/list; }
-ok "publish: a base without an os-release: the date alone" "[ \"\$(lab)\" = ' 2026-11-19' ]"
+d5label() { $G publish && sed -n "s/^d5 kept//p" $W/list; }
+ok "publish: a base without an os-release: the date alone" "[ \"\$(d5label)\" = ' 2026-11-19' ]"
 ln -s /etc/os-release $W/sysmnt/bases/$B5/etc/os-release
-ok "publish: an os-release that links out of the base is not followed" "[ \"\$(lab)\" = ' 2026-11-19' ]"
+ok "publish: an os-release that links out of the base is not followed" "[ \"\$(d5label)\" = ' 2026-11-19' ]"
 rm $W/sysmnt/bases/$B5/etc/os-release
 printf 'VERSION_ID=%s\n' "$(printf '9%.0s' $(seq 1 33))" > $W/sysmnt/bases/$B5/usr/lib/os-release
-ok "publish: a version over 32 characters left out" "[ \"\$(lab)\" = ' 2026-11-19' ]"
+ok "publish: a version over 32 characters left out" "[ \"\$(d5label)\" = ' 2026-11-19' ]"
 printf 'VERSION_ID=3.24 edge\n' > $W/sysmnt/bases/$B5/usr/lib/os-release
-ok "publish: a version with a space left out" "[ \"\$(lab)\" = ' 2026-11-19' ]"
+ok "publish: a version with a space left out" "[ \"\$(d5label)\" = ' 2026-11-19' ]"
 printf 'VERSION_ID=\047%s\047\n' "$(printf '9%.0s' $(seq 1 32))" > $W/sysmnt/bases/$B5/usr/lib/os-release
-ok "publish: the longest label: 32 + 1 + 10 characters, within the record's 64" "l=\$(lab) && [ \"\$l\" = \" \$(printf '9%.0s' \$(seq 1 32)) 2026-11-19\" ]"
+ok "publish: the longest label: 32 + 1 + 10 characters, within the record's 64" "l=\$(d5label) && [ \"\$l\" = \" \$(printf '9%.0s' \$(seq 1 32)) 2026-11-19\" ]"
 printf 'base=%s\n' $B5 > $U/deployments/d5/meta; rm $W/sysmnt/bases/$B5/usr/lib/os-release
 ok "publish: neither version nor date: no label (the loader shows the id)" "$G publish && grep -qx 'd5 kept' $W/list"
 rm -rf $U/deployments/d5 $W/sysmnt/bases/$B5
