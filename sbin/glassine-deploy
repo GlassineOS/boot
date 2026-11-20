@@ -78,7 +78,7 @@
 # FR-041, docs/boot-partition.md "Keys": deploys, deploy1 ...) on a board that
 # keeps one (glassine-loader-mark has-record): the previous deployment, the
 # candidate, the last failed one and the kept ones that can start (their base on
-# the system partition), each "<id> <state> <base> <created date>". accept,
+# the system partition), each "<id> <state> <base version> <created date>" (loader_rows). accept,
 # switch, select, rollback, remove and stage publish it too, after their state
 # write; the boot-success step runs publish on every healthy start (a list a
 # failed boot changed). Only a list that differs is written; a failed write
