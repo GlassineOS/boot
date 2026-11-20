@@ -49,6 +49,8 @@ ARCH=$(apk --print-arch) || { echo "build-initramfs.sh: no apk (not an Alpine)" 
 cp "/lib/ld-musl-$ARCH.so.1" "$I/lib/"
 ln -s "ld-musl-$ARCH.so.1" "$I/lib/libc.musl-$ARCH.so.1"
 install -m 755 "$HERE/initramfs/init" "$I/init"
+# the soft start (specs/013): a cold start keeps it with its assembly (gr_keep)
+install -m 755 "$HERE/initramfs/soft" "$I/soft"
 # fsck for the default boot (preen the root fs before mounting it read-write):
 # e2fsck as fsck.ext2/3/4; debugfs + dumpe2fs for the hibernation step of the
 # deployments layout (userdata read without a mount). Dynamic binaries + their
