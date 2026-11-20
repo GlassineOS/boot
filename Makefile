@@ -16,7 +16,7 @@ glassine-slot: src/glassine-slot.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 initramfs: initramfs.cpio.gz
-initramfs.cpio.gz: initramfs/init initramfs/soft build-initramfs.sh lib/glassine-state.sh lib/glassine-root.sh
+initramfs.cpio.gz: initramfs/init initramfs/soft build-initramfs.sh lib/glassine-state.sh lib/glassine-root.sh lib/glassine-watchdog.sh
 	sh build-initramfs.sh $@
 
 install: glassine-reboot glassine-slot

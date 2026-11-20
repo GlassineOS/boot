@@ -7,7 +7,8 @@
 # watchdog. So it is ended with SIGKILL (the device stays armed) and a feeder in
 # OpenRC's own session takes over: killprocs spares that session, the feeder ignores
 # SIGTERM, and busybox init's last SIGKILL ends it right before the soft start, which
-# opens the device itself. Without a restart, or without /dev/watchdog: nothing.
+# opens the devices itself. One feeder per device a daemon petted. Without a
+# restart, or without a watchdog daemon: nothing.
 
 # shellcheck disable=SC2034  # read by openrc-run
 description="glassine: keep the watchdog armed through a soft restart"
@@ -17,15 +18,26 @@ depend() {
 }
 
 start() {
-	[ -e /run/glassine/restarting ] && [ -e /dev/watchdog ] || return 0
-	ebegin "glassine-restart: the watchdog stays armed through the soft restart"
+	[ -e /run/glassine/restarting ] || return 0
+	# the devices the daemons pet (each daemon's last argument; a board may run one
+	# per watchdog, the initramfs's WATCHDOGS), before they go
+	devs=''
+	for p in /proc/[0-9]*; do
+		[ "$(cat "$p/comm" 2>/dev/null)" = watchdog ] || continue
+		d=$(tr '\000' '\n' < "$p/cmdline" 2>/dev/null | grep . | tail -n 1)
+		case $d in /dev/*) devs="$devs $d" ;; esac
+	done
+	[ -n "$devs" ] || return 0
+	ebegin "glassine-restart: the watchdogs stay armed through the soft restart:$devs"
 	killall -KILL watchdog 2>/dev/null
-	# the feeder: opens the device once it is free (the killed daemon's close)
-	/bin/sh -c 'trap "" TERM HUP INT
-		n=0
-		until command exec 7>/dev/watchdog 2>/dev/null; do
-			n=$((n + 1)); [ $n -lt 50 ] || exit 1; sleep 0.1
-		done
-		while :; do printf k >&7; sleep 2; done' </dev/null >/dev/null 2>&1 &
+	# a feeder per device: opens it once it is free (the killed daemon's close)
+	for d in $devs; do
+		/bin/sh -c 'trap "" TERM HUP INT
+			n=0
+			until command exec 7>"$1" 2>/dev/null; do
+				n=$((n + 1)); [ $n -lt 50 ] || exit 1; sleep 0.1
+			done
+			while :; do printf k >&7; sleep 2; done' feeder "$d" </dev/null >/dev/null 2>&1 &
+	done
 	eend 0
 }

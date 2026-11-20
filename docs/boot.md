@@ -26,6 +26,7 @@ image):
 | `BLOCKLIST_RECORD_PART`, `BLOCKLIST_REBOOT_REASON`, `BLOCKLIST_ABL_PART`, `BLOCKLIST_ABL_SHA256` | — | the `blocklist` hand-off ([blocklist.md](blocklist.md#board-keys)) |
 | `DEVICE` | — | the device name of the board's device trees (`<device>@<id>`), for `glassine-bootimg install` |
 | `DEVMODE_ADDR`, `DEVMODE_NETMASK`, `DEVMODE_DHCP_START`, `DEVMODE_DHCP_END`, `USB_VENDOR`, `USB_PRODUCT`, `USB_MANUFACTURER` | — | developer mode (`glassine.devmode=usb` only): the USB network's address and developer range, in the initramfs (telnet, HTTP) and in the booted system (`glassine-devmode`: SSH with the developer folder's keys; README, "Developer mode") |
+| `WATCHDOGS` | `/dev/watchdog:20` | the hardware watchdogs, `DEVICE:SECONDS` space-separated: the initramfs starts a busybox watchdog daemon for each (petting every 5 s; a device whose driver still probes gets 3 s); the soft restart (`glassine-restart`, `soft`) and the hibernation step keep or stop every one of them (`lib/glassine-watchdog.sh`) |
 | `DEVICE_PART` | empty | GPT name of the ext4 partition that holds the device seed (`glassine/`); empty = no device data ([kernel-artifacts.md](kernel-artifacts.md#device-data-files-from-the-device-itself)) |
 
 The booted system reads the same keys from `/etc/glassine-bootimg/board.conf`, which the
@@ -169,7 +170,7 @@ written last (no developer hooks, no boot modules). The steps:
 
 1. `glassine-deploy restart` writes `/run/glassine/restarting` and signals PID 1 (busybox
    init: `SIGHUP` re-reads the inittab, `SIGQUIT` restarts). Init runs the `shutdown`
-   runlevel: `glassine-restart` takes over the watchdog for the whole stop; the
+   runlevel: `glassine-restart` takes over the watchdogs for the whole stop (a feeder per device a daemon petted); the
    shutdown switch runs as at a cold shutdown; `glassine-mount-ro`,
    `glassine-reboot-reason` and the loader's shutdown mark skip themselves while
    `restarting` exists. Init then ends every process and execs its `::restart:`
@@ -188,7 +189,7 @@ written last (no developer hooks, no boot modules). The steps:
    the switch's result, the runtime files that live per kernel run carried); the device
    data step; `switch_root` into the new root's init.
 
-The watchdog is fed between the steps. A step that fails or takes longer than
+The watchdogs are fed between the steps. A step that fails or takes longer than
 `RESTART_LIMIT_S` turns the restart cold: the reason goes to `restart.cold` under the
 userdata prefix (the next session's record shows it once as `cold_reason=`), both file
 systems are made read-only and the system reboots. Before the pick nothing is written,

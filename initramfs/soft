@@ -23,8 +23,9 @@
 # RESTART_LIMIT_S). Any step that fails or runs out of time restarts cold: what is
 # left is killed, why is noted on userdata (<prefix>/restart.cold, said once by the
 # next start's /run/glassine/restart cold_reason=), both file systems synced and
-# made read-only (gr_shutdown_ro), reboot -f. A hardware watchdog stays armed: this
-# script feeds it between its steps (fd 7), and arms the busybox watchdog again
+# made read-only (gr_shutdown_ro), reboot -f. The hardware watchdogs stay armed: this
+# script feeds them between its steps (fds 7 down, lib/glassine-watchdog.sh), and arms
+# the busybox watchdog daemons again
 # before the hand-over, as the cold initramfs does.
 #
 # Test hook: a file test.conf next to this script (never in a kept assembly the
@@ -74,8 +75,7 @@ log() {
 step() { [ "$GLASSINE_SOFT_CUT" != "$1" ] || cold cut "cut at $1 (test)"; }
 # where the device nodes are: /dev, or the stage's once stage 1 moved /dev there
 DEVP=''
-WD=0
-feed() { [ $WD = 0 ] || printf k >&7 2>/dev/null; }
+feed() { command -v gw_feed >/dev/null && gw_feed; return 0; }
 # shellcheck disable=SC2034  # read by the library
 GR_FEED=feed
 
@@ -118,7 +118,8 @@ cold() {
 
 # the boot libraries (the kept copies)
 LIBDIR=$HERE/lib/glassine-boot
-for _l in glassine-state glassine-root glassine-bootpart glassine-device; do
+gw_log() { log "$*"; }
+for _l in glassine-state glassine-root glassine-bootpart glassine-device glassine-watchdog; do
     if [ -r "$LIBDIR/$_l.sh" ]; then
         # shellcheck source=/dev/null
         . "$LIBDIR/$_l.sh" || cold kept "the kept $_l.sh does not load"
@@ -130,18 +131,9 @@ HANDOFF='' BOOT_FORM='' BOOT_PART=glassine-boot DEVICE_PART=''
 # shellcheck source=/dev/null
 [ ! -r "$BOARD" ] || . "$BOARD"
 
-# the watchdog: the feeder glassine-restart started is gone (busybox init's
-# SIGKILL); open the device once its close is through
-if [ -e /dev/watchdog ]; then
-    if [ -e /proc/self/fd/7 ]; then WD=1
-    else
-        _n=0
-        until command exec 7>/dev/watchdog 2>/dev/null; do
-            _n=$((_n + 1)); [ $_n -lt 50 ] || break; sleep 0.1
-        done
-        [ $_n -lt 50 ] && WD=1 || log "cannot open /dev/watchdog: no watchdog through the restart"
-    fi
-fi
+# the watchdogs (the board's WATCHDOGS): the feeders glassine-restart started are gone
+# (busybox init's SIGKILL); open each device once its close is through
+command -v gw_open >/dev/null && gw_open
 feed
 
 if [ $STAGE2 = 0 ]; then
@@ -234,12 +226,11 @@ if command -v gd_boot >/dev/null && [ -n "$DEVICE_PART" ] && gd_has_entries "$NE
     fi
 fi
 
-# the watchdog daemon again, as the cold initramfs leaves it (its fd closed
-# without the magic character first: the device stays armed)
-exec 7>&-
-WD=0
-if [ -e /dev/watchdog ]; then
-    watchdog -t 5 -T 20 /dev/watchdog && log "watchdog armed (20 s)" || log "the watchdog daemon did not start"
+# the watchdog daemons again, as the cold initramfs leaves them (the fds closed
+# without the magic character first: the devices stay armed)
+if command -v gw_arm >/dev/null; then
+    gw_close
+    gw_arm 0
 fi
 log "soft start: switch_root $(cut -d' ' -f1 /proc/uptime)"
 for _m in /proc /sys /dev; do mkdir -p $NEWROOT$_m; done

@@ -7,9 +7,9 @@
 #   (ROOT_LAYOUT=deployments: the deployment's root assembled from the btrfs
 #   ROOT_PART + userdata instead, lib/glassine-root.sh, after the hibernation
 #   resume step);
-#   the previous boot's pstore saved to /var/log/pstore/. The watchdog stays
-#   armed (busybox watchdog keeps petting after switch_root): a kernel hang
-#   resets warm, pstore kept.
+#   the previous boot's pstore saved to /var/log/pstore/. The watchdogs stay
+#   armed (the busybox watchdog daemons keep petting after switch_root): a
+#   kernel hang resets the device.
 #
 #   TEST role (a one-shot boot from the test slot, `glassine-reboot recovery`):
 #   never writes to storage unless told to. If glassine-bootimg staged this
@@ -123,12 +123,21 @@ if [ "$(arg glassine.devmode)" = usb ]; then
 fi
 log "role: $([ $DEFAULT = 1 ] && echo default || echo test), devmode $DEVMODE"
 
-# Pet the watchdog from here on: if PID 1 or the kernel stalls, the bite resets.
-wd_arm() {
-    [ -e /dev/watchdog ] && { watchdog -t 5 -T 20 /dev/watchdog && log "watchdog armed (20 s)"; } \
-        || log "no /dev/watchdog"
-}
-wd_arm
+# Pet the watchdogs from here on (the board's WATCHDOGS, lib/glassine-watchdog.sh;
+# default /dev/watchdog, 20 s): if PID 1 or the kernel stalls, the bite resets.
+if [ -r "$LIBDIR/glassine-watchdog.sh" ]; then
+    gw_log() { log "$*"; }
+    # shellcheck source=../lib/glassine-watchdog.sh
+    . "$LIBDIR/glassine-watchdog.sh"
+    wd_arm() { gw_arm "${1:-0}"; }
+else
+    wd_arm() {
+        [ -e /dev/watchdog ] && { watchdog -t 5 -T 20 /dev/watchdog && log "watchdog armed (20 s)"; } \
+            || log "no /dev/watchdog"
+    }
+fi
+# a listed watchdog whose driver is still probing gets 3 s
+wd_arm 3
 
 # The deployments layout (docs/boot.md): the boot steps of
 # lib/glassine-root.sh. The watchdog stops (busybox's magic close on SIGTERM)
