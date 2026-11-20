@@ -483,6 +483,40 @@ unset GLASSINE_BI_AFTER_SLOT
 mstart
 ok "a start marked healthy, then shut down: the loader reads 0, no second write" "macc && S1=\$(mseq) && mshut && [ \"\$($M get $MB unmarked)\" = 0 ] && [ \$(mseq) = \$S1 ]"
 
+# --- 2c. glassine-splash-store on the FAT form, a directory as the boot partition ---
+# (011 FR-003, FR-019; docs/boot-partition.md "The splash store"). The images come
+# from raw_model.py (a port of the loader's gspl.rs checks), and are judged by it
+RM="python3 /p/test/bootraw/raw_model.py"
+SD=$W/ssd; SO=$SD/glassine/splash/override.gspl; mkdir -p $SD/glassine
+$RM splash $W/leave.gspl 0 0 1; $RM splash $W/p1.gspl 120 80; $RM splash $W/p2.gspl 64 40
+head -c 64 $W/p1.gspl > $W/bad.gspl
+gspl() { python3 -c 'import sys; sys.path.insert(0, "/p/test/bootraw"); import raw_model as m; sys.exit(0 if m.gspl_ok(open(sys.argv[1], "rb").read()) else 1)' "$1"; }
+sse() { env GLASSINE_BI_LIB=/p/lib GLASSINE_BI_BOARD=${SBOARD:-$MW/board.uefi} GLASSINE_BI_BOOTPART_DIR=${SDIR-$SD} GLASSINE_BI_CMDLINE=$MW/cmdline \
+    GLASSINE_BI_TMP=$W/run GLASSINE_BI_RUN_DIR=$MR ${SDEV:+GLASSINE_BI_BOOTPART_DEV=$SDEV} ${SSB:+GLASSINE_BI_SYSBLOCK=$SSB} sh /p/sbin/glassine-splash-store "$@"; }
+ok "splash store, FAT: has-store 0 with HANDOFF=uefi; 3 with HANDOFF=blocklist" "sse has-store && SBOARD=$MW/board.bl sse has-store 2>/dev/null; [ \$? = 3 ]"
+ok "splash store, FAT: override --leave: \\glassine\\splash\\override.gspl, the model's header byte for byte, valid for the loader's checks" "sse override --leave 2>$W/err && cmp -s $SO $W/leave.gspl && gspl $SO && [ ! -e $SO.new ]"
+ok "splash store, FAT: override FILE over it: the new image, no .new" "sse override $W/p1.gspl 2>/dev/null && cmp -s $SO $W/p1.gspl && [ ! -e $SO.new ]"
+ok "splash store, FAT: an image that fails its checks: 1, the old override kept" "sse override $W/bad.gspl 2>/dev/null; [ \$? = 1 ] && cmp -s $SO $W/p1.gspl"
+echo junk > $SO.new
+ok "splash store, FAT: a .new a cut left is removed by the next write" "sse override $W/p2.gspl 2>/dev/null && cmp -s $SO $W/p2.gspl && [ ! -e $SO.new ]"
+export GLASSINE_BI_AFTER_SPLASH_NEW='printf Z | dd of="$1" bs=1 seek=70 conv=notrunc 2>/dev/null; true'
+ok "splash store, FAT: a .new that doesn't read back: 1, the old override kept, no .new" "sse override $W/p1.gspl 2>$W/err; [ \$? = 1 ] && cmp -s $SO $W/p2.gspl && [ ! -e $SO.new ] && grep -q 'old image kept' $W/err"
+export GLASSINE_BI_AFTER_SPLASH_NEW='kill -KILL $$'
+sse override $W/p1.gspl 2>/dev/null
+ok "splash store, FAT: cut after the .new is written: the old override (and a .new no reader uses)" "cmp -s $SO $W/p2.gspl && [ -e $SO.new ]"
+unset GLASSINE_BI_AFTER_SPLASH_NEW; export GLASSINE_BI_AFTER_SPLASH_RM='kill -KILL $$'
+sse override $W/p1.gspl 2>/dev/null
+ok "splash store, FAT: cut after the old one is removed: no override, the whole new image as .new" "[ ! -e $SO ] && cmp -s $SO.new $W/p1.gspl"
+unset GLASSINE_BI_AFTER_SPLASH_RM
+ok "splash store, FAT: the next write after a cut: the new image, no .new" "sse override --leave 2>/dev/null && cmp -s $SO $W/leave.gspl && [ ! -e $SO.new ]"
+echo junk > $SO.new
+ok "splash store, FAT: override --remove: no override, no .new" "sse override --remove 2>/dev/null && [ ! -e $SO ] && [ ! -e $SO.new ]"
+ok "splash store, FAT: --remove with no override: 0" "sse override --remove 2>/dev/null"
+SBD=$W/ssb; mkdir -p $SBD
+ok "splash store, FAT: no boot partition on the system partition's disk: has-store 3, override 3" "{ SDIR='' SSB=$SBD sse has-store 2>/dev/null; [ \$? = 3 ]; } && { SDIR='' SSB=$SBD sse override --leave 2>/dev/null; [ \$? = 3 ]; }"
+head -c 1048576 /dev/zero > $W/zeros.img
+ok "splash store, FAT: a boot partition that holds no FAT: has-store 3, override 3, nothing written" "{ SDIR='' SDEV=$W/zeros.img sse has-store 2>/dev/null; [ \$? = 3 ]; } && { SDIR='' SDEV=$W/zeros.img sse override --leave 2>/dev/null; [ \$? = 3 ]; } && [ \"\$(tr -d '\\000' < $W/zeros.img | wc -c)\" = 0 ]"
+
 # --- 3. a real FAT file system (privileged) ----------------------------------------
 if [ "${BP_PRIV:-}" = 1 ]; then
     head -c 67108864 /dev/zero > $W/fat.img; mkfs.vfat -F 32 -n GLASSINE $W/fat.img >/dev/null 2>&1
@@ -514,6 +548,10 @@ if [ "${BP_PRIV:-}" = 1 ]; then
     mount -t vfat -o ro $LD $W/fm
     ok "FAT: the mark finds the boot partition on the system partition's disk (board.conf's CMDLINE set), writes unmarked=0" "[ $lr = 0 ] && [ \"\$($M get $W/fm unmarked)\" = 0 ]"
     umount $W/fm
+    # the splash store on the real FAT: mounted for each command only
+    SO2=$W/fm/glassine/splash/override.gspl
+    ok "FAT: has-store 0; override --leave written, mounted only for the command" "SDIR='' SDEV=$LD sse has-store && SDIR='' SDEV=$LD sse override --leave 2>$W/err && ! grep -q \"$MR/splash-store\" /proc/mounts && mount -t vfat -o ro $LD $W/fm && cmp -s $SO2 $W/leave.gspl && gspl $SO2; umount $W/fm"
+    ok "FAT: override FILE, then --remove: the image, then none, read back after a remount" "SDIR='' SDEV=$LD sse override $W/p1.gspl 2>/dev/null && mount -t vfat -o ro $LD $W/fm && cmp -s $SO2 $W/p1.gspl && umount $W/fm && SDIR='' SDEV=$LD sse override --remove 2>/dev/null && mount -t vfat -o ro $LD $W/fm && [ ! -e $SO2 ] && [ -d $W/fm/glassine/splash ]; umount $W/fm"
     $B cancel >/dev/null 2>&1
     # too little room: refused, nothing removed that a record names
     head -c 8388608 /dev/zero > $W/small.img; mkfs.vfat -n GLASSINE $W/small.img >/dev/null 2>&1
@@ -522,6 +560,8 @@ if [ "${BP_PRIV:-}" = 1 ]; then
     head -c 6000000 /dev/urandom > $W/fm/filler; umount $W/fm
     head -c 3000000 /dev/urandom >> $SYS/modules/7.3.0-d/vmlinuz
     export GLASSINE_BI_BOOTPART_DEV=$LS
+    $RM splash $W/p3.gspl 2000 1500
+    ok "FAT: an override larger than the free space: refused (1), saying how much is free, nothing written" "SDIR='' SDEV=$LS sse override $W/p3.gspl 2>$W/err; [ \$? = 1 ] && grep -q 'KiB free, the override needs' $W/err && mount -t vfat -o ro $LS $W/fm && [ ! -e $W/fm/glassine/splash/override.gspl ] && [ ! -e $W/fm/glassine/splash/override.gspl.new ]; umount $W/fm"
     ok "FAT: too little free space: refused, saying how much is needed and free, no candidate" "! $B install 7.3.0-d --initramfs c1@1 >/dev/null 2>$W/err && grep -q 'KiB free, set .* needs .* KiB' $W/err && [ -z \"\$(kv candidate)\" ]"
     losetup -d $LS; losetup -d $LD
 fi

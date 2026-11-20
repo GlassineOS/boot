@@ -174,7 +174,7 @@ CONF
 mkdir -p $W/psu/bat; echo Battery > $W/psu/bat/type; echo 80 > $W/psu/bat/capacity
 printf '#!/bin/sh\necho "hook $*" >> %s/calls\n' $W > $W/hook; chmod +x $W/hook
 printf '#!/bin/sh\ncase $1 in restart-check) cat %s/markword 2>/dev/null ;; has-record) exit 3 ;; esac\nexit 0\n' $W > $W/mark; chmod +x $W/mark
-printf '#!/bin/sh\necho "signal" >> %s/calls; cp %s/restarting %s/restarting.seen\n' $W $RD $W > $W/sig; chmod +x $W/sig
+printf '#!/bin/sh\necho "signal" >> %s/calls; cp %s/restarting %s/restarting.seen; cp %s/shutdown %s/shutdown.seen 2>/dev/null; true\n' $W $RD $W $RD $W > $W/sig; chmod +x $W/sig
 printf '#!/bin/sh\necho "reboot $*" >> %s/calls\n' $W > $W/reboot; chmod +x $W/reboot
 export GLASSINE_DEPLOY_CONF=$W/deploy.conf GLASSINE_DEPLOY_LIB=/p/lib/glassine-state.sh GLASSINE_DEPLOY_INIT_OK=1 \
     GLASSINE_LOADER_MARK=$W/mark GLASSINE_UNAME=$KR GLASSINE_DEPLOY_CMDLINE=$W/cmdline GLASSINE_POWER_SUPPLY=$W/psu \
@@ -242,11 +242,15 @@ ok "status: restart=soft, restart_reason=, last_start=cold" "$G status --porcela
 
 # --- the restart step's phases ---------------------------------------------------------
 rm -f $RD/healthy; : > $W/calls
-ok "restart --soft, would be cold: exit 9, nothing stopped or written" "$G restart --soft 2>$W/rerr; [ \$? = 9 ] && [ ! -s $W/calls ] && [ ! -e $RD/restarting ] && grep -q not-healthy $W/rerr"
+rm -f $RD/shutdown
+ok "restart --soft, would be cold: exit 9, nothing stopped or written (no shutdown record)" "$G restart --soft 2>$W/rerr; [ \$? = 9 ] && [ ! -s $W/calls ] && [ ! -e $RD/restarting ] && [ ! -e $RD/shutdown ] && grep -q not-healthy $W/rerr"
 ok "restart --once, would be cold: exit 9" "$G restart --once d2 2>/dev/null; [ \$? = 9 ] && [ ! -s $W/calls ]"
 ok "restart, would be cold: the user-shutdown mark, then the orderly reboot" "$G restart >/dev/null 2>&1 && [ \"\$(tr '\n' ' ' < $W/calls)\" = 'hook --user-shutdown reboot  ' ] && [ ! -e $RD/restarting ]"
+ok "restart, cold: the shutdown record next=restart" "[ \"\$(cat $RD/shutdown)\" = next=restart ] && [ ! -e $RD/shutdown.new ]"
+echo next=poweroff > $RD/shutdown
 echo at=1 > $RD/healthy; : > $W/calls
-ok "restart --cold: cold whatever the check says" "$G restart --cold >/dev/null 2>&1 && grep -qx 'reboot ' $W/calls && ! grep -q signal $W/calls"
+ok "restart --cold: cold whatever the check says; the shutdown record next=restart over the one there" "$G restart --cold >/dev/null 2>&1 && grep -qx 'reboot ' $W/calls && ! grep -q signal $W/calls && [ \"\$(cat $RD/shutdown)\" = next=restart ]"
+rm -f $RD/shutdown
 ok "restart --cold --once: usage (exit 2)" "$G restart --cold --once d2 2>/dev/null; [ \$? = 2 ]"
 ok "restart --check --soft: usage (exit 2)" "$G restart --check --soft 2>/dev/null; [ \$? = 2 ]"
 ok "status --restart: usage (exit 2)" "$G status --restart 2>/dev/null; [ \$? = 2 ]"
@@ -257,7 +261,7 @@ ok "restart --once of the staged deployment: refused" "$G restart --once d2 2>$W
 gs_update $S/state/deploy staged=
 btrfs property set -fts $B ro false; echo 'needs=gpu-a5xx' > $B/usr/share/glassine/base.manifest; btrfs property set -ts $B ro true
 : > $W/calls
-ok "restart --once ID the running kernel doesn't cover: exit 8" "$G restart --once d2 2>$W/rerr; [ \$? = 8 ] && [ ! -s $W/calls ]"
+ok "restart --once ID the running kernel doesn't cover: exit 8, no shutdown record" "$G restart --once d2 2>$W/rerr; [ \$? = 8 ] && [ ! -s $W/calls ] && [ ! -e $RD/shutdown ]"
 btrfs property set -fts $B ro false; rm $B/usr/share/glassine/base.manifest; btrfs property set -ts $B ro true
 flock $S/state/.lock sleep 3 & LP=$!; sleep 1; : > $W/calls
 ok "restart while the state is locked (the hibernate step holds it): exit 6, nothing stopped" "$G restart 2>/dev/null; [ \$? = 6 ] && [ ! -e $RD/restarting ] && [ ! -s $W/calls ]"
@@ -269,6 +273,7 @@ rm $RD/restarting
 $G restart --once d2 > $W/rout 2>$W/rerr; RC=$?
 ok "restart --once d2, soft: the restart record written before PID 1 is signalled" "grep -qx from=d1 $W/restarting.seen && grep -qx once=d2 $W/restarting.seen && grep -qx count=1 $W/restarting.seen && grep -qx sysdev=$SD $W/restarting.seen && grep -qx uddev=$UDEV $W/restarting.seen && grep -qx prefix=$P $W/restarting.seen"
 ok "restart, soft: user-shutdown mark, then the signal to PID 1" "[ \"\$(head -n 2 $W/calls | tr '\n' ' ')\" = 'hook --user-shutdown signal ' ]"
+ok "restart, soft: the shutdown record next=restart before PID 1 is signalled" "[ \"\$(cat $W/shutdown.seen)\" = next=restart ]"
 ok "restart, soft, PID 1 doesn't act: restarting removed, cold, the next start says init" "grep -qx 'reboot ' $W/calls && [ ! -e $RD/restarting ] && [ \"\$(cat $U/restart.cold)\" = init ]"
 rm -f $U/restart.cold
 : > $W/calls
@@ -360,8 +365,9 @@ ok "e2e: a new kept assembly for the next restart (without the test hook)" "grep
 ok "SC-004 e2e: no mount of the old root is left, the stage is gone, the person's storage bound" "! grep -q ' /oldroot' $REP/mounts && ! grep -q ' /run/stage' $REP/mounts && grep -q ' /home ' $REP/mounts && grep -q ' /run/glassine/userdata ' $REP/mounts"
 ok "SC-004 e2e: /run/glassine: per start files made anew; restarting, healthy, user-shutdown gone" "grep -qx booted $REP/run && grep -qx storage $REP/run && ! grep -qx restarting $REP/run && ! grep -qx healthy $REP/run"
 ok "FR-023 e2e: userdata's mount count unchanged" "[ \"\$(gs_dumpe2fs $UDEV 'Mount count')\" = '$MC1' ]"
-EXTRA='echo x > loader-marked; echo x > limit-done' e2e "$ST0"
+EXTRA='echo x > loader-marked; echo x > limit-done; echo next=restart > shutdown; : > screen-keep' e2e "$ST0"
 ok "FR-024 e2e: loader-marked and limit-done carried into the incoming session" "[ \$RUN = soft ] && grep -qx loader-marked $REP/run && grep -qx limit-done $REP/run"
+ok "FR-024 e2e: the shutdown record and the shell's screen-keep not carried" "! grep -qx shutdown $REP/run && ! grep -qx screen-keep $REP/run"
 ONCE=d2 e2e "$ST0"
 ok "e2e: restart --once d2: d2 starts, state/deploy byte for byte unchanged" "[ \$RUN = soft ] && [ \"\$(cat $REP/booted)\" = d2 ] && [ \"\$(printf '$ST0')\" = \"\$(cat $S/state/deploy)\" ]"
 EXTRA='printf "switch=no\\nswitch_reason=battery\\n" > switch-result' e2e "$ST0"

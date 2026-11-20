@@ -857,6 +857,35 @@ gr_splash_ok() {
     [ "$_gr_sc" != 0 ] || [ $((_gr_sn - 64)) = $((_gr_sw * _gr_sh * _gr_sp)) ] || { GR_WHY="an uncompressed payload of the wrong length"; return 1; }
 }
 
+# gr_splash_leave OUT: the override "leave the screen" (kind 1) in OUT: the 64-byte
+# header of format 2 with every picture field zero, its CRC, no payload
+gr_splash_leave() {
+    { printf GLSPLASH; gr_le 2 2; gr_le 2 1; head -c 40 /dev/zero; } > "$1.h"
+    { cat "$1.h"; gr_le 4 $((0x$(gr_crc < "$1.h"))); head -c 8 /dev/zero; } > "$1"
+    rm -f "$1.h"
+}
+
+# gp_splash_put FROM TO: an image of the splash store on FAT (docs/boot-partition.md,
+# "The splash store", Writing): a TO.new left by a cut removed, FROM written as TO.new,
+# synced and read back (O_DIRECT); then the old TO removed and TO.new renamed, each
+# synced. A cut leaves the old image, none or the new one (and a TO.new no reader
+# uses). 1 = not written (GP_WHY): TO as it was, no TO.new. Test hooks (only with
+# GLASSINE_BI_TEST=1, eval'd with $1 = the file): GLASSINE_BI_AFTER_SPLASH_NEW after
+# TO.new is written and before it is read back, GLASSINE_BI_AFTER_SPLASH_RM after the
+# old TO is removed and before the rename.
+gp_splash_put() {
+    _gp_xs=$(gp_sha "$1") _gp_xz=$(wc -c < "$1")
+    rm -f "$2.new"; sync
+    if ! { dd if="$1" of="$2.new" bs=1M conv=fsync 2>/dev/null && gp_hook GLASSINE_BI_AFTER_SPLASH_NEW "$2.new" && sync &&
+        [ "$(wc -c < "$2.new")" = "$_gp_xz" ] && [ "$(gp_read "$2.new" "$_gp_xz" | sha256sum | cut -d' ' -f1)" = "$_gp_xs" ]; }; then
+        rm -f "$2.new"; sync
+        GP_WHY="${2##*/}: the write or its read-back failed: the old image kept"
+        return 1
+    fi
+    rm -f "$2" && sync && gp_hook GLASSINE_BI_AFTER_SPLASH_RM "$2" && mv -f "$2.new" "$2" && sync ||
+        { GP_WHY="${2##*/}: the old image could not be replaced"; return 1; }
+}
+
 # gr_item NAME OUT: the item of a region, as its reader takes it: loader: the image
 # (its header and CRC checked as a parent checks them); splash-default, splash,
 # override: the image file (its length from its header, within the region; the

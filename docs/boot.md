@@ -265,6 +265,45 @@ order with `post resumed` or `post failed` when the kernel returns or after a ca
 A post hook must cope with a pre step that did not run. It never shuts
 down or reboots by itself and never runs the shutdown switch.
 
+## The splash store
+
+`glassine-splash-store` is the running system's command for the splash store of
+[specs/011](../specs/011-boot-splash/spec.md) (FR-003). Today it writes and removes the
+one-time override; setting and removing the splash itself, and converting a picture into
+the store's format, are not built yet (FR-003 keeps them; `glassine-boot-raw splash`
+writes a finished image on the raw form).
+
+```
+glassine-splash-store has-store                       exit 0: this board has a store the system can write; 3: none
+glassine-splash-store override --leave [--wait S]     the override "leave the screen" (kind 1)
+glassine-splash-store override FILE [--wait S]        FILE, a format-2 image, as the override
+glassine-splash-store override --remove [--wait S]    no override
+```
+
+- **Where:** from `board.conf` (`/etc/glassine-bootimg/board.conf`). `BOOT_FORM=raw`: the
+  region `override` of the raw boot partition (`BOOT_PART`, found as the loader record's
+  writers find it), by "Writing a region"; removal zeroes the region's first 4096
+  bytes and reads them back. `HANDOFF=uefi`: `\glassine\splash\override.gspl` on the FAT
+  boot partition, mounted for the one command under `/run/glassine/splash-store`, written
+  by the store's rule (`.new`, synced, read back, the old file removed, renamed, each
+  synced); an image larger than the free space less 64 KiB is refused. Any other board,
+  a raw partition without a valid table or an `override` region, or a boot partition
+  that holds no FAT: no store ([boot-partition.md](boot-partition.md#the-splash-store)).
+- **"Leave the screen"** is the 64-byte header of format 2 with kind 1, every picture
+  field and the payload length zero, and its CRC; no payload. An image is checked as the
+  reader checks it (header, CRCs, length) before anything is written.
+- **Bounded:** the device's lock (the one `glassine-boot-raw` and the record's writers
+  take) is waited for `--wait` seconds (default 10); a TERM unmounts what it mounted. No
+  state lock: the shutdown step runs it after the system partition is out of the mount
+  table.
+- **Exit:** 0 written; 1 not written (a refused image, the lock held, a write or
+  read-back that failed; said; the old override or none, never a part of one); 2 usage;
+  3 no store.
+- **Callers:** the cold shutdown (`glassine-mount-ro`, [deployments.md](deployments.md#the-shutdown-switch))
+  writes "leave the screen" where the shell's shutdown screen left
+  `/run/glassine/screen-keep` (GlassineOS/shell 009), so a bistable panel keeps the
+  screen through the next start.
+
 ## Slots
 
 On a dual-boot device the bootloader's A/B slots hold two systems (the Note Air:

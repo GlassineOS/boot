@@ -12,11 +12,13 @@ healthy limit start (`glassine-bootimg rollback --limit`, 010 FR-013), and the r
 system's requests (`glassine-loader-mark request`, run by `glassine-reboot-clean`:
 `reboot recovery` writes `request=recovery`, `reboot menu` writes `request=menu` under a
 parent; host-tested in `test/bootpart`, `test/bootraw` and `test/reboot`). Not built here:
-the deployment list (`deploys`), the recovery's update, the repair, the splash store's
-writer on FAT, the clearing of a request a loader that can't write left. The raw form's writer is built too
+the deployment list (`deploys`), the recovery's update, the repair, the writer of the
+splash itself on FAT, the clearing of a request a loader that can't write left. The raw form's writer is built too
 (`glassine-boot-raw`: the region table, the loader region, the splash regions; the
 loader record by slots through `glassine-loader-mark` with `BOOT_FORM=raw`), host-tested
-in `test/bootraw` against the loader's golden bytes and a port of its reader, and so is
+in `test/bootraw` against the loader's golden bytes and a port of its reader; the
+override of both forms is written by `glassine-splash-store` ([boot.md](boot.md#the-splash-store),
+host-tested in `test/bootraw` and `test/bootpart`); and so is
 the running system's loader update (`glassine-loader-update`, run by the accept step
 after its healthy mark); nothing
 has run on a device ("The running system's writer", below). This page is the contract between the three programs that read or write a PC's boot
@@ -474,7 +476,7 @@ On a PC the splash store of 011 is `\glassine\splash\`:
 |---|---|---|
 | `default.gspl` | the default splash of the release | the installer, the repair |
 | `splash.gspl` | the splash the system set | the running system |
-| `override.gspl` | the one-time override | the running system; removed by the loader |
+| `override.gspl` | the one-time override | the running system (`glassine-splash-store`); removed by the loader |
 
 - **Drawing.** If `override.gspl` exists, the loader reads it, removes it, flushes the
   volume and checks that it is gone, and only then draws it. If it can't be removed, it
@@ -660,7 +662,7 @@ An entry:
 | `loader` | 8 KiB | the loader image header (4096 bytes), then the loader image ([handback.md](handback.md#the-loader-region)) | the installer; the running system's loader update (`glassine-loader-update`, by `glassine-boot-raw loader`) |
 | `splash-default` | 64 KiB | the release's splash: one image of the format below | the installer, the repair, the running system's loader update (`glassine-boot-raw splash-default`) |
 | `splash` | 64 KiB | the splash the system set | the running system (`glassine-boot-raw splash`) |
-| `override` | 64 KiB | the one-time override | the running system (`glassine-boot-raw override`, `clear`); removed by the stage that draws it |
+| `override` | 64 KiB | the one-time override | the running system (`glassine-splash-store override`; `glassine-boot-raw override`, `clear`); removed by the stage that draws it |
 
 A region holds one item at its start. The bytes after the item's end (the end its own
 header gives) are ignored: a writer needn't clear them.
@@ -703,7 +705,9 @@ The raw form is written from the running system by `glassine-boot-raw` and
 | `glassine-boot-raw clear DEV REGION` | the region's first 4096 bytes zero, read back (the override's removal by a running system, 011 FR-015) |
 | `glassine-boot-raw table DEV`, `read DEV REGION`, `find [NAME]` | nothing: the table in use, a region's item as its reader takes it, the device of the partition of that GPT name |
 
-Every refusal comes before the first write.
+Every refusal comes before the first write. `glassine-splash-store override` writes and
+removes the override through the same code (the board's partition, the device's lock,
+"Writing a region", `clear`; [boot.md](boot.md#the-splash-store)).
 
 **The loader update** (`glassine-loader-update`, 012 FR-026) puts the loader and the
 default splash a package ships (`/usr/share/glassine/loader/loader.efi` and

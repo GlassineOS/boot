@@ -1203,10 +1203,20 @@ restart_report() {
     out switch_reason "$SW_WHY"
 }
 
+# shutdown_record: next=restart in RUN_DIR/shutdown (docs/deployments.md, "Runtime
+# directory": the target, for the shell's shutdown screen), over a record that is
+# there; one that can't be written never stops the restart
+shutdown_record() {
+    { printf 'next=restart\n' > "$RUN_DIR/shutdown.new" && mv -f "$RUN_DIR/shutdown.new" "$RUN_DIR/shutdown"; } 2>/dev/null ||
+        rm -f "$RUN_DIR/shutdown.new" 2>/dev/null
+    return 0
+}
+
 # restart_cold: the orderly restart through the firmware, user-started (the switch
 # rule applies at its shutdown, 013 FR-009)
 restart_cold() {
     echo "glassine-deploy: restarting${1:+ ($1)}"
+    shutdown_record
     "$SWITCH_HOOK" --user-shutdown || echo "glassine-deploy: the user-shutdown mark not written" >&2
     cleanup
     exec ${GLASSINE_DEPLOY_REBOOT:-reboot}
@@ -1267,6 +1277,7 @@ cmd_restart() {
     if ! "$SWITCH_HOOK" --user-shutdown; then
         rm -f "$RUN_DIR/restarting"; die "the user-shutdown mark not written: nothing stopped"
     fi
+    shutdown_record
     echo "glassine-deploy: soft restart into ${ONCE_ID:-$TARGET}"
     rm -f "$RUN_DIR/switch-result"
     if [ -n "${GLASSINE_DEPLOY_SIGNAL_INIT:-}" ]; then "$GLASSINE_DEPLOY_SIGNAL_INIT"

@@ -37,6 +37,7 @@ install: glassine-reboot glassine-slot
 	install -Dm755 sbin/glassine-deploy-accept $(DESTDIR)$(PREFIX)/sbin/glassine-deploy-accept
 	install -Dm755 sbin/glassine-loader-mark $(DESTDIR)$(PREFIX)/sbin/glassine-loader-mark
 	install -Dm755 sbin/glassine-boot-raw $(DESTDIR)$(PREFIX)/sbin/glassine-boot-raw
+	install -Dm755 sbin/glassine-splash-store $(DESTDIR)$(PREFIX)/sbin/glassine-splash-store
 	install -Dm755 sbin/glassine-loader-update $(DESTDIR)$(PREFIX)/sbin/glassine-loader-update
 	install -Dm755 openrc/glassine-deploy-accept $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-deploy-accept
 	install -Dm644 lib/glassine-state.sh $(DESTDIR)$(PREFIX)/lib/glassine-boot/glassine-state.sh
@@ -54,6 +55,8 @@ install: glassine-reboot glassine-slot
 	install -Dm644 conf/deploy.conf.example $(DESTDIR)$(PREFIX)/share/glassine-boot/deploy.conf.example
 	install -Dm755 sbin/glassine-reboot-clean $(DESTDIR)$(PREFIX)/sbin/glassine-reboot-clean
 	install -Dm755 sbin/reboot $(DESTDIR)$(PREFIX)/sbin/reboot
+	install -Dm755 sbin/poweroff $(DESTDIR)$(PREFIX)/sbin/poweroff
+	install -Dm755 sbin/halt $(DESTDIR)$(PREFIX)/sbin/halt
 	install -Dm755 openrc/glassine-reboot-reason $(DESTDIR)$(SYSCONFDIR)/init.d/glassine-reboot-reason
 	install -Dm755 glassine-reboot $(DESTDIR)$(PREFIX)/sbin/glassine-reboot
 	install -Dm755 glassine-slot $(DESTDIR)$(PREFIX)/sbin/glassine-slot

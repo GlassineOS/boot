@@ -146,6 +146,41 @@ ok "clear record: refused (3); the record is written by slots" "$R clear $I reco
 fresh $W/none
 ok "a region write on a partition with no table: refused (3)" "$R splash $W/none $W/s1.gspl 2>/dev/null; [ \$? = 3 ] && [ \"\$(tr -d '\\000' < $W/none | wc -c)\" = 0 ]"
 
+# --- 2b. glassine-splash-store on the raw form (011 FR-003) ---------------------------
+SS="sh /p/sbin/glassine-splash-store"
+printf 'ROOT_LAYOUT=deployments\nBOOT_FORM=raw\n' > $W/board.sraw
+printf 'ROOT_LAYOUT=deployments\n' > $W/board.snone
+printf 'ROOT_LAYOUT=deployments\nHANDOFF=blocklist\n' > $W/board.sbl
+sst() { env GLASSINE_BI_BOARD=${SBOARD:-$W/board.sraw} GLASSINE_BI_BOOTPART_DEV=${SDEV:-$I} GLASSINE_BI_CMDLINE=/dev/null $SS "$@"; }
+ok "has-store: a raw board with a table and its region override: 0" "sst has-store"
+ok "has-store: a board with neither BOOT_FORM=raw nor HANDOFF=uefi: 3; with HANDOFF=blocklist: 3" "SBOARD=$W/board.snone sst has-store 2>/dev/null; [ \$? = 3 ] && { SBOARD=$W/board.sbl sst has-store 2>/dev/null; [ \$? = 3 ]; }"
+ok "has-store: a raw board whose partition has no table: 3" "SDEV=$W/none sst has-store 2>/dev/null; [ \$? = 3 ]"
+sh -c '. /p/lib/glassine-bootpart.sh; GP_TMP=/w/run; GR_LAYOUT="record 65536 32768
+splash 7340032 3145728"; gr_table_bytes 16777216 /w/noovr.t'
+fresh $W/noovr; dd if=$W/noovr.t of=$W/noovr conv=notrunc 2>/dev/null; dd if=$W/noovr.t of=$W/noovr bs=4096 seek=4095 conv=notrunc 2>/dev/null
+ok "has-store: a table without the region override: 3; override --leave there: 3, nothing written" "SDEV=$W/noovr sst has-store 2>/dev/null; [ \$? = 3 ] && cp $W/noovr $W/noovr0 && { SDEV=$W/noovr sst override --leave 2>/dev/null; [ \$? = 3 ]; } && cmp -s $W/noovr $W/noovr0"
+ok "override --leave: the loader's reader takes kind 1, byte for byte the model's 'leave the screen' header" "sst override --leave 2>$W/err && $M item $I override | cmp -s - $W/leave.gspl && [ \"\$($M item $I override | wc -c)\" = 64 ]"
+python3 - $I <<'PYEOF' > $W/leavechk
+import struct, sys, zlib
+sys.path.insert(0, '/p/test/bootraw'); import raw_model as m
+img = open(sys.argv[1], 'rb').read(); off = m.region(img, 'override')[0]; h = img[off:off + 64]
+ok = h[0:8] == b'GLSPLASH' and struct.unpack_from('<HH', h, 8) == (2, 1) and not any(h[12:52]) and not any(h[56:64]) \
+    and struct.unpack_from('<I', h, 52)[0] == zlib.crc32(h[0:52]) & 0xffffffff
+print('good' if ok else 'bad')
+PYEOF
+ok "override --leave: the header's fields and CRC recomputed with zlib" "[ \"\$(cat $W/leavechk)\" = good ]"
+ok "override FILE: the image as the override, the other regions as they were" "cp $I $W/ss0 && sst override $W/s1.gspl 2>/dev/null && $M item $I override | cmp -s - $W/s1.gspl && $M item $I splash | cmp -s - $W/s2.gspl"
+cp $I $W/ss1
+ok "override FILE refused (a header CRC that fails, format 1, a splash too large): 1, nothing written" "{ sst override $W/hcrc.gspl 2>/dev/null; [ \$? = 1 ]; } && { sst override $W/v1.gspl 2>/dev/null; [ \$? = 1 ]; } && { sst override $W/huge.gspl 2>$W/err; [ \$? = 1 ]; } && grep -q 'holds 3145728' $W/err && cmp -s $I $W/ss1"
+ok "override with a file that isn't there, no argument, --wait x, an unknown command: 1, 2, 2, 2" "{ sst override $W/gone 2>/dev/null; [ \$? = 1 ]; } && { sst override 2>/dev/null; [ \$? = 2 ]; } && { sst override --leave --wait x 2>/dev/null; [ \$? = 2 ]; } && { sst set $W/s1.gspl 2>/dev/null; [ \$? = 2 ]; }"
+ok "override --remove: no override for the loader, the splash as it was" "sst override --remove 2>/dev/null && ! $M item $I override && $M item $I splash | cmp -s - $W/s2.gspl"
+ok "override on a board with no store: 3, nothing written" "cp $I $W/ss2 && SBOARD=$W/board.snone sst override --leave 2>/dev/null; [ \$? = 3 ] && cmp -s $I $W/ss2"
+{ flock 7; t0=$(date +%s); sst override --leave --wait 1 2>$W/err; lr=$?; t1=$(date +%s); flock -u 7; } 7<$I
+ok "the device locked by another writer: 1 after --wait 1, said, nothing written" "[ $lr = 1 ] && [ \$((t1 - t0)) -le 4 ] && grep -q busy $W/err && cmp -s $I $W/ss2"
+export GLASSINE_BI_AFTER_PUT='[ "$2" != 10485760 ] || [ "$(od -An -tu1 -N1 -j 10485760 "$1" | tr -d " ")" = 0 ] || printf Z | dd of="$1" bs=1 seek=$((10485760 + 20)) conv=notrunc 2>/dev/null'
+ok "override FILE whose bytes don't read back: 1, said, no override for the loader (never a half one)" "sst override $W/s1.gspl 2>$W/err; [ \$? = 1 ] && grep -q \"doesn't read back\" $W/err && ! $M item $I override"
+unset GLASSINE_BI_AFTER_PUT
+
 # --- 3. the loader record ------------------------------------------------------------
 # glassine-loader-mark on a raw board (BOOT_FORM=raw, no HANDOFF): the boot partition
 # a 16 MiB file; the installer's golden slots seeded, then the loader's own count
@@ -509,6 +544,19 @@ echo "     $(cat $W/replay)"
 cp $W/l0 $W/s3; $R override $W/s3 $W/s1.gspl 2>/dev/null
 ok "the override's removal, cut at every byte: the override or none" "replay $W/s3 override $R clear $T override && grep -q 'bad=0' $W/replay && grep -q 'new=0' $W/replay"
 echo "     $(cat $W/replay)"
+SSC="env GLASSINE_BI_BOARD=$W/board.sraw GLASSINE_BI_BOOTPART_DEV=$T GLASSINE_BI_CMDLINE=/dev/null sh /p/sbin/glassine-splash-store"
+ok "glassine-splash-store override --leave over an image, cut at every byte: the old override, none or the new" "replay $W/s3 override $SSC override --leave && grep -q 'bad=0' $W/replay && grep -q 'final=new' $W/replay"
+echo "     $(cat $W/replay)"
+rc_ok=1
+for k in 0 1 4095 4096 4097 8191; do realcut $W/s3 $k $SSC override --leave || { rc_ok=0; echo "  cut at $k differs from the replay"; }
+    $M item $T override > $W/got.o; g=$(wc -c < $W/got.o)
+    [ "$g" = 0 ] || cmp -s $W/got.o $W/leave.gspl || cmp -s $W/got.o $W/s1.gspl || { rc_ok=0; echo "  cut at $k: an override of $g bytes"; }; done
+ok "glassine-splash-store override --leave killed at its steps' edges: the replay's partition" "[ $rc_ok = 1 ]"
+cp $W/l0 $W/s4; $R override $W/s4 $W/leave.gspl 2>/dev/null
+ok "glassine-splash-store override FILE over leave the screen, cut at every byte: the old, none or the new" "replay $W/s4 override $SSC override $W/s2.gspl && grep -q 'bad=0' $W/replay && grep -q 'final=new' $W/replay"
+echo "     $(cat $W/replay)"
+ok "glassine-splash-store override --remove, cut at every byte: the override or none" "replay $W/s4 override $SSC override --remove && grep -q 'bad=0' $W/replay && grep -q 'new=0' $W/replay"
+echo "     $(cat $W/replay)"
 # the record's slot: the healthy mark
 mstart; cp $MI $W/r0
 ok "the healthy mark, cut at every byte of its slot: the old record or the new, by the loader's rules" "replay $W/r0 record env GLASSINE_BI_BOOTPART_DEV=$T GLASSINE_DEPLOY_CONF=$MW/conf GLASSINE_BI_SYSTEM=$MS GLASSINE_BI_CMDLINE=$MW/cmdline GLASSINE_BI_BOARD=$MW/board.raw GLASSINE_BI_RUN_DIR=$MR sh /p/sbin/glassine-loader-mark healthy && grep -q 'bad=0' $W/replay && grep -q 'none=0' $W/replay && grep -q 'final=new' $W/replay"
@@ -569,6 +617,7 @@ if [ "${BR_PRIV:-}" = 1 ]; then
     printf 'DEVNAME=%s\nPARTN=1\nPARTNAME=glassine-boot\n' "${LD#/dev/}" > $W/sb/devices/xd/xd1/uevent
     printf 'DEVNAME=xd2\nPARTN=2\nPARTNAME=userdata\n' > $W/sb/devices/xd/xd2/uevent
     ok "a block device found by GPT name: the healthy mark, the loader reads unmarked=0" "env PATH=$MW:\$PATH GLASSINE_DEPLOY_CONF=$MW/conf GLASSINE_BI_SYSTEM=$MS GLASSINE_BI_CMDLINE=$MW/cmdline GLASSINE_BI_BOARD=$MW/board.raw GLASSINE_BI_RUN_DIR=$MR GLASSINE_BI_SYSBLOCK=$W/sb GLASSINE_BI_DEVDIR=/dev sh /p/sbin/glassine-loader-mark healthy 2>$W/err && [ \"\$($M item $LD record | sed -n 's/^unmarked=//p')\" = 0 ] && [ \"\$($M item $LD loader | sha256sum)\" = \"\$(sha256sum < $W/l5000)\" ]"
+    ok "a block device found by GPT name: glassine-splash-store override --leave, read back through O_DIRECT" "env GLASSINE_BI_BOARD=$W/board.sraw GLASSINE_BI_CMDLINE=/dev/null GLASSINE_BI_SYSBLOCK=$W/sb GLASSINE_BI_DEVDIR=/dev sh /p/sbin/glassine-splash-store override --leave 2>$W/err && $M item $LD override | cmp -s - $W/leave.gspl && env GLASSINE_BI_BOARD=$W/board.sraw GLASSINE_BI_CMDLINE=/dev/null GLASSINE_BI_SYSBLOCK=$W/sb GLASSINE_BI_DEVDIR=/dev sh /p/sbin/glassine-splash-store override --remove 2>$W/err && ! $M item $LD override"
     [ ! -d /dump ] || { cp $W/loop.img /dump/loop.img; }
     losetup -d $LD
 fi
