@@ -362,11 +362,11 @@ the next start without a choice runs the current deployment again.
 ### A deployment chosen at start-up
 
 - **FR-040** The loader's list offers the previous deployment, named by its base's
-  version and its date as `glassine-deploy list` reports them. A base's version is the
-  GlassineOS image version the base carries; a base that carries none is named by the
-  version of the distribution it is built on. Where two deployments in the list would
-  read the same, each of them also shows the time it was made, to the minute, or to the
-  second where the minute matches too. One further entry
+  version as `glassine-deploy list` reports it. A base's version is the GlassineOS
+  image version the base carries; a base that carries none is named by the version of
+  the distribution it is built on. Where two deployments in the list would read the
+  same, each of them also shows the time it was made, to the minute, or to the second
+  where the minute matches too. One further entry
   opens the other deployments that can start: the candidate, the last failed one and
   every kept one. A staged deployment is not offered: it never boots (001), and the
   switch starts its layer from empty.
