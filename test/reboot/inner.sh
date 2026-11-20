@@ -13,7 +13,9 @@ printf '#!/bin/sh\necho "init-reboot $*" >> %s\n' $C > $W/bin/init-reboot
 printf '#!/bin/sh\necho "glassine-reboot $*" >> %s\n' $C > $W/bin/glassine-reboot
 chmod +x $W/bin/*
 export GLASSINE_REBOOT_REASON_FILE=$W/run/reason GLASSINE_RUNLEVELS=$W/runlevels \
-	GLASSINE_INIT_REBOOT=$W/bin/init-reboot GLASSINE_REBOOT=$W/bin/glassine-reboot
+	GLASSINE_INIT_REBOOT=$W/bin/init-reboot GLASSINE_REBOOT=$W/bin/glassine-reboot \
+	GLASSINE_SHUTDOWN_RECORD=$W/run/glassine/shutdown
+SR=$W/run/glassine/shutdown
 rc() { : > $C; sh /p/sbin/glassine-reboot-clean "$@" 2> $W/err; }
 # the service's start as openrc-run runs it: its functions, then start
 svc() { : > $C; ( ebegin() { :; }; ewarn() { echo "$*" >> $W/warn; }; . /p/openrc/glassine-reboot-reason; start ) 2>&1; }
@@ -98,5 +100,85 @@ ok "reboot -f recovery with a record: the request, then busybox reboot -f" \
 	"GLASSINE_REBOOT_CLEAN=/p/sbin/glassine-reboot-clean rb -f recovery && [ \"\$(cat $C)\" = 'mark can-request recovery
 mark request recovery
 busybox-reboot -f' ]"
+
+# --- the shutdown record (docs/deployments.md "Runtime directory") ------------------
+# init's reboot stand-in also logs the record it sees when it is called
+printf '#!/bin/sh\necho "init-reboot $* [$(cat %s 2>/dev/null)]" >> %s\n' $SR $C > $W/bin/init-rec
+printf '#!/bin/sh\necho "init-reboot-fail $* [$(cat %s 2>/dev/null)]" >> %s\nexit 1\n' $SR $C > $W/bin/init-recfail
+printf '#!/bin/sh\necho "busybox-reboot $* [$(cat %s 2>/dev/null)]" >> %s\n' $SR $C > $W/bin/busybox-reboot
+printf '#!/bin/sh\necho "busybox-poweroff $* [$(cat %s 2>/dev/null)]" >> %s\n' $SR $C > $W/bin/busybox-poweroff
+printf '#!/bin/sh\necho "busybox-halt $* [$(cat %s 2>/dev/null)]" >> %s\n' $SR $C > $W/bin/busybox-halt
+printf '#!/bin/sh\necho "glassine-reboot $* [$(cat %s 2>/dev/null)]" >> %s\n' $SR $C > $W/bin/glassine-reboot
+printf '#!/bin/sh\necho "glassine-reboot-fail $*" >> %s\nexit 1\n' $C > $W/bin/glassine-reboot-fail
+chmod +x $W/bin/*
+export GLASSINE_INIT_REBOOT=$W/bin/init-rec GLASSINE_BUSYBOX_POWEROFF=$W/bin/busybox-poweroff GLASSINE_BUSYBOX_HALT=$W/bin/busybox-halt
+unset GLASSINE_REBOOT_CLEAN
+rm -rf $W/run/glassine $W/run/reason; echo 0 > $W/mark.rc; echo 3 > $W/can.rc
+po() { : > $C; _po=$1; shift; sh "/p/sbin/$_po" "$@" 2> $W/err; }
+ok "record: reboot (no reason) writes next=restart before busybox reboot, the directory made" "po reboot && [ \"\$(cat $C)\" = 'busybox-reboot  [next=restart]' ] && [ \"\$(cat $SR)\" = next=restart ] && [ ! -e $SR.new ]"
+echo next=other > $SR
+ok "record: reboot (no reason) keeps a record a caller wrote first" "po reboot -f && [ \"\$(cat $C)\" = 'busybox-reboot -f [next=other]' ]"
+rm -f $SR
+ok "record: poweroff writes next=poweroff, then busybox poweroff with the same arguments" "po poweroff -d 2 && [ \"\$(cat $C)\" = 'busybox-poweroff -d 2 [next=poweroff]' ]"
+echo next=menu > $SR
+ok "record: poweroff keeps a record a caller wrote first" "po poweroff && [ \"\$(cat $C)\" = 'busybox-poweroff  [next=menu]' ]"
+rm -f $SR
+ok "record: poweroff -f (forced): still written" "po poweroff -f && [ \"\$(cat $C)\" = 'busybox-poweroff -f [next=poweroff]' ]"
+rm -f $SR
+ok "record: halt writes next=poweroff, then busybox halt" "po halt && [ \"\$(cat $C)\" = 'busybox-halt  [next=poweroff]' ]"
+rm -rf $W/run/glassine; : > $W/run/glassine
+ok "record: /run/glassine not writable (a file there): poweroff and reboot go on all the same" "po poweroff && grep -q '^busybox-poweroff' $C && po reboot && grep -q '^busybox-reboot' $C && [ ! -s $W/err ]"
+rm -f $W/run/glassine; mkdir -p $W/run/glassine
+echo next=restart > $SR
+ok "record: reboot-clean bootloader overwrites a record with next=bootloader before its reboot" "rc bootloader && [ \"\$(cat $C)\" = 'init-reboot  [next=bootloader]' ] && [ \"\$(cat $SR)\" = next=bootloader ]"
+rm -f $SR $W/run/reason
+ok "record: reboot-clean, the reboot doesn't start: exit 1, the record removed" "GLASSINE_INIT_REBOOT=$W/bin/init-recfail rc bootloader; [ \$? = 1 ] && [ \"\$(cat $C)\" = 'init-reboot-fail  [next=bootloader]' ] && [ ! -e $SR ]"
+rm -f $W/run/reason
+ok "record: reboot-clean with a bad reason (exit 2): no record" "rc 'a b'; [ \$? = 2 ] && [ ! -e $SR ]"
+rm $W/runlevels/shutdown/glassine-reboot-reason
+ok "record: reboot-clean refused (no glassine-reboot-reason in the runlevel, exit 1): no record" "rc recovery; [ \$? = 1 ] && [ ! -e $SR ]"
+ln -s /etc/init.d/glassine-reboot-reason $W/runlevels/shutdown/glassine-reboot-reason
+echo 0 > $W/can.rc
+ok "record: reboot-clean menu: the request, next=menu, then the reboot" "rc menu && [ \"\$(cat $C)\" = 'mark request menu
+init-reboot  [next=menu]' ]"
+rm -f $SR
+echo 3 > $W/mark.rc
+ok "record: reboot-clean menu refused by the loader (exit 3): no record" "rc menu; [ \$? = 3 ] && [ ! -e $SR ]"
+echo 0 > $W/mark.rc
+ok "record: reboot-clean menu, the reboot doesn't start: the request taken back, the record removed" "GLASSINE_INIT_REBOOT=$W/bin/init-recfail rc menu; [ \$? = 1 ] && [ ! -e $SR ] && tail -n 1 $C | grep -qx 'mark request clear'"
+ok "record: reboot-clean recovery (a loader request): next=recovery" "rc recovery && [ \"\$(tail -n 1 $C)\" = 'init-reboot  [next=recovery]' ]"
+rm -f $SR $W/run/reason
+ok "record: reboot-clean without a reason: next=restart, as reboot" "rc && [ \"\$(cat $C)\" = 'init-reboot  [next=restart]' ]"
+echo next=other > $SR
+ok "record: reboot-clean without a reason keeps a record that is there" "rc && [ \"\$(cat $SR)\" = next=other ]"
+rm -f $SR; echo 3 > $W/can.rc
+ok "record: reboot -f bootloader (forced): next=bootloader before glassine-reboot" "GLASSINE_REBOOT_FORCE=1 rc bootloader && [ \"\$(cat $C)\" = 'glassine-reboot bootloader [next=bootloader]' ]"
+rm -f $SR
+ok "record: forced, glassine-reboot fails: exit 1, the record removed" "GLASSINE_REBOOT=$W/bin/glassine-reboot-fail GLASSINE_REBOOT_FORCE=1 rc bootloader; [ \$? = 1 ] && [ ! -e $SR ]"
+echo 0 > $W/can.rc; rm -f $W/run/reason $SR
+ok "record: reboot recovery end to end (sbin/reboot -> reboot-clean -> busybox): next=recovery" "GLASSINE_REBOOT_CLEAN=/p/sbin/glassine-reboot-clean po reboot recovery && [ \"\$(tail -n 1 $C)\" = 'busybox-reboot  [next=recovery]' ]"
+
+# --- the cold shutdown step: glassine-mount-ro's keep_screen -----------------------
+# the service's functions with stubs for the tool; start's read-only part needs the
+# boot libraries, which this container lacks: only what comes before it is judged
+printf '#!/bin/sh\necho "store $*" >> %s\nexit $(cat %s/store.rc)\n' $C $W > $W/bin/store
+printf '#!/bin/sh\ntrap "" TERM\necho "store $*" >> %s\nsleep 30\n' $C > $W/bin/store-hang
+chmod +x $W/bin/*
+echo 0 > $W/store.rc
+mro() { : > $C; ( ebegin() { :; }; eend() { echo "eend $1" >> $W/eend; return "$1"; }; . /p/openrc/glassine-mount-ro; start ) > $W/mro.out 2>&1; }
+export GLASSINE_SCREEN_KEEP=$W/run/screen-keep GLASSINE_SPLASH_STORE=$W/bin/store GLASSINE_DEPLOY_CONF=$W/none
+rm -f $W/run/screen-keep
+ok "shutdown step: no screen-keep: the splash store not called" "mro; ! grep -q store $C"
+: > $W/run/screen-keep
+ok "shutdown step: screen-keep: glassine-splash-store override --leave --wait 5" "mro; [ \"\$(cat $C)\" = 'store override --leave --wait 5' ]"
+echo 1 > $W/store.rc; rm -f $W/eend
+ok "shutdown step: the store fails: said, the step goes on to the read-only part" "mro; grep -q 'store override' $C && grep -qx 'eend 1' $W/eend && [ \$(wc -l < $W/eend) -ge 2 ]"
+echo 0 > $W/store.rc
+ok "shutdown step: the tool not installed: nothing" "GLASSINE_SPLASH_STORE=$W/none mro; [ ! -s $C ]"
+export t0; t0=$(date +%s)
+ok "shutdown step: a store that hangs and ignores TERM is killed after the timeout" "GLASSINE_SPLASH_TIMEOUT=2 GLASSINE_SPLASH_STORE=$W/bin/store-hang mro; [ \$((\$(date +%s) - t0)) -lt 10 ] && grep -q store $C"
+mkdir -p /run/glassine; : > /run/glassine/restarting
+ok "shutdown step: a soft restart runs (restarting): no override" "mro; [ ! -s $C ]"
+rm -f /run/glassine/restarting
 echo "$fails failed"
 [ "$fails" = 0 ]

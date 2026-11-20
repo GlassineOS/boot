@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# halt [options] — busybox halt, after the shutdown record (docs/deployments.md,
+# "Runtime directory"): next=poweroff in /run/glassine/shutdown when no record is
+# there yet (a caller that named a more specific target first wins), written
+# atomically; a record that can't be written never stops the halt. Installed as
+# /usr/sbin/halt, ahead of busybox's /sbin/halt in PATH. Every option goes to
+# busybox as given (-f too: the record is harmless there).
+BUSYBOX_HALT=${GLASSINE_BUSYBOX_HALT:-/sbin/halt}
+REC=${GLASSINE_SHUTDOWN_RECORD:-/run/glassine/shutdown}
+[ -e "$REC" ] || { mkdir -p "${REC%/*}" && printf 'next=poweroff\n' > "$REC.new" && mv -f "$REC.new" "$REC"; } 2>/dev/null || rm -f "$REC.new" 2>/dev/null
+exec "$BUSYBOX_HALT" "$@"

@@ -451,7 +451,11 @@ while the root's overlay keeps both file systems alive, so userdata's ext4 journ
 need a replay at every boot. The service mounts each device again (the same live file
 system), remounts that mount read-only and unmounts it. A file system that isn't alive
 (a bare boot never mounted userdata) is left alone. It never stops a shutdown; a file
-system it can't make read-only (still in use) is logged.
+system it can't make read-only (still in use) is logged. Before that, where the shell's
+shutdown screen left `/run/glassine/screen-keep`, it runs `glassine-splash-store override
+--leave --wait 5` under a 15-second timeout (killed 2 s later if it doesn't end), so the next start leaves the screen as it is
+(specs/011 FR-014); a failure is logged and the shutdown goes on. It skips both during a
+soft restart.
 
 ## The first start
 
@@ -580,3 +584,5 @@ See [`conf/deploy.conf.example`](../conf/deploy.conf.example): `SYSTEM_DEV`,
 | `switch-result` | `glassine-switch-hook` | what the shutdown's switch did (above) |
 | `limit-done` | `glassine-deploy-accept` | the rollback after the loader's limit ran in this kernel run |
 | `user-shutdown` | the power menu, via `glassine-switch-hook --user-shutdown` | this shutdown may switch |
+| `shutdown` | `reboot`, `poweroff`, `halt` (`/usr/sbin`), `glassine-reboot-clean`, `glassine-deploy restart` | the shutdown record: one line `next=<target>`, written atomically (`.new`, then renamed) before init is asked to shut down: `restart`, `poweroff`, or a reboot reason (`menu`, `recovery`, `bootloader`, …); other writers may name `other`. `reboot` without a reason, `poweroff` and `halt` write it only when none is there (a caller that named its target first wins); `glassine-reboot-clean` writes its reason over one that is there, never when it refuses (exit 2, 3, or 1 before the reboot), and removes it when the reboot doesn't start; `glassine-deploy restart` (soft or cold, `--cold`, the `--restart` forms) writes `next=restart` once its checks passed, before anything stops. A record that can't be written never stops a shutdown. Read by GlassineOS/shell's `glassine-shutdown-screen`. Per start: gone with the outgoing session, a soft restart doesn't carry it |
+| `screen-keep` | GlassineOS/shell's `glassine-shutdown-screen` | the shutdown screen is on a bistable panel and should stay through the next start: the cold shutdown (`glassine-mount-ro`) writes the splash store's override "leave the screen" (`glassine-splash-store`, [boot.md](boot.md#the-splash-store)). A soft restart neither carries it nor writes an override |

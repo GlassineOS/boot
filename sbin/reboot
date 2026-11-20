@@ -11,9 +11,14 @@
 #                     (menu, recovery) and then reboots with busybox reboot -f,
 #                     or hands the reason to glassine-reboot at once
 # -d and -n don't go with a reason (exit 2).
+# The shutdown record (docs/deployments.md, "Runtime directory"): without a reason
+# next=restart in /run/glassine/shutdown when no record is there yet (a caller that
+# named a more specific target first wins); with a reason glassine-reboot-clean writes
+# next=<reason>. A record that can't be written never stops the reboot.
 BUSYBOX_REBOOT=${GLASSINE_BUSYBOX_REBOOT:-/sbin/reboot}
 CLEAN=${GLASSINE_REBOOT_CLEAN:-/usr/sbin/glassine-reboot-clean}
 NOW=${GLASSINE_REBOOT:-/usr/sbin/glassine-reboot}
+REC=${GLASSINE_SHUTDOWN_RECORD:-/run/glassine/shutdown}
 reason='' force='' other='' delay=''
 for a in "$@"; do
 	[ -z "$delay" ] || { delay=; continue; }
@@ -27,7 +32,10 @@ for a in "$@"; do
 		;;
 	esac
 done
-[ -n "$reason" ] || exec "$BUSYBOX_REBOOT" "$@"
+if [ -z "$reason" ]; then
+	[ -e "$REC" ] || { mkdir -p "${REC%/*}" && printf 'next=restart\n' > "$REC.new" && mv -f "$REC.new" "$REC"; } 2>/dev/null || rm -f "$REC.new" 2>/dev/null
+	exec "$BUSYBOX_REBOOT" "$@"
+fi
 [ -z "$other" ] || { echo "reboot: only -f goes with a reason" >&2; exit 2; }
 case "$reason" in *[!a-z0-9-]*) echo "reboot: bad reason '$reason'" >&2; exit 2 ;; esac
 if [ -n "$force" ]; then

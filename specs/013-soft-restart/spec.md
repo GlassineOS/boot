@@ -186,8 +186,10 @@ waiting deployment change is applied by the switch as at any user-started restar
   FR-001 allows, else cold) and "Restart fully" (`restart --cold`: always cold). Before
   the person confirms, "Restart" says which kind it will be: a soft restart as a
   restart in which the apps close and the device stays on; a cold one as an ordinary
-  restart, with the reason in the shell's words (FR-006). A restart that turns cold after all (FR-003, FR-021)
-  is said on the screen while it happens, and the next session says why, once.
+  restart, with the reason in the shell's words (FR-006). The shutdown screen
+  (GlassineOS/shell 009) is the one picture: a restart that turns cold after all (FR-003,
+  FR-021) draws nothing more (the picture says "Restarting…", true in both cases), and
+  the next session says why, once.
 - **FR-008** The incoming session can tell how it started: `/run/glassine/restart`
   (`kind=cold|soft`, `from=` the outgoing deployment, `count=` the soft starts in this
   kernel run, `at=` the start's time on the monotonic clock), and `status`
@@ -289,9 +291,9 @@ waiting deployment change is applied by the switch as at any user-started restar
   change.
 - **FR-024** Per start, made anew by every start: `booted`, `storage`, `deploy-once`,
   `healthy`, `restart`, the merged root. Gone with the outgoing session: `unlocked`,
-  `user-shutdown`, `switching`, the apk lock. Per kernel run, carried into the incoming
-  session: `kernel-boot`, `loader-marked`, `health-failed` (the shutdown step's inputs,
-  010 FR-012), and the fact that `limit-start` was acted on, so a rollback after the
+  `user-shutdown`, `switching`, `shutdown` (the shutdown record), the apk lock. Per
+  kernel run, carried into the incoming session: `kernel-boot`, `loader-marked`,
+  `health-failed` (the shutdown step's inputs, 010 FR-012), and the fact that `limit-start` was acted on, so a rollback after the
   loader's limit (010 FR-013) runs once per kernel run.
 - **FR-025** The assembly that runs is the one the running image brought, kept in memory
   for the kernel run, so it is byte for byte the assembly the next cold start would run
@@ -328,10 +330,9 @@ waiting deployment change is applied by the switch as at any user-started restar
 
 ### The screen
 
-- **FR-031** The outgoing session's shell shows one picture that says the system
-  restarts, with one whole-panel refresh on an e-ink panel, before the stop. From then
-  on nothing draws until the incoming session's first frame, as 011 FR-016 holds for a
-  cold start. A restart that turns cold says so in one more refresh before it restarts.
+- **FR-031** The picture is the shell's shutdown screen (GlassineOS/shell 009), shown as
+  the stop begins, with one whole-panel refresh on an e-ink panel. From then on nothing
+  draws until the incoming session draws, as 011 FR-016 holds for a cold start.
 - **FR-032** The splash store and its override belong to the loader's starts: a soft
   start neither reads nor removes an override, and 011 FR-015's removal of an unused
   override happens at cold starts only.

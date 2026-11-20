@@ -1,0 +1,154 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# glassine-splash-store: the running system's writer of the splash store's one-time
+# override (specs/011 FR-003, FR-011, FR-014, FR-019; docs/boot-partition.md "The
+# splash store", "The raw form"; docs/boot.md "The splash store").
+#
+#   glassine-splash-store has-store           exit 0 when this board has a splash
+#                                             store the running system can write, 3
+#                                             when it has none
+#   glassine-splash-store override --leave    the override "leave the screen" (kind 1:
+#                                             the 64-byte header, no picture)
+#   glassine-splash-store override FILE       FILE, a format-2 image, as the override
+#   glassine-splash-store override --remove   no override
+#   ... [--wait S]                            wait up to S seconds (default 10) for the
+#                                             boot partition's lock
+#
+# Where the store is comes from the board (board.conf HANDOFF, BOOT_FORM, BOOT_PART, as
+# glassine-loader-mark reads them): BOOT_FORM=raw, the region override of the raw boot
+# partition (the device's lock on fd 8, the one glassine-boot-raw and the raw record's
+# writers take; "Writing a region"; removal = the region's first 4096 bytes zero, read
+# back); HANDOFF=uefi, \glassine\splash\override.gspl on the FAT boot partition,
+# mounted for the one write and unmounted again (written as .new, synced, read back,
+# the old one removed, renamed, each synced; removal = the file removed, synced). On
+# FAT the device's lock only keeps two of these writers apart (the record's writers
+# there hold the state lock, and write other files); no state lock is taken: the
+# shutdown step runs it after the system partition is out of the mount table. Any other board has no store.
+#
+# Every write is bounded: the lock is waited for --wait seconds, a TERM (the caller's
+# timeout) unmounts what was mounted. A cut leaves the old override, none or the new
+# one, never a part of one. Every refusal comes before the first write.
+# Exit: 0 written, 1 not written (a refused image, the lock held, a write or read-back
+# that failed; said; the old override or none), 2 usage, 3 no store on this board.
+# Test hooks: GLASSINE_BI_BOARD, GLASSINE_BI_CMDLINE, GLASSINE_BI_LIB, GLASSINE_BI_TMP,
+# GLASSINE_BI_RUN_DIR, and the library's (GLASSINE_BI_BOOTPART_DIR,
+# GLASSINE_BI_BOOTPART_DEV, GLASSINE_BI_SYSBLOCK, GLASSINE_BI_DEVDIR; with
+# GLASSINE_BI_TEST=1 GLASSINE_BI_RAW_TRACE, GLASSINE_BI_RAW_CUT, GLASSINE_BI_AFTER_PUT,
+# GLASSINE_BI_AFTER_SPLASH_NEW, GLASSINE_BI_AFTER_SPLASH_RM).
+set -u
+BOARD=${GLASSINE_BI_BOARD:-/etc/glassine-bootimg/board.conf}
+GBLIB=${GLASSINE_BI_LIB:-/usr/lib/glassine-boot}
+HANDOFF='' BOOT_FORM='' BOOT_PART=glassine-boot
+# shellcheck source=/dev/null
+[ -r "$BOARD" ] && . "$BOARD"
+# after board.conf: its CMDLINE is the set's base command line, not this file
+CMDLINE=${GLASSINE_BI_CMDLINE:-/proc/cmdline}
+MNT=${GLASSINE_BI_RUN_DIR:-/run/glassine}/splash-store
+
+say() {
+    echo "glassine-splash-store: $*" >&2
+    { [ -w /dev/kmsg ] && echo "<5>glassine-splash-store: $*" > /dev/kmsg; } 2>/dev/null
+    return 0
+}
+usage() { echo "usage: glassine-splash-store has-store | override --leave|--remove|FILE [--wait S]" >&2; exit 2; }
+
+cmd=${1:-}; [ $# -ge 1 ] && shift
+what='' WAIT=10
+while [ $# -gt 0 ]; do
+    case $1 in
+    --wait) [ $# -ge 2 ] || usage; WAIT=$2; shift ;;
+    *) [ -z "$what" ] || usage; what=$1 ;;
+    esac
+    shift
+done
+case $WAIT in ''|*[!0-9]*) usage ;; esac
+case $cmd in
+has-store) [ -z "$what" ] || usage ;;
+override) [ -n "$what" ] || usage ;;
+*) usage ;;
+esac
+# shellcheck source=../lib/glassine-bootpart.sh
+. "$GBLIB/glassine-bootpart.sh"
+# shellcheck disable=SC2034  # read by the library
+GP_TMP=${GLASSINE_BI_TMP:-/run}
+trap 'gp_close >/dev/null 2>&1; gp_clean' EXIT
+trap 'exit 1' TERM INT HUP
+
+kind=$(gp_kind "$HANDOFF" "$BOOT_FORM" 2>/dev/null)
+case $kind in
+raw)
+    dev=$(gp_raw_dev "$CMDLINE" "$BOOT_PART") || { say "no splash store: the boot partition: $dev"; exit 3; }
+    gr_open "$dev" || { say "no splash store: $GR_WHY"; exit 3; }
+    gr_region override || { say "no splash store: $dev has no region override"; exit 3; }
+    ;;
+uefi)
+    if [ -n "${GLASSINE_BI_BOOTPART_DIR:-}" ]; then
+        dev=$GLASSINE_BI_BOOTPART_DIR
+    else
+        dev=$(gp_boot_dev "$CMDLINE" "$BOOT_PART") || { say "no splash store: the boot partition: $dev"; exit 3; }
+        b=$(dd if="$dev" bs=512 count=1 2>/dev/null | od -An -v -tx1 -j 510 -N 2 | tr -d ' \n')
+        t=$(dd if="$dev" bs=512 count=1 2>/dev/null | tail -c +55 | head -c 3)
+        t2=$(dd if="$dev" bs=512 count=1 2>/dev/null | tail -c +83 | head -c 5)
+        [ "$b" = 55aa ] && { [ "$t2" = FAT32 ] || [ "$t" = FAT ]; } || { say "no splash store: $dev holds no FAT file system"; exit 3; }
+    fi
+    ;;
+*) say "no splash store: this board's boot partition has none (board.conf: no BOOT_FORM=raw, no HANDOFF=uefi)"; exit 3 ;;
+esac
+[ "$cmd" = has-store ] && exit 0
+
+# what to write, checked before the lock and before any write
+src=''
+case $what in
+--remove) ;;
+--leave) src=$GP_TMP/glassine-bootpart.leave.$$; gr_splash_leave "$src" ;;
+-*) usage ;;
+*)
+    [ -r "$what" ] || { say "cannot read $what: nothing written"; exit 1; }
+    src=$what
+    ;;
+esac
+if [ -n "$src" ]; then
+    gr_splash_ok "$src" override || { say "$what: $GR_WHY: nothing written"; exit 1; }
+fi
+
+# the device's lock, waited for --wait seconds
+exec 8<"$dev" || { say "cannot open $dev: nothing written"; exit 1; }
+n=0
+until flock -n 8; do
+    [ $n -lt "$WAIT" ] || { say "busy: $dev is locked by another writer: nothing written"; exit 1; }
+    sleep 1; n=$((n + 1))
+done
+
+if [ "$kind" = raw ]; then
+    # the table again, under the lock
+    gr_open "$dev" && gr_region override || { say "no splash store: ${GR_WHY:-no region override}"; exit 3; }
+    if [ -z "$src" ]; then
+        gr_clear override || { say "$GR_WHY"; exit 1; }
+        say "$dev: the override removed"
+    else
+        gr_write_region override "$src" || { say "$GR_WHY"; exit 1; }
+        say "$dev: the override written ($(wc -c < "$src") bytes)"
+    fi
+    exit 0
+fi
+
+gp_open uefi "$CMDLINE" "$BOOT_PART" "$MNT" || { say "$GP_WHY: nothing written"; exit 1; }
+f=$GP_DIR/glassine/splash/override.gspl rc=0
+if [ -z "$src" ]; then
+    rm -f "$f.new" "$f"; sync
+    if [ -e "$f" ]; then say "$f could not be removed"; rc=1; else say "the override removed"; fi
+else
+    need=$(($(wc -c < "$src") / 1024 + 64))
+    free=$(df -Pk "$GP_DIR" | awk 'NR == 2 { print $4 }')
+    if [ -z "$free" ] || [ "$free" -lt "$need" ]; then
+        say "the boot partition has ${free:-?} KiB free, the override needs $need KiB: nothing written"; rc=1
+    elif ! { mkdir -p "$GP_DIR/glassine/splash" && sync; }; then
+        say "cannot create \\glassine\\splash: nothing written"; rc=1
+    elif ! gp_splash_put "$src" "$f"; then
+        say "$GP_WHY"; rc=1
+    else
+        say "the override written ($(wc -c < "$src") bytes)"
+    fi
+fi
+gp_close || { say "$GP_WHY"; rc=1; }
+exit $rc
