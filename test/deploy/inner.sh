@@ -231,6 +231,30 @@ ok "publish: the longest label: 32 + 1 + 10 characters, within the record's 64" 
 printf 'base=%s\n' $B5 > $U/deployments/d5/meta; rm $W/sysmnt/bases/$B5/usr/lib/os-release
 ok "publish: neither version nor date: no label (the loader shows the id)" "$G publish && grep -qx 'd5 kept' $W/list"
 rm -rf $U/deployments/d5 $W/sysmnt/bases/$B5
+# the image version of the base manifest comes before the os-release's VERSION_ID
+B6=20261120-38363f5cd5d9a23c; mkdir -p $W/sysmnt/bases/$B6/usr/lib $W/sysmnt/bases/$B6/usr/share/glassine
+printf 'ID=alpine\nVERSION_ID=3.24.4\n' > $W/sysmnt/bases/$B6/usr/lib/os-release
+M6=$W/sysmnt/bases/$B6/usr/share/glassine/base.manifest
+printf 'format=1\nbase=%s\nversion=2026.11.20\nlocks=\nneeds=\nfeatures=\n' $B6 > $M6
+mkdir -p $U/deployments/d6; printf 'created=2026-11-20T08:15:42Z\nbase=%s\n' $B6 > $U/deployments/d6/meta
+d6label() { $G publish && sed -n "s/^d6 kept//p" $W/list; }
+ok "publish: the base manifest's image version, not the os-release's VERSION_ID" "[ \"\$(d6label)\" = ' 2026.11.20 2026-11-20' ]"
+ok "list: version is the image version" "[ \"\$(lst d6 version)\" = 2026.11.20 ]"
+sed -i 's/^version=.*/version=2026.11 edge/' $M6
+ok "publish: an image version that is not plain: the os-release's VERSION_ID" "[ \"\$(d6label)\" = ' 3.24.4 2026-11-20' ]"
+mv $M6 $M6.f; ln -s /usr/share/glassine/base.manifest $M6
+ok "publish: a base manifest that is a link is not followed: the os-release's VERSION_ID" "[ \"\$(d6label)\" = ' 3.24.4 2026-11-20' ]"
+rm $M6; sed 's/^version=.*/version=2026.11.20/' $M6.f > $M6; rm $M6.f
+# equal labels apart: the created time to the minute, then to the second; others unchanged
+mkdir -p $U/deployments/d7 $U/deployments/d8 $U/deployments/d9
+printf 'created=2026-11-20T09:30:05Z\nbase=%s\n' $B6 > $U/deployments/d7/meta
+printf 'created=2026-11-20T09:30:59Z\nbase=%s\n' $B6 > $U/deployments/d8/meta
+printf 'created=2026-11-21T09:30:05Z\nbase=%s\n' $B6 > $U/deployments/d9/meta
+ok "publish: equal labels get the created time, HH:MM, or HH:MM:SS where the minute matches too; a label of its own stays as it is" "$G publish && grep -qx 'd6 kept 2026.11.20 2026-11-20 08:15' $W/list && grep -qx 'd7 kept 2026.11.20 2026-11-20 09:30:05' $W/list && grep -qx 'd8 kept 2026.11.20 2026-11-20 09:30:59' $W/list && grep -qx 'd9 kept 2026.11.20 2026-11-21' $W/list && grep -qx 'd4 kept 3.24.4 2026-10-24' $W/list"
+ok "publish: every label distinct" "[ -z \"\$(cut -d' ' -f3- $W/list | grep . | sort | uniq -d)\" ]"
+printf 'format=1\nbase=%s\nversion=%s\n' $B6 "$(printf '9%.0s' $(seq 1 32))" > $M6
+ok "publish: the longest label: 32 + 1 + 10 + 1 + 8 characters, within the record's 64" "$G publish && l=\$(sed -n 's/^d7 kept //p' $W/list) && [ \"\$l\" = \"\$(printf '9%.0s' \$(seq 1 32)) 2026-11-20 09:30:05\" ] && [ \${#l} -eq 52 ]"
+rm -rf $U/deployments/d6 $U/deployments/d7 $U/deployments/d8 $U/deployments/d9 $W/sysmnt/bases/$B6
 sed -i 's/^current=d2$/current=dx/' $D
 rm -f $W/list
 ok "publish: the current deployment not on userdata: the record's list left as it was, said" "$G publish 2>$W/err && [ ! -e $W/list ] && grep -q 'dx is not on userdata' $W/err"

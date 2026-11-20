@@ -78,7 +78,8 @@
 # FR-041, docs/boot-partition.md "Keys": deploys, deploy1 ...) on a board that
 # keeps one (glassine-loader-mark has-record): the previous deployment, the
 # candidate, the last failed one and the kept ones that can start (their base on
-# the system partition), each "<id> <state> <base version> <created date>" (loader_rows). accept,
+# the system partition), each "<id> <state> <base version> <created date>", equal ones kept apart
+# by the created time (loader_rows). accept,
 # switch, select, rollback, remove and stage publish it too, after their state
 # write; the boot-success step runs publish on every healthy start (a list a
 # failed boot changed). Only a list that differs is written; a failed write
@@ -449,30 +450,40 @@ gc_deployments() {
     return 0
 }
 
-# base_version SYSDIR BASE: the base's version, VERSION_ID of its os-release
-# (usr/lib/os-release, else etc/os-release when that is a file of the base, not
-# a link out of it), read as text, never run. Only [A-Za-z0-9._+~-] and at
-# most 32 characters; anything else, or none: empty.
+# base_version SYSDIR BASE: the base's version: the image version of its base
+# manifest (version= of usr/share/glassine/base.manifest), else VERSION_ID of its
+# os-release (usr/lib/os-release, else etc/os-release when that is a file of the
+# base, not a link out of it); each read as text, never run, and taken only when
+# it is [A-Za-z0-9._+~-] and at most 32 characters. None: empty.
 base_version() {
     _bv_d=$1/bases/$2 _bv_f=''
     [ -n "$2" ] || return 0
+    if [ -f "$_bv_d/usr/share/glassine/base.manifest" ] && [ ! -L "$_bv_d/usr/share/glassine/base.manifest" ]; then
+        _bv_v=$(sed -n 's/^version=//p' "$_bv_d/usr/share/glassine/base.manifest" 2>/dev/null | head -n 1)
+        if plain_version "$_bv_v"; then printf '%s' "$_bv_v"; return 0; fi
+    fi
     if [ -f "$_bv_d/usr/lib/os-release" ] && [ ! -L "$_bv_d/usr/lib/os-release" ]; then _bv_f=$_bv_d/usr/lib/os-release
     elif [ -f "$_bv_d/etc/os-release" ] && [ ! -L "$_bv_d/etc/os-release" ]; then _bv_f=$_bv_d/etc/os-release
     fi
     [ -n "$_bv_f" ] || return 0
     _bv_v=$(sed -n 's/^VERSION_ID=//p' "$_bv_f" 2>/dev/null | head -n 1)
     _bv_v=${_bv_v#[\"\']} _bv_v=${_bv_v%[\"\']}
-    case $_bv_v in ''|*[!A-Za-z0-9._+~-]*) return 0 ;; esac
-    [ ${#_bv_v} -le 32 ] || return 0
+    plain_version "$_bv_v" || return 0
     printf '%s' "$_bv_v"
+}
+plain_version() {
+    case $1 in ''|*[!A-Za-z0-9._+~-]*) return 1 ;; esac
+    [ ${#1} -le 32 ]
 }
 
 # loader_rows SYSDIR: the loader's deployment list (see publish), one
 # "<id> <state> <label>" line each, previous, candidate, failed, then the kept
 # ones by id; the label "<version> <date>": the base's version (base_version)
 # and the deployment's created date, either left out when unknown, never the
-# base id (the id stays the line's first field). At most 32 + 1 + 10 characters,
-# within the record's 64.
+# base id (the id stays the line's first field). Rows whose labels would read
+# the same also get their created time, "HH:MM", or "HH:MM:SS" where the minute
+# matches too (010 FR-040). At most 32 + 1 + 10 + 1 + 8 characters, within the
+# record's 64.
 loader_rows() {
     _lr_cur=$(gs_kv "$1/state/deploy" current) _lr_prev=$(gs_kv "$1/state/deploy" previous)
     _lr_cand=$(gs_kv "$1/state/deploy" candidate) _lr_failed=$(gs_kv "$1/state/deploy" failed)
@@ -485,20 +496,45 @@ loader_rows() {
         _lr_b=$(meta_kv "$_lr_m" base)
         [ -z "$_lr_b" ] || [ -d "$1/bases/$_lr_b" ] || continue
         _lr_v=$(base_version "$1" "$_lr_b")
-        _lr_d=$(meta_kv "$_lr_m" created); _lr_d=${_lr_d%%T*}
+        _lr_t=$(meta_kv "$_lr_m" created)
+        _lr_d=${_lr_t%%T*}
         case $_lr_d in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) _lr_d='' ;; esac
+        case $_lr_t in
+            ????-??-??T[0-2][0-9]:[0-5][0-9]:[0-6][0-9]*) _lr_t=${_lr_t#*T} _lr_t=${_lr_t%"${_lr_t#????????}"} ;;
+            *) _lr_t='' ;;
+        esac
+        [ -n "$_lr_d" ] || _lr_t=''
         _lr_l="$_lr_v${_lr_v:+${_lr_d:+ }}$_lr_d"
-        if [ "$_lr_id" = "$_lr_cand" ]; then _lr_c="$_lr_c$_lr_id candidate${_lr_l:+ $_lr_l}
-"
-        elif [ "$(meta_kv "$_lr_m" failed)" = 1 ] || [ "$_lr_id" = "$_lr_failed" ]; then _lr_f="$_lr_f$_lr_id failed${_lr_l:+ $_lr_l}
-"
-        elif [ "$_lr_id" = "$_lr_prev" ]; then _lr_p="$_lr_p$_lr_id previous${_lr_l:+ $_lr_l}
-"
-        else _lr_k="$_lr_k$_lr_id kept${_lr_l:+ $_lr_l}
-"
+        if [ "$_lr_id" = "$_lr_cand" ]; then _lr_s=candidate
+        elif [ "$(meta_kv "$_lr_m" failed)" = 1 ] || [ "$_lr_id" = "$_lr_failed" ]; then _lr_s=failed
+        elif [ "$_lr_id" = "$_lr_prev" ]; then _lr_s=previous
+        else _lr_s=kept
         fi
+        _lr_r=$(printf '%s\t%s\t%s\t%s' "$_lr_id" "$_lr_s" "$_lr_l" "$_lr_t")
+        case $_lr_s in
+            candidate) _lr_c="$_lr_c$_lr_r
+" ;;
+            failed) _lr_f="$_lr_f$_lr_r
+" ;;
+            previous) _lr_p="$_lr_p$_lr_r
+" ;;
+            *) _lr_k="$_lr_k$_lr_r
+" ;;
+        esac
     done
-    printf '%s' "$_lr_p$_lr_c$_lr_f$_lr_k"
+    # equal labels apart: the time to the minute, then to the second
+    printf '%s' "$_lr_p$_lr_c$_lr_f$_lr_k" | awk -F '\t' '
+        { id[NR] = $1; st[NR] = $2; l[NR] = $3; t[NR] = $4; if ($3 != "") n[$3]++ }
+        END {
+            for (i = 1; i <= NR; i++) {
+                m[i] = l[i]
+                if (l[i] != "" && n[l[i]] > 1 && t[i] != "") { m[i] = l[i] " " substr(t[i], 1, 5); c[m[i]]++ }
+            }
+            for (i = 1; i <= NR; i++) {
+                if (m[i] != l[i] && c[m[i]] > 1) m[i] = l[i] " " t[i]
+                printf "%s %s%s\n", id[i], st[i], (m[i] != "" ? " " m[i] : "")
+            }
+        }'
 }
 
 # loader_publish SYSDIR [locked]: the list into the loader record (publish);
