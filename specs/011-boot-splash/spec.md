@@ -1,7 +1,10 @@
 # Feature Specification: Boot splash and its one-time override
 
 **Feature branch:** `boot-splash`
-**Status:** spec, for review; nothing built
+**Status:** spec; partly built: the loader reads and draws the store and the override
+(GlassineOS/loader), `glassine-boot-raw` writes the raw form's regions, and
+`glassine-splash-store` writes and removes the override; setting the splash from a
+picture is not built
 **Builds on:** [010-uefi-deployments](../010-uefi-deployments/spec.md) (the loader on a
 PC) · **Interfaces:** [docs/boot.md](../../docs/boot.md)
 
@@ -16,7 +19,10 @@ place of the splash, and is gone after it was shown once.
 
 What the images show is the system's choice. One use of the override: before it
 hibernates, the system may put a picture of its screen there, so the next start shows
-that picture long before the resume is done.
+that picture long before the resume is done. Another: a shutdown screen on a bistable
+display that must stay through the next start (GlassineOS/shell 009): the cold shutdown
+writes the instruction to leave the screen as the override where the shell left
+`/run/glassine/screen-keep`.
 
 This spec is the same for every machine. A machine's own spec says which stage is its
 earliest and where that stage reads the images (a PC: the loader and the boot partition,
@@ -73,9 +79,9 @@ and an override that says to leave the screen,
 - **FR-002** A default splash ships with the release, as part of what the earliest stage
   is installed with. It is used when no splash is set or the set one is skipped.
 - **FR-003** The running system sets and removes the splash, and writes and removes an
-  override, through one command. The command converts a picture into the store's
-  format, for the display mode the earliest stage uses, and writes the result. The
-  earliest stage never reads a file in any other format.
+  override, through one command (`glassine-splash-store`). The command converts a
+  picture into the store's format, for the display mode the earliest stage uses, and
+  writes the result. The earliest stage never reads a file in any other format.
 - **FR-004** The store's format is one lossless raster format with fixed, small
   decoders, plus a header: format version, width, height, the display mode it was made
   for, a pixel layout, a compression, a filter, a background colour, a checksum. The
@@ -177,7 +183,7 @@ and an override that says to leave the screen,
 | The store's image format | owned (new); read by each machine's earliest stage | `format=2` (readers also read `format=1`) | `docs/boot-partition.md`, "The image format" |
 | The store's names on a PC | owned (new) | part of the boot partition's layout | `docs/boot-partition.md`, "The splash store" |
 | The store on a device without FAT | owned (new); the regions `splash-default`, `splash`, `override` of the boot partition's raw form | region table `format=1` | `docs/boot-partition.md`, "The raw form" |
-| The command that sets and removes the splash and the override | owned (new); used by the settings, the session and the hibernate step | — | to be added to `docs/boot.md` |
+| The command that sets and removes the splash and the override | owned (new); used by the settings, the session, the cold shutdown and the hibernate step | — | `docs/boot.md`, "The splash store" |
 | The earliest stage's display mode, readable by the running system | owned (new) | — | to be added to `docs/boot.md` |
 | The earliest stage on a PC | owned | — | 010 FR-048 |
 
@@ -251,8 +257,8 @@ display at the earliest stage and at fixed points after it.
 ## Out of scope
 
 - What the splash and the override show, and when the system writes an override (a
-  picture of the screen before a hibernate is one use; the session's and the hibernate
-  step's own work).
+  picture of the screen before a hibernate and a shutdown screen kept through the next
+  start are two uses; the session's, the shutdown's and the hibernate step's own work).
 - Animations, progress bars and text on the splash.
 - The firmware's own logo before the earliest stage.
 - The settings page that picks the picture.

@@ -24,6 +24,11 @@
 #             the bootloader's own recovery request, the reason as above
 # GLASSINE_REBOOT_FORCE=1 (reboot -f): no shutdown; a reason goes straight to
 # glassine-reboot, and GLASSINE_INIT_REBOOT is the forced reboot.
+# The shutdown record (docs/deployments.md, "Runtime directory"): next=<reason> in
+# /run/glassine/shutdown, written atomically right before the reboot (over a record
+# that is there), and removed again when the reboot doesn't start; nothing when the
+# reboot is refused. No reason: next=restart, only when no record is there yet. A
+# record that can't be written never stops the reboot.
 # Exit 1: glassine-reboot-reason isn't in the shutdown runlevel (the reboot would
 # lose the reason), or a menu request not written; 2 a bad reason; 3 this board's
 # loader takes no menu request.
@@ -32,14 +37,28 @@ RUNLEVELS=${GLASSINE_RUNLEVELS:-/etc/runlevels}
 INIT_REBOOT=${GLASSINE_INIT_REBOOT:-reboot}
 NOW=${GLASSINE_REBOOT:-/usr/sbin/glassine-reboot}
 MARK=${GLASSINE_LOADER_MARK:-/usr/sbin/glassine-loader-mark}
+REC=${GLASSINE_SHUTDOWN_RECORD:-/run/glassine/shutdown}
 say() { echo "glassine-reboot-clean: $*" >&2; }
-[ -n "$1" ] || exec $INIT_REBOOT
+# record TARGET: the shutdown record next=TARGET; unrecord: the one written here removed
+WROTE=''
+record() {
+	{ mkdir -p "${REC%/*}" && printf 'next=%s\n' "$1" > "$REC.new" && mv -f "$REC.new" "$REC" && WROTE=1; } 2>/dev/null || rm -f "$REC.new" 2>/dev/null
+	return 0
+}
+unrecord() { [ -z "$WROTE" ] || rm -f "$REC" 2>/dev/null; WROTE=''; return 0; }
+if [ -z "$1" ]; then
+	[ -e "$REC" ] || record restart
+	$INIT_REBOOT && exit 0
+	_r=$?; unrecord; say "the reboot did not start (exit $_r)"; exit 1
+fi
 case "$1" in *[!a-z0-9-]*) say "bad reason '$1'"; exit 2 ;; esac
 
 # the request is in the record: a plain reboot; one that doesn't start takes it back
 request_reboot() {
+	record "$1"
 	$INIT_REBOOT && exit 0
 	_r=$?
+	unrecord
 	"$MARK" request clear 2>/dev/null || say "the $1 request could not be taken back: the loader acts on it at the next start"
 	say "the reboot did not start (exit $_r)"
 	exit 1
@@ -62,10 +81,14 @@ esac
 
 if [ "${GLASSINE_REBOOT_FORCE:-}" = 1 ]; then
 	sync
-	exec "$NOW" "$1"
+	record "$1"
+	"$NOW" "$1" && exit 0
+	_r=$?; unrecord; say "glassine-reboot $1 did not reboot (exit $_r)"; exit 1
 fi
 { [ -e "$RUNLEVELS/shutdown/glassine-reboot-reason" ] || [ -L "$RUNLEVELS/shutdown/glassine-reboot-reason" ]; } ||
 	{ say "glassine-reboot-reason is not in the shutdown runlevel"; exit 1; }
 printf '%s\n' "$1" > "$REASON_FILE.new" && mv -f "$REASON_FILE.new" "$REASON_FILE" ||
 	{ say "cannot write $REASON_FILE"; exit 1; }
-exec $INIT_REBOOT
+record "$1"
+$INIT_REBOOT && exit 0
+_r=$?; unrecord; say "the reboot did not start (exit $_r)"; exit 1
