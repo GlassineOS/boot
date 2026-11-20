@@ -55,6 +55,7 @@ jobs:
             grep -qx lib/glassine-boot/hooks.d/h.sh /tmp/l.list
             grep -qx lib/glassine-boot/extra/x /tmp/l.list
             grep -qx lib/glassine-boot/glassine-device.sh /tmp/l.list
+            grep -qx soft /tmp/l.list
             make glassine-reboot && cp /tmp/a.cpio.gz initramfs.cpio.gz
             make DESTDIR=/tmp/d install && find /tmp/d -type f | sort
             make clean'
