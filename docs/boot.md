@@ -244,9 +244,15 @@ would then cancel the image (exit 3). Otherwise it holds the state lock across t
 hibernate, switches the swap file on (if it isn't), writes the guard, then
 `resume_offset` and `resume` (the same block and device the initramfs will use),
 `shutdown` to `/sys/power/disk` (exit 3 if the kernel doesn't offer the mode), stops the watchdog daemon (magic close) and writes
-`disk` to `/sys/power/state`. When the kernel returns (resumed, or it refused), it
+`disk` to `/sys/power/state`. Before all that, before the device steps, it takes the
+picture of the screen (GlassineOS/shell's `glassine-screen-picture`, at most 5 s) and
+writes it as the splash store's override (`glassine-splash-store override --picture`,
+at most 10 s), so the next start shows it while the resume runs (011 FR-024 to
+FR-028); a picture that can't be taken or written is said and changes nothing else, and
+`HIBERNATE_PICTURE=no` in `deploy.conf` turns it off. When the kernel returns (resumed, or it refused), it
 starts the watchdog again with its old arguments, removes the guard, switches the
-swap file off again and makes sure it carries the plain swap signature. `--reboot`
+swap file off again and makes sure it carries the plain swap signature. Then it removes
+the override it wrote (also when the hibernate is cancelled). `--reboot`
 writes `reboot` instead of `shutdown` (bring-up: a failed resume keeps pstore); a
 kernel without `/sys/power/disk` can only use its default (power off), so `--reboot`
 refuses there (exit 3). The watchdog is restarted directly, not through the init
@@ -277,6 +283,10 @@ writes a finished image on the raw form).
 glassine-splash-store has-store                       exit 0: this board has a store the system can write; 3: none
 glassine-splash-store override --leave [--wait S]     the override "leave the screen" (kind 1)
 glassine-splash-store override FILE [--wait S]        FILE, a format-2 image, as the override
+glassine-splash-store override --picture PNM [--wait S]
+                                                      PNM (binary P5 grey or P6 RGB) as the override: an image
+                                                      for the mode of its size, grey8 or rgb888, LZ4 without
+                                                      the filter (gspl-encode --compression fast)
 glassine-splash-store override --remove [--wait S]    no override
 ```
 
