@@ -91,6 +91,12 @@ DEVICE=
 # files stay untouched. Empty: the board has no device data, and a device
 # package's list is ignored (said once per boot).
 DEVICE_PART=
+# The hardware watchdogs the initramfs arms and the booted system keeps fed
+# (lib/glassine-watchdog.sh): DEVICE:SECONDS, space-separated, one busybox daemon
+# each (petting every 5 s). Empty: /dev/watchdog, 20 s. Name only watchdogs whose
+# timeout resets the board: on the Note Air the PMIC's (/dev/watchdog0, its device
+# tree fixes the numbers), not the SoC's (in a test its bite left the board hung).
+WATCHDOGS=
 
 # --- Roles -----------------------------------------------------------------
 # How the initramfs tells a normal boot from a boot of the test slot: an

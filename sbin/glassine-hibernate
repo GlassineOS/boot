@@ -123,27 +123,33 @@ ready() {
 }
 
 # The SoC watchdog can't wait out an image write or load (docs/boot.md): stop
-# the busybox watchdog daemon (its magic close on SIGTERM), start it again with
-# the same arguments when the kernel returns.
+# every busybox watchdog daemon (its magic close on SIGTERM; a board may run one per
+# watchdog, the initramfs's WATCHDOGS), start each again with the same arguments when
+# the kernel returns.
 WD_ARGS=''
 wd_stop() {
     for p in /proc/[0-9]*; do
         [ "$(cat "$p/comm" 2>/dev/null)" = watchdog ] || continue
-        WD_ARGS=$(tr '\000' ' ' < "$p/cmdline" 2>/dev/null)
+        _a=$(tr '\000' ' ' < "$p/cmdline" 2>/dev/null)
+        [ -n "$_a" ] && WD_ARGS="$WD_ARGS$_a
+"
         kill "${p#/proc/}" 2>/dev/null
         _n=0
         while [ -d "$p" ] && [ $_n -lt 30 ]; do sleep 0.1; _n=$((_n + 1)); done
         [ -d "$p" ] && say "the watchdog (${p#/proc/}) did not stop"
-        say "watchdog stopped"
+        say "watchdog stopped${_a:+ ($_a)}"
     done
 }
 wd_start() {
     [ -n "$WD_ARGS" ] || return 0
     # in the background (busybox's daemon forks anyway, one started with -F
     # under a supervisor must not hold this up), without the state lock (fd 9)
-    # shellcheck disable=SC2086  # the saved argument words
-    $WD_ARGS </dev/null >/dev/null 2>&1 9>&- &
-    say "watchdog started again"
+    printf '%s' "$WD_ARGS" | while read -r _a; do
+        [ -n "$_a" ] || continue
+        # shellcheck disable=SC2086  # the saved argument words
+        $_a </dev/null >/dev/null 2>&1 9>&- &
+        say "watchdog started again ($_a)"
+    done
 }
 
 # hooks pre | hooks post resumed|failed
