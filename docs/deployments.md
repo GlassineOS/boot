@@ -355,9 +355,11 @@ applies, so a failed deployment that is also previous shows failed). A `kept` on
 there only until the next clean-up (one that was mounted, or left by an older tool). `base_present` is
 `yes` when the deployment's base is a subvolume under the system partition's `bases/`,
 `no` when it is not, empty when the system partition is not readable or the meta names
-no base. `version` is the base's version: `VERSION_ID` of the base's `usr/lib/os-release`
-(else its `etc/os-release` when that is a file, not a link), only letters, digits and
-`._+~-`, at most 32 characters; empty when the base is not there or holds none.
+no base. `version` is the base's version: the image version of its base manifest
+(`version` of `usr/share/glassine/base.manifest`, [kernel-artifacts.md](kernel-artifacts.md)),
+else `VERSION_ID` of the base's `usr/lib/os-release` (else its `etc/os-release` when
+that is a file, not a link), whichever comes first as only letters, digits and `._+~-`,
+at most 32 characters; empty when the base is not there or holds none.
 `status`'s `failed` is the last deployment that ran out of tries.
 
 ### Exit codes

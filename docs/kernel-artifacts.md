@@ -544,8 +544,14 @@ name, never different bytes under an old one.
 
 **Base manifest:** `/usr/share/glassine/base.manifest` in the base tree, defined here,
 `key=value` like the other records: `format` (`1`), `base` (the base id, the same as the
-subvolume's name), `locks`, `needs`, `features`. The image builder writes it into the
-base before the subvolume is made read-only.
+subvolume's name), `version`, `locks`, `needs`, `features`. The image builder writes it
+into the base before the subvolume is made read-only.
+
+- `version`: the base's image version, as the image builder sets it (GlassineOS/images
+  calls it a calendar version, `YYYY.MM.DD`); letters, digits and `._+~-`, at most 32
+  characters. It names the base to people (the start menu's labels, `glassine-deploy
+  list`); nothing compares or sorts it. A base without one is named by its
+  distribution's `VERSION_ID`.
 
 - `locks`: the package set the base was built from, as the sha256 (64 hex) of the
   concatenation, over the stages of the target's chain in build order, of the stage's
