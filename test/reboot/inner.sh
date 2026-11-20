@@ -162,7 +162,7 @@ ok "record: reboot recovery end to end (sbin/reboot -> reboot-clean -> busybox):
 # the service's functions with stubs for the tool; start's read-only part needs the
 # boot libraries, which this container lacks: only what comes before it is judged
 printf '#!/bin/sh\necho "store $*" >> %s\nexit $(cat %s/store.rc)\n' $C $W > $W/bin/store
-printf '#!/bin/sh\necho "store $*" >> %s\nsleep 30\n' $C > $W/bin/store-hang
+printf '#!/bin/sh\ntrap "" TERM\necho "store $*" >> %s\nsleep 30\n' $C > $W/bin/store-hang
 chmod +x $W/bin/*
 echo 0 > $W/store.rc
 mro() { : > $C; ( ebegin() { :; }; eend() { echo "eend $1" >> $W/eend; return "$1"; }; . /p/openrc/glassine-mount-ro; start ) > $W/mro.out 2>&1; }
@@ -176,7 +176,7 @@ ok "shutdown step: the store fails: said, the step goes on to the read-only part
 echo 0 > $W/store.rc
 ok "shutdown step: the tool not installed: nothing" "GLASSINE_SPLASH_STORE=$W/none mro; [ ! -s $C ]"
 export t0; t0=$(date +%s)
-ok "shutdown step: a store that hangs is ended by the timeout" "GLASSINE_SPLASH_TIMEOUT=2 GLASSINE_SPLASH_STORE=$W/bin/store-hang mro; [ \$((\$(date +%s) - t0)) -lt 10 ] && grep -q store $C"
+ok "shutdown step: a store that hangs and ignores TERM is killed after the timeout" "GLASSINE_SPLASH_TIMEOUT=2 GLASSINE_SPLASH_STORE=$W/bin/store-hang mro; [ \$((\$(date +%s) - t0)) -lt 10 ] && grep -q store $C"
 mkdir -p /run/glassine; : > /run/glassine/restarting
 ok "shutdown step: a soft restart runs (restarting): no override" "mro; [ ! -s $C ]"
 rm -f /run/glassine/restarting

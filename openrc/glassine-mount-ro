@@ -21,13 +21,14 @@ depend() {
 }
 
 # keep_screen: the override "leave the screen" when the shell asked for it; at most
-# GLASSINE_SPLASH_TIMEOUT seconds (15), never failing the shutdown
+# GLASSINE_SPLASH_TIMEOUT seconds (15; a tool that ignores the TERM, or waits on a
+# child, killed 2 s later), never failing the shutdown
 keep_screen() {
 	_ks=${GLASSINE_SCREEN_KEEP:-/run/glassine/screen-keep}
 	_kt=${GLASSINE_SPLASH_STORE:-/usr/sbin/glassine-splash-store}
 	[ -e "$_ks" ] && [ -x "$_kt" ] || return 0
 	ebegin "glassine: the shutdown screen kept through the next start"
-	timeout "${GLASSINE_SPLASH_TIMEOUT:-15}" "$_kt" override --leave --wait 5 2>&1
+	timeout -k 2 "${GLASSINE_SPLASH_TIMEOUT:-15}" "$_kt" override --leave --wait 5 2>&1
 	eend $? "glassine-splash-store failed: the next start may draw over the screen"
 	return 0
 }

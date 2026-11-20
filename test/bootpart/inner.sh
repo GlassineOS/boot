@@ -552,6 +552,9 @@ if [ "${BP_PRIV:-}" = 1 ]; then
     SO2=$W/fm/glassine/splash/override.gspl
     ok "FAT: has-store 0; override --leave written, mounted only for the command" "SDIR='' SDEV=$LD sse has-store && SDIR='' SDEV=$LD sse override --leave 2>$W/err && ! grep -q \"$MR/splash-store\" /proc/mounts && mount -t vfat -o ro $LD $W/fm && cmp -s $SO2 $W/leave.gspl && gspl $SO2; umount $W/fm"
     ok "FAT: override FILE, then --remove: the image, then none, read back after a remount" "SDIR='' SDEV=$LD sse override $W/p1.gspl 2>/dev/null && mount -t vfat -o ro $LD $W/fm && cmp -s $SO2 $W/p1.gspl && umount $W/fm && SDIR='' SDEV=$LD sse override --remove 2>/dev/null && mount -t vfat -o ro $LD $W/fm && [ ! -e $SO2 ] && [ -d $W/fm/glassine/splash ]; umount $W/fm"
+    SDIR='' SDEV=$LD sse override $W/p1.gspl 2>/dev/null
+    GLASSINE_BI_AFTER_SPLASH_NEW='kill -TERM $$; true' SDIR='' SDEV=$LD sse override $W/p2.gspl 2>/dev/null; tr=$?
+    ok "FAT: a TERM during the write (the caller's timeout): 1, the boot partition unmounted, the old override kept" "[ $tr = 1 ] && ! grep -q \"$MR/splash-store\" /proc/mounts && mount -t vfat -o ro $LD $W/fm && cmp -s $SO2 $W/p1.gspl; umount $W/fm"
     $B cancel >/dev/null 2>&1
     # too little room: refused, nothing removed that a record names
     head -c 8388608 /dev/zero > $W/small.img; mkfs.vfat -n GLASSINE $W/small.img >/dev/null 2>&1

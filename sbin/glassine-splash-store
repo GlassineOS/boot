@@ -16,13 +16,14 @@
 #
 # Where the store is comes from the board (board.conf HANDOFF, BOOT_FORM, BOOT_PART, as
 # glassine-loader-mark reads them): BOOT_FORM=raw, the region override of the raw boot
-# partition (the device's lock on fd 8, the one glassine-boot-raw and the record's
+# partition (the device's lock on fd 8, the one glassine-boot-raw and the raw record's
 # writers take; "Writing a region"; removal = the region's first 4096 bytes zero, read
 # back); HANDOFF=uefi, \glassine\splash\override.gspl on the FAT boot partition,
 # mounted for the one write and unmounted again (written as .new, synced, read back,
-# the old one removed, renamed, each synced; removal = the file removed, synced). The
-# FAT form takes the device's lock too, and no state lock: the shutdown step runs it
-# after the system partition is out of the mount table. Any other board has no store.
+# the old one removed, renamed, each synced; removal = the file removed, synced). On
+# FAT the device's lock only keeps two of these writers apart (the record's writers
+# there hold the state lock, and write other files); no state lock is taken: the
+# shutdown step runs it after the system partition is out of the mount table. Any other board has no store.
 #
 # Every write is bounded: the lock is waited for --wait seconds, a TERM (the caller's
 # timeout) unmounts what was mounted. A cut leaves the old override, none or the new

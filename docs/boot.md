@@ -292,10 +292,11 @@ glassine-splash-store override --remove [--wait S]    no override
 - **"Leave the screen"** is the 64-byte header of format 2 with kind 1, every picture
   field and the payload length zero, and its CRC; no payload. An image is checked as the
   reader checks it (header, CRCs, length) before anything is written.
-- **Bounded:** the device's lock (the one `glassine-boot-raw` and the record's writers
-  take) is waited for `--wait` seconds (default 10); a TERM unmounts what it mounted. No
-  state lock: the shutdown step runs it after the system partition is out of the mount
-  table.
+- **Bounded:** the device's lock is waited for `--wait` seconds (default 10); a TERM
+  unmounts what it mounted. On the raw form it is the lock `glassine-boot-raw` and the
+  record's writers take; on FAT it only keeps two of these writers apart (the record's
+  writers hold the state lock and write other files). No state lock is taken: the
+  shutdown step runs it after the system partition is out of the mount table.
 - **Exit:** 0 written; 1 not written (a refused image, the lock held, a write or
   read-back that failed; said; the old override or none, never a part of one); 2 usage;
   3 no store.

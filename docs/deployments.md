@@ -453,7 +453,7 @@ system), remounts that mount read-only and unmounts it. A file system that isn't
 (a bare boot never mounted userdata) is left alone. It never stops a shutdown; a file
 system it can't make read-only (still in use) is logged. Before that, where the shell's
 shutdown screen left `/run/glassine/screen-keep`, it runs `glassine-splash-store override
---leave --wait 5` under a 15-second timeout, so the next start leaves the screen as it is
+--leave --wait 5` under a 15-second timeout (killed 2 s later if it doesn't end), so the next start leaves the screen as it is
 (specs/011 FR-014); a failure is logged and the shutdown goes on. It skips both during a
 soft restart.
 
