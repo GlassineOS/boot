@@ -385,7 +385,8 @@ boot_default() {
     fi
     umount /sys/kernel/config 2>/dev/null
     if [ "$ROOT_LAYOUT" = deployments ]; then
-        gr_carry $NEWROOT || { log "default: cannot move the mounts into the new root"; return 1; }
+        # the running image's own assembly, kept for a soft restart (specs/013)
+        GR_KEEP_SRC=/ gr_carry $NEWROOT || { log "default: cannot move the mounts into the new root"; return 1; }
         device_data
     fi
     log "default: switch_root $(cut -d' ' -f1 /proc/uptime)"

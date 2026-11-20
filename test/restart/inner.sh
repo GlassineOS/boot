@@ -121,6 +121,9 @@ ok "a soft start without the two mounts: refused" "! gr_soft_boot $P $R $KR"
 
 # --- the restart record (FR-008) and the cold note ---------------------------------
 unset_rs
+# the cold start's init hands its own assembly to the carry step: without it no cold
+# start keeps one, and every restart after a cold start is cold (no-assembly)
+ok "the cold start's init keeps its assembly (GR_KEEP_SRC=/ on its gr_carry)" "grep -Eq '^[[:space:]]*GR_KEEP_SRC=/ gr_carry ' /p/initramfs/init"
 ok "a cold start: restart kind=cold, count=0, at=; no kept assembly without GR_KEEP_SRC (kept.none)" "gr_boot $SD $UDEV $P $R $KR 2>/dev/null && gr_carry $R && [ \"\$(gs_kv $R/run/glassine/restart kind)\" = cold ] && [ \"\$(gs_kv $R/run/glassine/restart count)\" = 0 ] && [ -n \"\$(gs_kv $R/run/glassine/restart at)\" ] && [ \"\$(cat $R/run/glassine/kept.none)\" = no-assembly ]"
 gr_boot_umount $R
 echo processes > $U/restart.cold
