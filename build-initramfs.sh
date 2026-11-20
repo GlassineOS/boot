@@ -69,6 +69,7 @@ install -D -m 644 "$HERE/lib/glassine-root.sh" "$I/lib/glassine-boot/glassine-ro
 install -D -m 644 "$HERE/lib/glassine-device.sh" "$I/lib/glassine-boot/glassine-device.sh"
 # the loader record of the raw form (the start menu's deploy_once, BOOT_FORM=raw)
 install -D -m 644 "$HERE/lib/glassine-bootpart.sh" "$I/lib/glassine-boot/glassine-bootpart.sh"
+install -D -m 644 "$HERE/lib/glassine-watchdog.sh" "$I/lib/glassine-boot/glassine-watchdog.sh"
 if [ -n "$HELPERS" ]; then
     for c in "$HELPERS"/*.c; do
         t=$(basename "$c" .c)

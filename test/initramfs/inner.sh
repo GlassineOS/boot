@@ -232,6 +232,25 @@ ok "no boot modules (a kernel with its drivers built in): no step, nothing logge
 unset GLASSINE_INIT_LIB
 rm -f $S/uname $S/insmod
 
+# --- the watchdogs (lib/glassine-watchdog.sh) ---
+run wd-default "panic=5 rdinit=/init glassine.return=3"
+ok "watchdogs, no library: the old /dev/watchdog step (none here: said)" "grep -q 'no /dev/watchdog' /kmsg.wd-default"
+mkdir -p /wl && cp /m/lib/glassine-watchdog.sh /wl/ && : > /tmp/wd0 && : > /tmp/wd1
+{ cat $EX; echo 'WATCHDOGS="/tmp/wd1:60 /tmp/wd0 /tmp/none:5 /tmp/wd0:x"'; } > /wd.conf
+export GLASSINE_INIT_LIB=/wl
+run wd-list "panic=5 rdinit=/init glassine.return=3" /wd.conf
+unset GLASSINE_INIT_LIB
+ok "watchdogs: a daemon per listed device, its timeout (missing or bad: 20)" "grep -qx 'watchdog -t 5 -T 60 /tmp/wd1' /calls.wd-list && [ \$(grep -cx 'watchdog -t 5 -T 20 /tmp/wd0' /calls.wd-list) = 2 ]"
+ok "watchdogs: a missing device is waited for (3 s), then said, no daemon" "grep -q 'no /tmp/none' /kmsg.wd-list && ! grep -q '/tmp/none' /calls.wd-list && [ \$(grep -c '^sleep 0.1' /calls.wd-list) -ge 30 ]"
+ok "watchdogs: armed is said per device" "grep -q 'watchdog /tmp/wd1 armed (60 s)' /kmsg.wd-list"
+ok "watchdogs: the default list is /dev/watchdog, 20 s" "sh -c '. /m/lib/glassine-watchdog.sh; [ \"\$(gw_list)\" = \"/dev/watchdog 20\" ]'"
+# the feeder side (the soft start): one fd per device, 7 down, a ping on each, closed
+ok "watchdogs: gw_open + gw_feed ping every listed device, gw_close closes them" "sh -c '
+    WATCHDOGS=\"/tmp/f0:20 /tmp/nope:20 /tmp/f1:60\"; : > /tmp/f0; : > /tmp/f1; . /m/lib/glassine-watchdog.sh
+    gw_open; [ \"\$GW_FDS\" = \" 7 5\" ] || exit 1
+    gw_feed; gw_feed; [ \"\$(cat /tmp/f0)\" = kk ] && [ \"\$(cat /tmp/f1)\" = kk ] || exit 1
+    gw_close; [ -z \"\$GW_FDS\" ] && [ ! -e /proc/self/fd/7 ] && [ ! -e /proc/self/fd/5 ]'"
+
 # --- no board config ---
 run noboard "panic=5 rdinit=/init glassine.return=3 glassine.devmode=usb" /does-not-exist
 ok "no board config: said, no listeners, no root to boot: powers off" "grep -q 'no board config' /kmsg.noboard && ! listens noboard && grep -q 'none configured' /kmsg.noboard && grep -q '^poweroff -f' /calls.noboard"
