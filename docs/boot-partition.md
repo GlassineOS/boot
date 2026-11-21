@@ -695,7 +695,8 @@ no image.
 ### The running system's writer
 
 The raw form is written from the running system by `glassine-boot-raw` and
-`lib/glassine-bootpart.sh` (busybox only; CRC-32 from gzip's trailer):
+`lib/glassine-bootpart.sh` (busybox only; CRC-32 from gzip's trailer, and in awk where a
+read checks the region table):
 
 | Command | Writes |
 |---|---|
