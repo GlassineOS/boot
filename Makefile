@@ -83,6 +83,7 @@ check:
 	sh test/seed/test.sh
 	sh test/devmode/test.sh
 	sh test/reboot/test.sh
+	sh test/openrc/test.sh
 
 clean:
 	rm -f glassine-reboot glassine-slot initramfs.cpio.gz

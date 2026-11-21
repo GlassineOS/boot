@@ -35,6 +35,8 @@ jobs:
         run: sh test/devmode/test.sh
       - name: reboot, glassine-reboot-clean and its shutdown service with stubs
         run: sh test/reboot/test.sh
+      - name: the OpenRC services' dependencies in OpenRC's own tree (stops ordered with rc_parallel)
+        run: sh test/openrc/test.sh
       - name: soft restart on real btrfs/ext4/overlayfs, the soft start as PID 1 of a namespace (privileged)
         run: sh test/restart/test.sh
   build:

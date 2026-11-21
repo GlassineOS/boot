@@ -8,13 +8,16 @@
 #
 # A one-shot job, not a daemon: OpenRC calls a --background daemon that exits
 # "crashed", so the job runs detached with its own pid file (not pidfile=);
-# the service stays "started".
+# the service stays "started". `need localmount`: localmount's stop waits for
+# this stop, which waits for a partition write (rc_parallel orders nothing by
+# `after *` alone).
 # shellcheck disable=SC2034  # read by openrc-run
 description="glassine-bootimg: promote a tested kernel to the default slot"
 
 JOBPID=/run/glassine-bootimg-promote.job
 
 depend() {
+	need localmount
 	after *
 }
 
