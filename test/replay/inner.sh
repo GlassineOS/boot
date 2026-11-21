@@ -88,6 +88,32 @@ ua add 'less>=0.1'
 ok "--without NAME of a changed entry: the base's entry stays, the package stays" "$G stage b2 --without less --yes >$W/o 2>&1 && grep -q 'keeping the base.s less' $W/o && ! grep -q 'remove less' $W/o && gr_merged_ro $S $U/deployments/\$(st staged) $W/v && grep -qx less $W/v/etc/apk/world && grep -qx 'P:less' $W/v/lib/apk/db/installed"
 umount $W/v 2>/dev/null; clear_staged; ua del less; cp $W/world $R/etc/apk/world
 
+# exact pins (name=version, an earlier `apk add name=version`): a new base that has that
+# version or a newer one takes over, its own entry stays (a pin never takes a package
+# below the base it is replayed on)
+ua add less; cp $R/etc/apk/world $W/world
+LV=$(awk -F: '$1 == "P" { p = $2 } $1 == "V" && p == "less" { print $2; exit }' $R/lib/apk/db/installed)
+ua add "less=$LV"
+ok "a pin the new base has (equal): it goes, said, the base's entry stays, nothing removed" "grep -qx \"less=$LV\" $R/etc/apk/world && $G stage b2 --yes >$W/o 2>&1 && grep -q \"your pin less=$LV goes\" $W/o && ! grep -q 'remove less' $W/o && gr_merged_ro $S $U/deployments/\$(st staged) $W/v && grep -qx less $W/v/etc/apk/world && ! grep -q '^less=' $W/v/etc/apk/world && grep -A1 -x 'P:less' $W/v/lib/apk/db/installed | grep -qx \"V:$LV\""
+umount $W/v 2>/dev/null; clear_staged
+sed -i "s/^less=.*/less=0.1-r0/" $R/etc/apk/world
+ok "a pin below the new base: it goes, staged (no exit 7, nothing goes down)" "$G stage b2 --yes >$W/o 2>&1 && grep -q 'your pin less=0.1-r0 goes' $W/o && [ -n \"\$(st staged)\" ]"
+clear_staged
+sed -i "s/^less=.*/less=999.0-r0/" $R/etc/apk/world
+ok "a pin above the new base: replayed (here it doesn't resolve: exit 7, nothing staged)" "$G stage b2 --yes >$W/o 2>&1; [ \$? = 7 ] && ! grep -q 'your pin' $W/o && [ -z \"\$(st staged)\" ] && nomnt"
+clear_staged; cp $W/world $R/etc/apk/world
+ua add tree; TV=$(awk -F: '$1 == "P" { p = $2 } $1 == "V" && p == "tree" { print $2; exit }' $R/lib/apk/db/installed); ua add "tree=$TV"
+ok "a pin of a package the new base doesn't have: replayed as it is" "$G stage b2 --yes >$W/o 2>&1 && ! grep -q 'your pin' $W/o && grep -qx \"tree=$TV\" $U/deployments/\$(st staged)/build/etc/apk/world"
+clear_staged; cp $W/world $R/etc/apk/world
+# a base whose package is newer than what the replay makes of it (here b3 says its less
+# is 9999.0-r0, the user's entry less<9999 asks for less): not silently, exit 7
+btrfs -q subvolume snapshot $S/bases/b1 $S/bases/b3
+sed -i '/^P:less$/,/^$/s/^V:.*/V:9999.0-r0/' $S/bases/b3/lib/apk/db/installed; btrfs property set -ts $S/bases/b3 ro true
+ua add 'less<9999'
+ok "a replay that takes a package below the new base's version: exit 7, named, nothing staged" "$G stage b3 --yes >$W/o 2>&1; [ \$? = 7 ] && grep -q 'goes below base b3: less 9999.0-r0 -> ' $W/o && [ -z \"\$(st staged)\" ] && nomnt"
+ok "... --accept-downgrades: staged" "$G stage b3 --accept-downgrades --yes >/dev/null 2>&1 && [ -n \"\$(st staged)\" ]"
+clear_staged; ua add less; cp $W/world $R/etc/apk/world
+
 echo '@mine http://127.0.0.1:9/nothing' >> $R/etc/apk/repositories
 ok "a repository the user added comes along" "$G stage b2 --yes >$W/o 2>&1 && grep -qF '@mine http://127.0.0.1:9/nothing' $U/deployments/\$(st staged)/build/etc/apk/repositories"
 clear_staged; sed -i '/@mine/d' $R/etc/apk/repositories
