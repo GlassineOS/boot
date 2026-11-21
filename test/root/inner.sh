@@ -119,7 +119,8 @@ USERDATA_PREFIX=$P
 RUN_DIR=$W/run
 CONF
 mkdir -p $W/run
-export GLASSINE_DEPLOY_CONF=$W/deploy.conf GLASSINE_DEPLOY_LIB=/p/lib/glassine-state.sh
+export GLASSINE_DEPLOY_CONF=$W/deploy.conf GLASSINE_DEPLOY_LIB=/p/lib/glassine-state.sh GLASSINE_DEPLOY_KMSG=$W/kmsg
+: > $W/kmsg
 st() { gs_kv $S/state/deploy "$1"; }
 ok "status sees the btrfs system" "$G status --porcelain | grep -q 'system_fs=btrfs	migrated=yes	current=d1'"
 gr_assemble $S $U d1 $R && mkdir -p $R/etc/wireguard $R/etc/glassine/migrate.d && echo wg > $R/etc/wireguard/wg0.conf && chmod 700 $R/etc/wireguard &&
@@ -299,6 +300,7 @@ SB=$(st staged); SW=$U/deployments/$SB/switch
 mkdir -p $U/deployments/$SB/build/etc && printf '%s\nnewsvc:x:200:200::/:/sbin/nologin\n' "$(cat $B2/etc/passwd)" > $U/deployments/$SB/build/etc/passwd
 ok "bases: the staged deployment uses b2" "$G bases --porcelain | grep -q 'name=b2	used_by=$SB'"
 ok "switch: the staged update is the candidate" "$G switch >$W/swout 2>&1 && [ \"\$(st candidate)\" = $SB ] && [ -z \"\$(st staged)\" ]"
+ok "stage, switch: the unused base b3 removed (by the stage), in the kernel log; the deployments' bases and the modules kept" "[ ! -e $S/bases/b3 ] && ! btrfs subvolume list $S | grep -q 'bases/b3$' && [ -e $S/bases/b2 ] && [ -e $S/bases/$NB ] && [ -d $S/modules/m9 ] && grep -q '^<5>glassine-deploy: base b3 removed: no deployment uses it' $W/kmsg"
 ok "switch: accounts merged (user + its password + wheel membership; bluetooth at the new base's ID)" "grep -qx 'user:x:1000:1000::/home/user:/bin/ash' $SW/etc/passwd && grep -qx 'bluetooth:x:101:101::/:/sbin/nologin' $SW/etc/passwd && grep -q '^user:\$6\$u:' $SW/etc/shadow && grep -qx 'wheel:x:10:root,user' $SW/etc/group && grep -qx 'user:x:1000:' $SW/etc/group"
 ok "switch: a build layer with only passwd: the new account is in, the base's groups and shadow rows stay" "grep -qx 'newsvc:x:200:200::/:/sbin/nologin' $SW/etc/passwd && grep -qx 'root:x:0:root' $SW/etc/group && grep -qx 'shadow:x:42:' $SW/etc/group && grep -q '^bluetooth:' $SW/etc/shadow && [ \"\$(stat -c %u:%g:%a $SW/etc/shadow)\" = 0:42:640 ]"
 ok "switch: carried files follow the moved bluetooth ID" "[ \"\$(stat -c %u:%g $SW/var/lib/bluetooth/AA/info)\" = 101:101 ] && [ \"\$(stat -c %u:%g $SW/var/lib/bluetooth/AA)\" = 101:101 ]"
@@ -321,6 +323,8 @@ $G stage b4 --yes >/dev/null; SK=$(st staged); cp $S/state/deploy $W/stK
 ok "switch: a kept user's ID taken in the new base: refused, names the IDs, stays staged, nothing selected" "$G switch 2>$W/err; [ \$? = 1 ] && grep -q 'kept accounts would change ID (gid 1000 -> 1001, uid 1000 -> 1001)' $W/err && cmp -s $S/state/deploy $W/stK && [ \"\$(st staged)\" = $SK ] && [ ! -e $W/run/switching ] && ! grep -q '$W/run' /proc/mounts"
 gs_update $S/state/deploy staged=; rm -rf $U/deployments/$SK
 btrfs property set -fts $S/bases/b4 ro false; btrfs -q subvolume delete $S/bases/b4
+# the clean-ups above removed the unused b3 and bad; bases remove needs them
+$G receive - < $W/b3.inc >/dev/null; btrfs -q send $W/src/bad | $G receive - >/dev/null
 # --- bases remove ---------------------------------------------------------------
 PREV0=$(gs_kv $S/state/deploy previous)
 mkdir -p $U/deployments/rm1; echo base=bad > $U/deployments/rm1/meta; gs_update $S/state/deploy previous=rm1
@@ -360,6 +364,80 @@ rm -rf $U/deployments/rm1; gs_update $S/state/deploy "previous=$PREV0"
 gs_update $S/state/deploy candidate= tries=0; rm -rf $U/deployments/$SB
 for v in bases/b2 bases/b3 bases/bad modules/m9; do btrfs property set -fts $S/$v ro false 2>/dev/null; btrfs -q subvolume delete $S/$v; done
 umount $W/src
+
+# --- unused bases go by themselves -------------------------------------------------
+# mkbase NAME…: a read-only base under bases/ (b1's /etc), never received
+mkbase() { for n in "$@"; do btrfs -q subvolume create $S/bases/$n && cp -a $B/etc $S/bases/$n/ && btrfs property set -ts $S/bases/$n ro true; done; }
+bnames() { ls $S/bases | sort | tr '\n' ' '; }
+used() { for m in $U/deployments/*/meta; do sed -n 's/^base=//p' $m; done | sort -u | tr '\n' ' '; }
+cp $S/state/deploy $W/stG; DG0=$(ls $U/deployments)
+mkbase kb sb
+# a deployment on userdata that no state key but failed= names, on its own base
+mkdir -p $U/deployments/kf1/build $U/deployments/kf1/switch $U/deployments/kf1/work; printf 'base=kb\nkind=reset\n' > $U/deployments/kf1/meta
+gs_update $S/state/deploy failed=kf1
+ok "stage: the staged base kept (no deployment used it before)" "$G stage sb --no-replay --yes >/dev/null && [ -e $S/bases/sb ] && [ -e $S/bases/kb ]"
+mkbase u1 u2 u3
+: > $W/kmsg
+ok "switch: exactly the bases of the deployments on userdata stay" "$G switch >$W/swout 2>&1 && [ \"\$(bnames)\" = \"\$(used)\" ] && [ \"\$(bnames)\" = 'b1 kb sb ' ]"
+ok "switch: one line per removed base, on stdout and in the kernel log" "[ \$(grep -c 'removed: no deployment uses it' $W/swout) = 3 ] && [ \$(grep -c '^<5>glassine-deploy: base u[123] removed: no deployment uses it' $W/kmsg) = 3 ] && grep -q 'base u1 removed' $W/swout && grep -q 'base u2 removed' $W/swout && grep -q 'base u3 removed' $W/swout"
+ok "switch: a base used only by a deployment still on userdata (the last failed one) kept" "[ -e $S/bases/kb ] && [ -e $U/deployments/kf1/meta ]"
+mkbase u4
+ok "an unreadable current meta: nothing removed, said" "mv $U/deployments/\$(st current)/meta $W/meta.save; $G remove kf1 --yes >/dev/null 2>$W/err; mv $W/meta.save $U/deployments/\$(st current)/meta; [ -e $S/bases/u4 ] && grep -q 'unused bases not removed' $W/err"
+mkdir -p $U/deployments/kf2/build && printf 'base=kb\nkind=reset\n' > $U/deployments/kf2/meta
+ok "remove: the base only the removed deployment used goes with it (and one a skipped clean-up left)" "$G remove kf2 --yes >$W/out 2>&1 && [ ! -e $S/bases/kb ] && [ ! -e $S/bases/u4 ] && grep -q 'base kb removed' $W/out && [ -e $S/bases/sb ]"
+# a base mounted (a view of it) stays
+mkbase um; mkdir -p $W/umv; mount --bind $S/bases/um $W/umv
+ok "a mounted base: not removed, said" "mkdir -p $U/deployments/kf3/build && printf 'base=b1\nkind=reset\n' > $U/deployments/kf3/meta && $G remove kf3 --yes >/dev/null 2>$W/err && [ -e $S/bases/um ] && grep -q 'base um is mounted' $W/err"
+umount $W/umv
+# hibernated: the switch is refused before anything is removed
+mkbase u5; $G stage b1 --no-replay --yes >/dev/null 2>&1; mkbase u6
+mkdir -p $U/swap; head -c 1048576 /dev/zero > $U/swap/hibernate; mkswap $U/swap/hibernate >/dev/null 2>&1
+printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/dev/null
+ok "hibernated: switch and receive refuse (exit 4), no base removed" "$G switch 2>/dev/null; a=\$?; $G receive - </dev/null 2>/dev/null; [ \$a\$? = 44 ] && [ -e $S/bases/u6 ] && [ -e $S/bases/sb ] && [ -n \"\$(st staged)\" ]"
+rm -f $U/swap/hibernate
+gs_update $S/state/deploy staged=
+for v in $S/bases/*; do [ "${v##*/}" = b1 ] || btrfs -q subvolume delete "$v"; done
+cp $W/stG $S/state/deploy
+for d in "$U"/deployments/*; do echo "$DG0" | grep -qx "${d##*/}" || rm -rf "$d"; done
+
+# --- receive into a full pool: the unused bases make room ---------------------------
+truncate -s 128M $W/small.img; mkfs.btrfs -q --mixed $W/small.img; loop $W/small.img; SM=$LOOP
+mkdir -p $W/smnt && mount -t btrfs "$SM" $W/smnt
+mkdir -p $W/smnt/bases $W/smnt/modules $W/smnt/state; cp $S/state/format $S/state/deploy $W/smnt/state/
+sed "s|^SYSTEM_DEV=.*|SYSTEM_DEV=$SM|; s|^SYSTEM_MNT=.*|SYSTEM_MNT=$W/smnt|" $W/deploy.conf > $W/deploy3.conf
+G3="env GLASSINE_DEPLOY_CONF=$W/deploy3.conf $G"
+# the streams, made on the scratch btrfs (compressed: the zeros take no room there)
+mount -o compress=zstd -t btrfs "$SRC" $W/src
+for v in $W/src/*; do [ -d "$v" ] && btrfs -q subvolume delete "$v"; done; btrfs -q subvolume sync $W/src
+btrfs -q subvolume create $W/src/r1; head -c 25165824 /dev/urandom > $W/src/r1/data; btrfs property set -ts $W/src/r1 ro true
+btrfs -q send -f $W/r1.stream $W/src/r1
+btrfs -q subvolume create $W/src/p1; head -c 4194304 /dev/urandom > $W/src/p1/data; btrfs property set -ts $W/src/p1 ro true
+btrfs -q subvolume snapshot $W/src/p1 $W/src/p2; head -c 16777216 /dev/urandom > $W/src/p2/more; btrfs property set -ts $W/src/p2 ro true
+btrfs -q send -f $W/p1.stream $W/src/p1; btrfs -q send -f $W/p2.inc -p $W/src/p1 $W/src/p2
+btrfs -q subvolume create $W/src/z1; head -c 41943040 /dev/zero > $W/src/z1/data; btrfs property set -ts $W/src/z1 ro true
+btrfs -q send $W/src/z1 | zstd -q -o $W/z1.stream.zst
+umount $W/src
+sfree() { df -Pk $W/smnt | awk 'NR == 2 { print $4 }'; }
+# fill N_KIB: unused bases of 8 MiB random data until less than N_KIB is free
+fill() { i=0; while [ "$(sfree)" -ge "$1" ] && [ $i -lt 20 ]; do i=$((i + 1)); btrfs -q subvolume create $W/smnt/bases/f$i && head -c 8388608 /dev/urandom > $W/smnt/bases/f$i/data 2>/dev/null; btrfs property set -ts $W/smnt/bases/f$i ro true 2>/dev/null; done 2>/dev/null; sync; }
+fbases() { n=0; for v in $W/smnt/bases/f*; do [ -d "$v" ] && n=$((n + 1)); done; echo $n; }
+R1K=$(( ($(stat -c %s $W/r1.stream) + 1023) / 1024 ))
+fill $R1K
+ok "receive, too little free for the stream: the unused bases removed first, then received" "[ \$(fbases) -gt 0 ] && $G3 receive $W/r1.stream >$W/out 2>&1 && [ \$(fbases) = 0 ] && [ -e $W/smnt/bases/r1/data ] && grep -q 'removing the unused bases first' $W/out && grep -q 'base f1 removed' $W/out"
+fill 51200
+ok "receive, a .zst that runs out of space: the unused bases removed, received on the second try" "[ \$(fbases) -gt 0 ] && $G3 receive $W/z1.stream.zst >$W/out 2>&1 && [ \$(fbases) = 0 ] && [ -e $W/smnt/bases/z1/data ] && grep -q 'system partition is full' $W/out"
+$G3 receive $W/p1.stream >/dev/null 2>&1
+fill $(( $(stat -c %s $W/p2.inc) / 1024 ))
+ok "receive of an incremental stream: its unused parent kept, the other unused bases removed" "[ \$(fbases) -gt 0 ] && $G3 receive $W/p2.inc >$W/out 2>&1 && [ \$(fbases) = 0 ] && [ -e $W/smnt/bases/p1/data ] && [ -e $W/smnt/bases/p2/more ] && ! grep -q 'base p1 removed' $W/out"
+# the pool full of bases deployments use (one unused base among them): no room to make
+mkbase3() { btrfs -q subvolume create $W/smnt/bases/$1 && head -c 8388608 /dev/urandom > $W/smnt/bases/$1/data 2>/dev/null; btrfs property set -ts $W/smnt/bases/$1 ro true 2>/dev/null; }
+for v in $W/smnt/bases/*; do [ -d "$v" ] && btrfs -q subvolume delete "$v"; done; btrfs -q subvolume sync $W/smnt
+mkbase3 f1; i=0
+while [ "$(sfree)" -ge $R1K ] && [ $i -lt 20 ]; do i=$((i + 1)); mkbase3 h$i; mkdir -p $U/deployments/kh$i && echo base=h$i > $U/deployments/kh$i/meta; done; sync
+ok "receive from stdin that runs out of space: exit 5, said, no base removed (the stream can't be read again)" "$G3 receive - < $W/r1.stream 2>$W/err; [ \$? = 5 ] && grep -q 'not enough space on the system partition for the stream' $W/err && [ \$(fbases) = 1 ] && [ -z \"\$(btrfs subvolume list $W/smnt | grep ' path bases/r1$')\" ]"
+ok "receive, a stream that doesn't fit after the unused bases went: exit 5, the space needed and free said, nothing kept, the used bases kept" "$G3 receive $W/r1.stream >$W/out 2>$W/err; [ \$? = 5 ] && grep -q \"not enough space on the system partition for $W/r1.stream: at least $R1K KiB needed (the stream's size), [0-9]* KiB free with no unused base left\" $W/err && [ \$(fbases) = 0 ] && [ -e $W/smnt/bases/h1 ] && [ -z \"\$(btrfs subvolume list $W/smnt | grep ' path bases/r1$')\" ]"
+rm -rf $U/deployments/kh*
+umount $W/smnt; rm -f $W/small.img $W/*.stream $W/*.zst $W/p2.inc
 
 # --- the hibernation gate on real mounts -------------------------------------------
 mkdir -p $U/swap; head -c 1048576 /dev/zero > $U/swap/hibernate; mkswap $U/swap/hibernate >/dev/null 2>&1
