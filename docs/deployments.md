@@ -217,17 +217,17 @@ glassine-deploy init POOL_MOUNT [--install-marker]
 | `reset` | stages a new, empty deployment on current's base (`carry=migrate`; `--full`: `carry=none`). A new reset replaces a staged one. `--now` switches at once (for the recovery). Neither touches home, Flatpak's data or the developer folder (`home/`, `flatpak/`, `devmode/` above). |
 | `stage BASE` | like `reset`, on another base under `bases/` (a base update): `kind=update`, `carry=migrate`. Refuses a base that is not there or has no `/etc/passwd`. Before the replay it checks the free space on userdata (below); too little is exit 5, nothing staged. With no current deployment (the first start, or after userdata was formatted) it stages the first deployment: only with `--no-replay` (refused otherwise), `kind=install`, `carry=none`. |
 | `stage BASE` flags | `--no-replay` the bare base, `--without NAME` (repeatable) leaves NAME's change out (an added package, or the removal of the base's entry when the user changed it), `--accept-downgrades` takes lower versions (below the running deployment's or below the new base's). Exit 7: the replay needs one of these; nothing staged. An exact pin (`name=version`) that the new base has or exceeds is not replayed: the base's version and its own entry take over (said). |
-| `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. Needs btrfs-progs (and zstd for `.zst`), see [Tools](#tools-each-command-needs). |
+| `receive FILE\|-` | `btrfs receive` of a send stream (full, or incremental onto a received base; `.zst` decompressed by its name) into `bases/` (`--modules`: `modules/`). Kept only if it is one read-only subvolume with a received UUID and a valid name; a cut stream, a name that exists or a missing parent leaves nothing. `--sha256` checks the file first. Into `bases/` it makes room by itself ([Unused bases](#unused-bases)); a stream that still doesn't fit is exit 5, with the space needed and free. Needs btrfs-progs (and zstd for `.zst`), see [Tools](#tools-each-command-needs). |
 | `receive FILE --boot` | a device tree (`<device>@<id>.dtb`) or an initramfs (`<commit12>@<id>.cpio.gz`) with its manifest beside it into `boot/dtb/` or `boot/initramfs/`, its identity checked, written power-cut safe; an existing name with the same bytes is a no-op, with other bytes refused ([kernel-artifacts.md](kernel-artifacts.md#on-the-system-partition)). No btrfs-progs needed. |
 | `packages [ID]` | how a deployment's packages (current by default) differ from its base's, derived each time (no bookkeeping): world entries `added` and `removed` (constraints and tags as written), packages installed in another version: `raised`/`lowered` (`apk version -t`; `changed` where apk is missing). A deployment that is not running needs userdata mounted. The replay input of a later base. |
 | `bases` | one record per subvolume under `bases/` and `modules/`, with the deployments whose meta names it |
-| `bases remove BASE` | deletes the subvolume and waits until its space is back. Refuses the base of the booted, current, candidate or staged deployment. Other deployments on it stay on userdata but can no longer be selected (`list` shows `base_present=no`); it asks first (`--yes`), naming them and a lost rollback. Then it removes the `boot/` files no kernel record names ([kernel-artifacts.md](kernel-artifacts.md#on-the-system-partition)). Modules are not removed. |
-| `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), merges the accounts (below), syncs, then sets `candidate=<id> tries=2 staged=`, then the clean-up. Interrupted = nothing selected, redone in full next time. |
+| `bases remove BASE` | deletes the subvolume and waits until its space is back. For a base some deployment still uses; the unused ones go by themselves ([Unused bases](#unused-bases)). Refuses the base of the booted, current, candidate or staged deployment. Other deployments on it stay on userdata but can no longer be selected (`list` shows `base_present=no`); it asks first (`--yes`), naming them and a lost rollback. Then it removes the `boot/` files no kernel record names ([kernel-artifacts.md](kernel-artifacts.md#on-the-system-partition)). Modules are not removed. |
+| `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), merges the accounts (below), syncs, then sets `candidate=<id> tries=2 staged=`, then the clean-up and the unused bases. Interrupted = nothing selected, redone in full next time. |
 | `publish` | the loader record's deployment list (`deploys`, `deployN`: previous, candidate, failed, kept; boot-partition.md) written through `glassine-loader-mark deploys` where the board has a loader record, only when it differs. Run by every command that changes the deployments (select, switch, accept, remove, stage) and by the boot-success service on a start that accepts nothing; never fails the command. |
-| `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous, then the clean-up (where userdata is mounted already). Refuses a non-candidate; accepting current is a no-op. |
+| `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous, then the clean-up and the unused bases (where userdata is mounted already). Refuses a non-candidate; accepting current is a no-op. |
 | `init POOL_MOUNT` | lays out an empty btrfs that the caller made and mounted (the image builder, for the pool image an installer writes to the system partition): `bases/`, `modules/`, `state/` with `deploy` and `kernel` naming nothing, `.lock`; `--install-marker` adds `state/install`. `state/format` is written last, so a cut `init` reads as not migrated. Refuses a path that is not a mount point, a file system other than btrfs, a subvolume mount (not the top level) and a pool that is not empty. Needs no `deploy.conf` (`GLASSINE_DEPLOY_CONF=/dev/null` on a build host) and no btrfs-progs. The caller then receives the base and the kernel's modules into it. |
 | `restart` | restarts: soft where the rules allow, else cold ([Restart](#restart)). `--check` reports which and why, writing nothing (exit 0 soft, 9 cold); `--soft` restarts only soft (exit 9 otherwise, nothing stopped); `--cold` always cold; `--once ID` starts ID for the incoming session only, by a soft restart. `--restart` on `select`, `rollback`, `reset` and `stage`: the command, then `restart`. |
-| `remove ID` | deletes a deployment's layers from userdata, the way the clean-up does. Refuses the current, candidate, staged and booted deployment and a mounted one. The previous one: asks first (`--yes`), naming the lost rollback, and clears `previous=`; the last failed one: clears `failed=`. |
+| `remove ID` | deletes a deployment's layers from userdata, the way the clean-up does. Refuses the current, candidate, staged and booted deployment and a mounted one. The previous one: asks first (`--yes`), naming the lost rollback, and clears `previous=`; the last failed one: clears `failed=`. Then the unused bases. |
 
 Where it reads and writes:
 
@@ -289,6 +289,41 @@ exist afterwards, `subuid`/`subgid` ranges by name. They replace any carried cop
 (same name, other ID, e.g. a system account renumbered by a new base) get the new
 owner, modes kept. Accounts the new base has no row for are not carried; the switch
 lists them.
+
+### Unused bases
+
+The system partition holds one base as received and the room for a few updates
+(installer spec 002 FR-019a), so a base no deployment uses goes by itself:
+
+- **When:** after a `switch` has set the candidate, after an `accept` (where userdata is
+  mounted), after a `remove`, and after `reset` or `stage` has staged its deployment
+  (`--now`: after the switch), each time after the clean-up of deployments; and in
+  `receive` into `bases/` when the stream doesn't fit (below).
+- **What stays:** every base that the meta of a deployment on userdata names, so the
+  bases of the booted, current, previous, candidate, staged and last failed deployments
+  and of any deployment the clean-up left (a mounted one). How many bases stay follows
+  from the deployments; there is no separate number. A base that is mounted stays too.
+  Modules are not removed. A received base that no deployment uses yet goes at the
+  next of these points: stage it right after the receive.
+- **Never:** nothing at all while the current deployment's meta can't be read or a
+  deployment's meta names no base (unreadable must not read as unused), or while
+  userdata may hold a hibernated session whose deployment's base can't be told; a
+  hibernated session's base is kept and said. The command itself has passed the
+  hibernation gate before (above), so a hibernate image is never discarded for a base.
+- **How:** as `bases remove`: the subvolume is deleted, then the command waits until its
+  space is back, then it removes the `boot/` files no kernel record names. One line per
+  base, on stdout and in the kernel log (`glassine-deploy: base <name> removed: no
+  deployment uses it`). It never fails the command that ran it; without btrfs-progs it
+  does nothing.
+
+**Room for a receive.** A stream from a file that is larger than the system partition's
+free space (its size; for `.zst` the compressed size, a lower bound) makes `receive`
+remove the unused bases first, all but the stream's parent (an incremental stream's
+first command names it). A `btrfs receive` that runs out of space anyway removes what it
+received, removes the unused bases (when it hadn't yet) and receives the stream once
+more. A stream that still doesn't fit is exit 5: "not enough space on the system
+partition", with the space needed (at least the stream's size) and free, nothing kept.
+A stream on stdin can't be read twice: out of space is exit 5 with nothing removed.
 
 ## The root lock and the apk wrapper: `glassine`
 
@@ -371,7 +406,7 @@ at most 32 characters; empty when the base is not there or holds none.
 | 2 | usage |
 | 3 | the state format is newer than this tool (every command refuses; `status` still prints both versions) |
 | 4 | a hibernated session on userdata, refused |
-| 5 | not enough space on userdata (`switch`: the deployment stays staged; `stage`: nothing staged) |
+| 5 | not enough space: on userdata (`switch`: the deployment stays staged; `stage`: nothing staged), or on the system partition (`receive`: nothing kept) |
 | 6 | busy (another writer holds the lock) |
 | 7 | `stage`: the package replay stops: a package does not install or upgrade on the new base, or a version would go down (see `stage BASE` flags); nothing staged |
 | 8 | `select`, `stage`, `reset`: a kernel candidate is set (`glassine-bootimg cancel` drops it; `rollback` and `reset --now` cancel it themselves); `restart --once ID`: the running kernel doesn't cover ID |
@@ -499,7 +534,8 @@ which mounts nothing read-write before the hibernation step), makes the system:
 
 The initramfs and every command except the two below run with busybox and e2fsprogs'
 `e2fsck`, `dumpe2fs` and `debugfs` ([boot.md](boot.md#files-in-the-image)). `receive`
-(but `receive --boot`) and `bases remove` need btrfs-progs (and zstd for a `.zst` stream); the first start needs
+(but `receive --boot`) and `bases remove` need btrfs-progs (and zstd for a `.zst` stream), and the removal of
+unused bases uses it where it is there (without it, nothing is removed); the first start needs
 btrfs-progs (the resize) and e2fsprogs' `mke2fs`. `init` needs neither. So a base that
 an installer ships must contain btrfs-progs and e2fsprogs.
 

@@ -58,6 +58,22 @@ memberships survive a base change and a reset alike.
    switch reports it.
 4. **Given** a full reset, **then** no account is carried (unchanged from 001).
 
+### Story 4: the system partition never fills with old bases (P1)
+
+**Acceptance:**
+
+1. **Given** a switch, an accept, a remove or a stage, **then** afterwards the system
+   partition holds exactly the bases that deployments on userdata use (any deployment,
+   not only current, previous, candidate and staged), and each removed base is
+   reported in one line on stdout and in the kernel log.
+2. **Given** a deployment meta that can't be read, **then** no base is removed.
+3. **Given** a stream from a file that doesn't fit the free space, **when** `receive`
+   runs, **then** the unused bases are removed (never the stream's parent) and the
+   stream is received; one that still doesn't fit fails with exit 5, the space needed
+   and free, and nothing kept.
+4. **Given** a hibernated session on userdata, **then** a switch or a receive refuses
+   (exit 4) and no base is removed.
+
 ### Edge cases
 
 - `subuid`/`subgid` ranges are carried by name.
@@ -81,12 +97,24 @@ memberships survive a base change and a reset alike.
   and before the sync that precedes the selection; a failure leaves the deployment
   staged.
 - **FR-005** The merge runs with busybox `awk` and needs no other tool.
+- **FR-006** A base no deployment on userdata names in its meta is removed after a
+  switch, an accept (where userdata is mounted), a remove and a stage, after the
+  clean-up of deployments, the way `bases remove` removes one (the wait for the space,
+  then the `boot/` files no kernel record names). The bases kept follow from the
+  deployments; there is no count of its own. A mounted base stays. Nothing is removed
+  while the current deployment's meta can't be read, a deployment's meta names no base,
+  or a hibernated session's base can't be told; a hibernated session's base is kept.
+  The removal never fails the command and needs btrfs-progs (without it, nothing).
+- **FR-007** `receive` of a file into `bases/` removes the unused bases (FR-006), all but
+  the stream's parent, before the stream when the file is larger than the free space,
+  and after a `btrfs receive` that runs out of space, then receives it once more. When
+  it still doesn't fit: exit 5, the space needed and free, nothing kept. From stdin:
+  exit 5, nothing removed.
 
 ## Not in this feature (later)
 
 - The replay of the user's packages (the apk wrapper, epic P1) and carrying only what
   the device changed (P5).
-- Removing old bases: `bases remove`, added in 0.3 (docs/deployments.md).
 - Downloading streams; checking a signature (`--sha256` only).
 
 ## Success criteria
