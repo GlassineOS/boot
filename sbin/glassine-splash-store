@@ -10,6 +10,13 @@
 #   glassine-splash-store override --leave    the override "leave the screen" (kind 1:
 #                                             the 64-byte header, no picture)
 #   glassine-splash-store override FILE       FILE, a format-2 image, as the override
+#   glassine-splash-store override --picture PNM
+#                                             PNM (a binary P5 grey or P6 RGB picture,
+#                                             glassine-screen-picture's) as the override:
+#                                             made into an image for the display mode of
+#                                             the picture's size, grey or RGB as the
+#                                             picture is, LZ4 without the filter (fast,
+#                                             FR-004a), by gspl-encode
 #   glassine-splash-store override --remove   no override
 #   ... [--wait S]                            wait up to S seconds (default 10) for the
 #                                             boot partition's lock
@@ -30,7 +37,7 @@
 # one, never a part of one. Every refusal comes before the first write.
 # Exit: 0 written, 1 not written (a refused image, the lock held, a write or read-back
 # that failed; said; the old override or none), 2 usage, 3 no store on this board.
-# Test hooks: GLASSINE_BI_BOARD, GLASSINE_BI_CMDLINE, GLASSINE_BI_LIB, GLASSINE_BI_TMP,
+# Test hooks: GLASSINE_GSPL_ENCODE (gspl-encode), GLASSINE_BI_BOARD, GLASSINE_BI_CMDLINE, GLASSINE_BI_LIB, GLASSINE_BI_TMP,
 # GLASSINE_BI_RUN_DIR, and the library's (GLASSINE_BI_BOOTPART_DIR,
 # GLASSINE_BI_BOOTPART_DEV, GLASSINE_BI_SYSBLOCK, GLASSINE_BI_DEVDIR; with
 # GLASSINE_BI_TEST=1 GLASSINE_BI_RAW_TRACE, GLASSINE_BI_RAW_CUT, GLASSINE_BI_AFTER_PUT,
@@ -50,13 +57,15 @@ say() {
     { [ -w /dev/kmsg ] && echo "<5>glassine-splash-store: $*" > /dev/kmsg; } 2>/dev/null
     return 0
 }
-usage() { echo "usage: glassine-splash-store has-store | override --leave|--remove|FILE [--wait S]" >&2; exit 2; }
+usage() { echo "usage: glassine-splash-store has-store | override --leave|--remove|FILE|--picture PNM [--wait S]" >&2; exit 2; }
+ENCODE=${GLASSINE_GSPL_ENCODE:-gspl-encode}
 
 cmd=${1:-}; [ $# -ge 1 ] && shift
-what='' WAIT=10
+what='' WAIT=10 PIC=''
 while [ $# -gt 0 ]; do
     case $1 in
     --wait) [ $# -ge 2 ] || usage; WAIT=$2; shift ;;
+    --picture) [ $# -ge 2 ] && [ -z "$what" ] || usage; what=--picture PIC=$2; shift ;;
     *) [ -z "$what" ] || usage; what=$1 ;;
     esac
     shift
@@ -71,7 +80,7 @@ esac
 . "$GBLIB/glassine-bootpart.sh"
 # shellcheck disable=SC2034  # read by the library
 GP_TMP=${GLASSINE_BI_TMP:-/run}
-trap 'gp_close >/dev/null 2>&1; gp_clean' EXIT
+trap 'gp_close >/dev/null 2>&1; gp_clean; rm -f "$GP_TMP/glassine-bootpart.picture.$$.tmp"' EXIT
 trap 'exit 1' TERM INT HUP
 
 kind=$(gp_kind "$HANDOFF" "$BOOT_FORM" 2>/dev/null)
@@ -101,6 +110,17 @@ src=''
 case $what in
 --remove) ;;
 --leave) src=$GP_TMP/glassine-bootpart.leave.$$; gr_splash_leave "$src" ;;
+--picture)
+    [ -r "$PIC" ] || { say "cannot read $PIC: nothing written"; exit 1; }
+    case $(head -c 2 "$PIC") in
+    P5) lay=grey8 ;;
+    P6) lay=rgb888 ;;
+    *) say "$PIC: not a binary P5 or P6 picture: nothing written"; exit 1 ;;
+    esac
+    src=$GP_TMP/glassine-bootpart.picture.$$
+    "$ENCODE" --layout $lay --compression fast "$PIC" "$src" >/dev/null 2>&1 ||
+        { rm -f "$src" "$src.tmp"; say "$PIC: gspl-encode could not make an image of it: nothing written"; exit 1; }
+    ;;
 -*) usage ;;
 *)
     [ -r "$what" ] || { say "cannot read $what: nothing written"; exit 1; }
