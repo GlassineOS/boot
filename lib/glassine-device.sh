@@ -206,18 +206,29 @@ gd_fw_path() {
 # that doesn't verify: nothing is bound (the seed service fills and binds it).
 # Otherwise DEV ro,noload on ROOT/run/glassine/device-part, its glassine/ bound
 # read-only on ROOT/run/glassine/device, and the firmware path set.
+# Without dumpe2fs and debugfs (a soft start runs from the kept assembly: busybox
+# and the boot libraries only, 013 FR-025) the journal is not checked: DEV is
+# mounted the same way, and the seed's verification decides (a view that misses
+# journalled writes doesn't verify, so nothing is bound).
 gd_boot() {
-    _gd_m=$1/run/glassine/device-part _gd_d=$1/run/glassine/device
-    if ! dumpe2fs -h "$2" > /tmp/gd.dumpe2fs 2>/dev/null; then
-        gd_log "$2 is not an ext4 file system: nothing bound"; return 0
+    _gd_m=$1/run/glassine/device-part _gd_d=$1/run/glassine/device _gd_e2=1
+    command -v dumpe2fs >/dev/null 2>&1 && command -v debugfs >/dev/null 2>&1 || _gd_e2=0
+    if [ $_gd_e2 = 1 ]; then
+        if ! dumpe2fs -h "$2" > /tmp/gd.dumpe2fs 2>/tmp/gd.dumpe2fs.err; then
+            gd_log "$2 can't be read as ext4 ($(grep -v '^dumpe2fs [0-9]' /tmp/gd.dumpe2fs.err | head -n 1)): nothing bound"; return 0
+        fi
+        if grep -q '^Filesystem features:.*needs_recovery' /tmp/gd.dumpe2fs; then
+            gd_log "the journal of $2 needs recovery: nothing bound (the seed service replays it)"; return 0
+        fi
+        debugfs -R 'stat /glassine/manifest' "$2" 2>/dev/null | grep -q '^Inode:' ||
+            { gd_log "no seed on $2 yet (the seed service makes it)"; return 0; }
     fi
-    if grep -q '^Filesystem features:.*needs_recovery' /tmp/gd.dumpe2fs; then
-        gd_log "the journal of $2 needs recovery: nothing bound (the seed service replays it)"; return 0
-    fi
-    debugfs -R 'stat /glassine/manifest' "$2" 2>/dev/null | grep -q '^Inode:' ||
-        { gd_log "no seed on $2 yet (the seed service makes it)"; return 0; }
     mkdir -p "$_gd_m" "$_gd_d" && mount -t ext4 -o ro,noload "$2" "$_gd_m" ||
         { gd_log "cannot mount $2 read-only: nothing bound"; return 0; }
+    if [ $_gd_e2 = 0 ] && [ ! -f "$_gd_m/glassine/manifest" ]; then
+        umount "$_gd_m"
+        gd_log "no seed on $2 yet (the seed service makes it)"; return 0
+    fi
     if ! gd_verify "$_gd_m/glassine"; then
         umount "$_gd_m"
         gd_log "the seed on $2 doesn't verify: nothing bound (the seed service repairs it)"; return 0

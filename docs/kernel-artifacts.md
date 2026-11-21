@@ -293,7 +293,15 @@ names files and the board has `DEVICE_PART`:
    read-only on `$NEWROOT/run/glassine/device` and the firmware path set (below).
 4. Otherwise nothing is bound and nothing stays mounted.
 
-Each step is logged as `device data: ...`.
+Each step is logged as `device data: ...`; when `dumpe2fs` can't read the partition, the
+line carries its own reason.
+
+A soft start (`docs/boot.md`, "Soft start") runs the same step from the kept assembly,
+which holds busybox and the boot libraries but no e2fsprogs. There steps 1 and 2 are
+left out: `DEVICE_PART` is mounted `ro,noload` straight away, a missing
+`glassine/manifest` means no seed yet, and the verification decides as in step 3. The
+partition was unmounted cleanly by the session that just ended, and a view that misses
+journalled writes doesn't verify, so nothing unverified is ever bound.
 
 **The firmware path.** Firmware in the seed is under `firmware/`. When it is bound, the
 kernel searches it before its own paths, on every boot: from `firmware_class.path` on the
