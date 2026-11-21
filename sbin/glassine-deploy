@@ -5,7 +5,7 @@
 # and in recovery; the recovery's menu only calls it. Interface and formats:
 # docs/deployments.md.
 #
-#   glassine-deploy status [--porcelain]
+#   glassine-deploy status [--porcelain] [--no-restart]
 #   glassine-deploy list [--porcelain]
 #   glassine-deploy select ID [--yes] [--discard-hibernation] [--restart]
 #   glassine-deploy rollback [--yes] [--discard-hibernation] [--restart]
@@ -24,6 +24,9 @@
 #   glassine-deploy publish
 #   glassine-deploy init POOL_MOUNT [--install-marker]
 #
+# status --no-restart leaves out what a restart now would be (restart=,
+# restart_reason=), which reads the loader record: for a caller that needs only
+# the state (the shutdown switch, the boot-success step).
 # restart restarts soft (PID 1 re-enters the kept initramfs assembly: no
 # firmware, no loader, no kernel start) where the rules allow, else cold; --check
 # says which and why (exit 0 soft, 9 cold), --soft refuses a cold one (exit 9),
@@ -646,7 +649,7 @@ cmd_status() {
     storage_status
     # a restart now (013 FR-006, FR-008): soft or cold and why, the switch, how
     # this start came
-    if [ "$fmt" != none ] && gs_format_ok "$fmt"; then
+    if [ "$NORESTART" = 0 ] && [ "$fmt" != none ] && gs_format_ok "$fmt"; then
         ONCE_ID=''
         restart_decide quick
         if [ -z "$RW" ]; then out restart soft; out restart_reason ''; else out restart cold; out restart_reason "$RW"; fi
@@ -1304,7 +1307,7 @@ cmd_restart() {
     echo "glassine-deploy: soft restart into ${ONCE_ID:-$TARGET}"
     rm -f "$RUN_DIR/switch-result"
     if [ -n "${GLASSINE_DEPLOY_SIGNAL_INIT:-}" ]; then "$GLASSINE_DEPLOY_SIGNAL_INIT"
-    else kill -HUP 1 && sleep 1 && kill -QUIT 1
+    else gs_restart_signal
     fi
     # the session's stop ends this process; one that is still here after
     # RESTART_INIT_S seconds means PID 1 didn't act on the signal: restart cold
@@ -1707,7 +1710,7 @@ cmd_init() {
 [ $# -ge 1 ] || usage
 CMD=$1; shift
 PORC=0 YES=0 DISCARD=0 FULL=0 NOW=0 MODULES=0 BOOT=0 SHA='' ARG='' NARG=0 FIRST='' KGATE=''
-NOREPLAY=0 ACCEPT_DOWN=0 WITHOUT='' MARKER=0 RS_MODE='' ONCE_ID='' RESTART=0
+NOREPLAY=0 ACCEPT_DOWN=0 WITHOUT='' MARKER=0 RS_MODE='' ONCE_ID='' RESTART=0 NORESTART=0
 while [ $# -gt 0 ]; do
     a=$1; shift
     case "$a" in
@@ -1727,6 +1730,7 @@ while [ $# -gt 0 ]; do
     --check|--soft|--cold) [ -z "$RS_MODE" ] || usage; RS_MODE=${a#--} ;;
     --once) [ $# -ge 1 ] || usage; ONCE_ID=$1; shift ;;
     --restart) RESTART=1 ;;
+    --no-restart) NORESTART=1 ;;
     -*) usage ;;
     *) [ "$NARG" = 0 ] && FIRST=$a; ARG=$a; NARG=$((NARG + 1)) ;;
     esac
@@ -1738,6 +1742,7 @@ restart) [ "$RESTART" = 0 ] || usage ;;
 select|rollback|reset|stage) [ -z "$RS_MODE" ] && [ -z "$ONCE_ID" ] || usage ;;
 *) [ -z "$RS_MODE" ] && [ -z "$ONCE_ID" ] && [ "$RESTART" = 0 ] || usage ;;
 esac
+[ "$NORESTART" = 0 ] || [ "$CMD" = status ] || usage
 # then_restart: the command, then restart (its exit code when it failed)
 then_restart() { [ "$RESTART" = 1 ] || return 0; cleanup; RS_MODE='' cmd_restart; }
 case "$CMD:$NARG" in

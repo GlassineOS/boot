@@ -272,3 +272,17 @@ gs_restart_word() {
     [ -z "$_gs_v" ] || { echo "$_gs_v"; return 0; }
     [ -e "$1/healthy" ] || echo not-healthy
 }
+
+# gs_restart_signal [RETRY_S]: asks busybox init (PID 1) for its restart action, the
+# soft restart's hand-over (specs/013). Init takes one signal per pass of its main
+# loop and sleeps 1 s after each, so a SIGHUP (read the inittab again) right before
+# the SIGQUIT costs that second. QUIT alone first: an init that read the
+# `::restart:` line at its start acts on it at once. HUP + QUIT after RETRY_S
+# seconds (default 2), for an init that read the inittab before the line was there
+# (it ignores a QUIT without a restart action); an init that is restarting already
+# ignores both. 1 = PID 1 can't be signalled.
+gs_restart_signal() {
+    kill -QUIT 1 || return 1
+    sleep "${1:-2}" & wait $!
+    kill -HUP 1 && kill -QUIT 1
+}

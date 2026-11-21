@@ -296,6 +296,27 @@ mv $RD/kept $W/kept.away; mv $RD/restart $W/restart.away
 ok "an older initramfs's session (no kept/, no restart record): check says cold, no-assembly" "W1=no-assembly why"
 ok "... status: restart=cold, last_start empty" "$G status --porcelain | sed -n 2p | tr '\t' '\n' > $W/sout && grep -qx restart=cold $W/sout && grep -qx last_start= $W/sout"
 mv $W/kept.away $RD/kept; mv $W/restart.away $RD/restart
+ok "status --no-restart: the state (staged=), no restart fields" "$G status --porcelain --no-restart | sed -n 2p | tr '\t' '\n' > $W/sout && grep -q '^staged=' $W/sout && grep -qx 'last_start=cold' $W/sout && ! grep -q '^restart' $W/sout"
+ok "--no-restart with another command: usage (2)" "$G list --no-restart >/dev/null 2>&1; [ \$? = 2 ]"
+
+# --- the hand-over's signal (gs_restart_signal) to a real busybox init -----------------
+# busybox init as PID 1 of its own PID namespace, with this container's /etc/inittab:
+# its once action signals as glassine-deploy restart does; the restart action notes
+# when it ran (uptime) and ends the namespace
+cp /etc/inittab $W/inittab.orig 2>/dev/null
+bbinit() {  # bbinit LINE_AT_START(1|0): busybox init, the restart line in its inittab or added after its start
+    rm -f $W/bb.*
+    printf '#!/bin/sh\ncut -d" " -f1 /proc/uptime > %s/bb.restarted\n' $W > $W/bb-restart; chmod +x $W/bb-restart
+    printf '#!/bin/sh\ncut -d" " -f1 /proc/uptime >> %s/bb.shutdown\n' $W > $W/bb-shut; chmod +x $W/bb-shut
+    printf '#!/bin/sh\n[ "$1" = 1 ] || echo "::restart:%s/bb-restart" >> /etc/inittab\n. /p/lib/glassine-state.sh\ncut -d" " -f1 /proc/uptime > %s/bb.signal\ngs_restart_signal 1\nsleep 30\n' $W $W > $W/bb-once; chmod +x $W/bb-once
+    { echo "::once:$W/bb-once $1"; echo "::shutdown:$W/bb-shut"; [ "$1" = 0 ] || echo "::restart:$W/bb-restart"; } > /etc/inittab
+    timeout 20 unshare -fp --mount-proc /bin/busybox init > /dev/null 2>&1
+}
+bbinit 1
+ok "signal: an init that read the restart line at its start begins its shutdown at once (QUIT alone: under 0.9 s), the shutdown actions once, then the restart action" "[ -s $W/bb.restarted ] && [ \"\$(wc -l < $W/bb.shutdown)\" = 1 ] && awk -v a=\"\$(cat $W/bb.signal)\" -v b=\"\$(cat $W/bb.shutdown)\" 'BEGIN { exit !(b - a < 0.9) }'"
+bbinit 0
+ok "signal: an init that read the inittab before the line was there restarts after the HUP (the retry), the shutdown actions once" "[ -s $W/bb.restarted ] && [ \"\$(wc -l < $W/bb.shutdown)\" = 1 ]"
+if [ -e $W/inittab.orig ]; then cp $W/inittab.orig /etc/inittab; else rm -f /etc/inittab; fi
 
 # --- the boot-success step (FR-016, FR-017) --------------------------------------------
 A=/p/sbin/glassine-deploy-accept

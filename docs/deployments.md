@@ -187,7 +187,7 @@ parent directories get the source's mode and owner).
 ## `glassine-deploy`
 
 ```
-glassine-deploy status [--porcelain]
+glassine-deploy status [--porcelain] [--no-restart]
 glassine-deploy list [--porcelain]
 glassine-deploy select ID [--yes] [--discard-hibernation] [--restart]
 glassine-deploy rollback [--yes] [--discard-hibernation] [--restart]
@@ -209,7 +209,7 @@ glassine-deploy init POOL_MOUNT [--install-marker]
 
 | Command | Does |
 |---|---|
-| `status` | format (state and supported), the system file system, current/previous/candidate/staged/tries, the kernels, `hibernated=yes\|no\|unknown`, `twrp_keep`, the person's storage as this boot left it (`home`, `flatpak`: `bound`, `failed` with `<name>_error`, or empty on a bare boot or outside a deployments boot; `<name>_hidden`; `vartmp`: `shared` or `failed`), what a restart now would be (`restart=soft\|cold`, `restart_reason=`; without the switch's space check, which only `restart --check` makes) and how this start came (`last_start=cold\|soft`, [Restart](#restart)) |
+| `status` | format (state and supported), the system file system, current/previous/candidate/staged/tries, the kernels, `hibernated=yes\|no\|unknown`, `twrp_keep`, the person's storage as this boot left it (`home`, `flatpak`: `bound`, `failed` with `<name>_error`, or empty on a bare boot or outside a deployments boot; `<name>_hidden`; `vartmp`: `shared` or `failed`), what a restart now would be (`restart=soft\|cold`, `restart_reason=`; without the switch's space check, which only `restart --check` makes) and how this start came (`last_start=cold\|soft`, [Restart](#restart)). `--no-restart` leaves out `restart` and `restart_reason`, which read the loader record: the shutdown switch and the boot-success step need only the state |
 | `list` | one record per deployment: id, state (`current`, `candidate`, `staged`, `previous`, `failed`, `kept`), base, kernel, created, size |
 | `select ID` | ID becomes the candidate with 2 tries; selecting current cancels a candidate. Never makes an untried deployment current. |
 | `rollback` | `select` previous |

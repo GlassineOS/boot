@@ -169,7 +169,10 @@ initramfs's busybox, `lib/glassine-boot/glassine-*.sh` and `board.conf`, `.compl
 written last (no developer hooks, no boot modules). The steps:
 
 1. `glassine-deploy restart` writes `/run/glassine/restarting` and signals PID 1 (busybox
-   init: `SIGHUP` re-reads the inittab, `SIGQUIT` restarts). Init runs the `shutdown`
+   init: `SIGQUIT` restarts; `SIGHUP` + `SIGQUIT` 2 s later for an init that read its
+   inittab before the `::restart:` line was there. Init takes one signal per pass of its
+   loop and sleeps 1 s after each, so a `SIGHUP` before every `SIGQUIT` would cost that
+   second). Init runs the `shutdown`
    runlevel: `glassine-restart` takes over the watchdogs for the whole stop (a feeder per device a daemon petted); the
    shutdown switch runs as at a cold shutdown; `glassine-mount-ro`,
    `glassine-reboot-reason` and the loader's shutdown mark skip themselves while

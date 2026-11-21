@@ -177,7 +177,8 @@ by UEFI firmware (`efi: EFI v`) and powering off by itself:
 | the partitions by their identities on the command line, and the one-shot deployment request | ✅ stubs (test/initramfs); ✅ real file systems (test/root); ✅ QEMU under OVMF, partitions not named as the board says | not yet (no real PC) |
 | `glassine-slot` (GPT slot attributes, both copies) | ✅ disk images, sgdisk-checked (test/slot) | not yet |
 | soft restart: the decision, the refusals, the soft start's steps and its cold turns | ✅ real file systems, the soft start as PID 1 of a namespace (test/restart) | not yet |
-| soft restart: busybox init's shutdown and `::restart:` action, OpenRC's `shutdown` runlevel during it, the watchdog fed throughout, the time it takes (SC-001, SC-008) | no (busybox init acting on `SIGQUIT` was seen by hand in Alpine 3.23/3.24 containers, not in a test) | not yet |
+| soft restart: busybox init's shutdown and `::restart:` action on the hand-over's signal (`SIGQUIT` alone, and the `SIGHUP` retry for an inittab changed after init's start) | ✅ busybox init as PID 1 of a namespace (test/restart) | not yet |
+| soft restart: OpenRC's `shutdown` runlevel during it, the watchdog fed throughout, the time it takes (SC-001, SC-008) | no | not yet |
 | the device kernel (mainline 7.3, SDM636) | no: the host kernel, Alpine's virt kernel 6.12 in QEMU | not yet |
 
 What the host can't prove: the device kernel's overlayfs, btrfs and hibernation

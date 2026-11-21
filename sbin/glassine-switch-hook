@@ -48,7 +48,7 @@ fi
 # result yes|no [WORD]: what this shutdown's switch did, for a soft restart
 result() { printf 'switch=%s\nswitch_reason=%s\n' "$1" "${2:-}" > "$RUN_DIR/switch-result" 2>/dev/null; return 0; }
 
-staged=$("$DEPLOY" status --porcelain 2>/dev/null | sed -n 2p | tr '\t' '\n' | sed -n 's/^staged=//p')
+staged=$("$DEPLOY" status --porcelain --no-restart 2>/dev/null | sed -n 2p | tr '\t' '\n' | sed -n 's/^staged=//p')
 [ -n "$staged" ] || exit 0
 if [ ! -e "$MARK" ]; then
     say "$staged stays staged: this shutdown was not started by the user"
