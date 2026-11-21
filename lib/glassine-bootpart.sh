@@ -706,42 +706,73 @@ gr_dev_size() {
 
 # gr_table_check FILE PART: FILE's first 4096 bytes are a valid table for a partition
 # of PART bytes ("The region table"); its entries go to stdout as "name offset size
-# flags" lines. 1 = not valid (GR_WHY)
+# flags" lines. 1 = not valid (GR_WHY). One pass over the bytes (od, awk: the CRCs
+# are zlib's CRC-32, as gr_crc's), so a read of the record costs a few processes, not
+# hundreds. awk's numbers are exact below 2^53: a field at or above that can only
+# fail the checks against PART (a partition is far smaller), as it does in the shell.
 gr_table_check() {
     _gr_tf=$1 _gr_tp=$2
     [ "$(wc -c < "$_gr_tf")" -ge $GR_TABLE ] || { GR_WHY="short"; return 1; }
-    [ "$(head -c 8 "$_gr_tf")" = GLREGION ] || { GR_WHY="no GLREGION"; return 1; }
-    [ "$(head -c 4092 "$_gr_tf" | gr_crc)" = "$(gr_hex32 "$_gr_tf" 4092)" ] || { GR_WHY="its CRC doesn't match"; return 1; }
-    [ "$(gr_u "$_gr_tf" 8 4)" = 1 ] || { GR_WHY="format $(gr_u "$_gr_tf" 8 4)"; return 1; }
-    [ "$(gr_u "$_gr_tf" 16 8)" = "$_gr_tp" ] && [ "$_gr_tp" -ge $((2 * GR_TABLE)) ] || { GR_WHY="made for a partition of $(gr_u "$_gr_tf" 16 8) bytes, this one has $_gr_tp"; return 1; }
-    _gr_tn=$(gr_u "$_gr_tf" 12 4)
-    [ "$_gr_tn" -ge 1 ] && [ "$_gr_tn" -le $GR_ENTRIES ] || { GR_WHY="$_gr_tn entries"; return 1; }
-    gr_zero "$_gr_tf" 24 40 && gr_zero "$_gr_tf" $((64 + 64 * _gr_tn)) $((4092 - 64 - 64 * _gr_tn)) || { GR_WHY="bytes that must be zero aren't"; return 1; }
-    _gr_te=$GP_TMP/glassine-bootpart.entry.$$ _gr_tl=$GP_TMP/glassine-bootpart.entries.$$
-    : > "$_gr_tl"
-    _gr_ti=0
-    while [ $_gr_ti -lt "$_gr_tn" ]; do
-        gr_part "$_gr_tf" $((64 + 64 * _gr_ti)) 64 > "$_gr_te"
-        GR_WHY="entry $_gr_ti is not valid"
-        [ "$(head -c 52 "$_gr_te" | gr_crc)" = "$(gr_hex32 "$_gr_te" 52)" ] && gr_zero "$_gr_te" 56 8 || { rm -f "$_gr_te" "$_gr_tl"; return 1; }
-        # the name: 1 to 31 of a-z 0-9 -, then zeros only
-        od -An -v -tu1 -N 32 "$_gr_te" | awk '
-            { for (i = 1; i <= NF; i++) b[n++] = $i + 0 }
-            END { for (l = 0; l < n && b[l] != 0; l++) if (!((b[l] >= 97 && b[l] <= 122) || (b[l] >= 48 && b[l] <= 57) || b[l] == 45)) exit 1
-                  if (l < 1 || l > 31) exit 1
-                  for (i = l; i < n; i++) if (b[i] != 0) exit 1 }' || { rm -f "$_gr_te" "$_gr_tl"; return 1; }
-        _gr_tnm=$(head -c 32 "$_gr_te" | tr -d '\000')
-        _gr_to=$(gr_u "$_gr_te" 32 8) _gr_tz=$(gr_u "$_gr_te" 40 8) _gr_tg=$(gr_u "$_gr_te" 48 4)
-        [ "$_gr_to" -ge $GR_TABLE ] && [ "$_gr_tz" -gt 0 ] && [ $((_gr_to % 4096)) = 0 ] && [ $((_gr_tz % 4096)) = 0 ] &&
-            [ "$_gr_tz" -le $((_gr_tp - GR_TABLE - _gr_to)) ] || { rm -f "$_gr_te" "$_gr_tl"; return 1; }
-        # once, and no overlap
-        if awk -v n="$_gr_tnm" -v o="$_gr_to" -v z="$_gr_tz" '$1 == n || (o < $2 + $3 && $2 < o + z) { bad = 1 } END { exit bad ? 0 : 1 }' "$_gr_tl"; then
-            rm -f "$_gr_te" "$_gr_tl"; return 1
-        fi
-        echo "$_gr_tnm $_gr_to $_gr_tz $_gr_tg" >> "$_gr_tl"
-        _gr_ti=$((_gr_ti + 1))
-    done
-    cat "$_gr_tl"; rm -f "$_gr_te" "$_gr_tl"
+    _gr_tl=$GP_TMP/glassine-bootpart.entries.$$
+    _gr_tw=$(od -An -v -tu1 -N $GR_TABLE "$_gr_tf" | awk -v tp="$_gr_tp" -v T=$GR_TABLE -v E=$GR_ENTRIES -v out="$_gr_tl" '
+        function u(o, k,   v, i, m) { v = 0; m = 1; for (i = 0; i < k; i++) { v += b[o + i] * m; m *= 256 }; return v }
+        function crc(o, k,   c, i) {
+            c = 4294967295
+            for (i = o; i < o + k; i++) c = xor(ct[and(xor(c, b[i]), 255)], rshift(c, 8))
+            return xor(c, 4294967295)
+        }
+        function zero(o, k,   i) { for (i = o; i < o + k; i++) if (b[i] != 0) return 0; return 1 }
+        BEGIN {
+            for (i = 0; i < 256; i++) {
+                c = i
+                for (j = 0; j < 8; j++) c = and(c, 1) ? xor(3988292384, rshift(c, 1)) : rshift(c, 1)
+                ct[i] = c
+            }
+        }
+        { for (i = 1; i <= NF; i++) b[n++] = $i + 0 }
+        END {
+            # "GLREGION"
+            if (b[0] != 71 || b[1] != 76 || b[2] != 82 || b[3] != 69 || b[4] != 71 || b[5] != 73 || b[6] != 79 || b[7] != 78) { print "magic"; exit }
+            if (crc(0, T - 4) != u(T - 4, 4)) { print "crc"; exit }
+            if (u(8, 4) != 1) { print "format"; exit }
+            if (u(16, 8) != tp || tp < 2 * T) { print "size"; exit }
+            k = u(12, 4)
+            if (k < 1 || k > E) { print "count"; exit }
+            if (!zero(24, 40) || !zero(64 + 64 * k, T - 4 - 64 - 64 * k)) { print "zero"; exit }
+            printf "" > out
+            for (e = 0; e < k; e++) {
+                p = 64 + 64 * e
+                if (crc(p, 52) != u(p + 52, 4) || !zero(p + 56, 8)) { print "entry " e; exit }
+                # the name: 1 to 31 of a-z 0-9 -, then zeros only
+                nm = ""
+                for (l = 0; l < 32 && b[p + l] != 0; l++) {
+                    c = b[p + l]
+                    if (!((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45)) { print "entry " e; exit }
+                    nm = nm sprintf("%c", c)
+                }
+                if (l < 1 || l > 31 || !zero(p + l, 32 - l)) { print "entry " e; exit }
+                o = u(p + 32, 8); z = u(p + 40, 8); g = u(p + 48, 4)
+                if (!(o >= T && z > 0 && o % 4096 == 0 && z % 4096 == 0 && z <= tp - T - o)) { print "entry " e; exit }
+                # once, and no overlap
+                for (j = 0; j < e; j++) if (nms[j] == nm || (o < os[j] + zs[j] && os[j] < o + z)) { print "entry " e; exit }
+                nms[e] = nm; os[e] = o; zs[e] = z
+                printf "%s %.0f %.0f %.0f\n", nm, o, z, g >> out
+            }
+            close(out)
+        }')
+    case $_gr_tw in
+    '') ;;
+    magic) GR_WHY="no GLREGION" ;;
+    crc) GR_WHY="its CRC doesn't match" ;;
+    format) GR_WHY="format $(gr_u "$_gr_tf" 8 4)" ;;
+    size) GR_WHY="made for a partition of $(gr_u "$_gr_tf" 16 8) bytes, this one has $_gr_tp" ;;
+    count) GR_WHY="$(gr_u "$_gr_tf" 12 4) entries" ;;
+    zero) GR_WHY="bytes that must be zero aren't" ;;
+    entry\ *) GR_WHY="${_gr_tw} is not valid" ;;
+    *) GR_WHY="the table can't be read" ;;
+    esac
+    if [ -n "$_gr_tw" ] || [ ! -e "$_gr_tl" ]; then rm -f "$_gr_tl"; GR_WHY=${GR_WHY:-"the table can't be read"}; return 1; fi
+    cat "$_gr_tl"; rm -f "$_gr_tl"
     GR_WHY=''
 }
 
