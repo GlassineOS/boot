@@ -400,6 +400,90 @@ for v in $S/bases/*; do [ "${v##*/}" = b1 ] || btrfs -q subvolume delete "$v"; d
 cp $W/stG $S/state/deploy
 for d in "$U"/deployments/*; do echo "$DG0" | grep -qx "${d##*/}" || rm -rf "$d"; done
 
+# --- unused module sets go by themselves -----------------------------------------
+# the kernels that can start come from glassine-bootimg kernels: a stub first
+# ($W/kernels, $W/kexit, $W/kwhy), then the real one on a raw default slot
+cat > $W/bootimg <<'SH'
+#!/bin/sh
+[ "$1" = kernels ] || exit 2
+cat /w/kernels
+[ "$(cat /w/kexit)" = 0 ] || { echo "glassine-bootimg: $(cat /w/kwhy)" >&2; exit 1; }
+SH
+chmod +x $W/bootimg; printf 'k1 current\nk2 default-slot\n' > $W/kernels; echo 0 > $W/kexit
+# every set was made just now: a start time after it makes them old (not "received")
+LATER=$(( $(date +%s) + 3600 ))
+GM="env GLASSINE_UNAME=kr GLASSINE_DEPLOY_BTIME=$LATER GLASSINE_BOOTIMG=$W/bootimg $G"
+mkmod() { for n in "$@"; do btrfs -q subvolume create $S/modules/$n && echo ko > $S/modules/$n/x.ko && btrfs property set -ts $S/modules/$n ro true; done; }
+mnames() { ls $S/modules | sort | tr '\n' ' '; }
+# rmdep: a deployment to remove (the command after which the clean-ups run)
+rmdep() { mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && $GM remove km --yes "$@"; }
+M0=$(mnames)
+# the sets the other sections use, kept aside (read-only snapshots) and back after
+mkdir -p $S/keep; for v in $M0; do btrfs -q subvolume snapshot -r $S/modules/$v $S/keep/$v && btrfs property set -fts $S/modules/$v ro false; btrfs -q subvolume delete $S/modules/$v; done
+printf 'current=\nprevious=\n' > $S/state/kernel
+mkmod k1 k2 kr um u1 u2
+mkdir -p $W/umv; mount --bind $S/modules/um $W/umv
+ok "bases: each module set with the kernels that use it (running, mounted, glassine-bootimg's roles); unused: empty" "$GM bases --porcelain >$W/out 2>$W/err && grep -q 'kind=module	name=k1	used_by=current$' $W/out && grep -q 'name=k2	used_by=default-slot$' $W/out && grep -q 'name=kr	used_by=running$' $W/out && grep -q 'name=um	used_by=mounted$' $W/out && grep -q 'name=u1	used_by=$' $W/out && [ ! -s $W/err ]"
+echo 1 > $W/kexit; echo 'the default slot (/dev/x) holds no boot image' > $W/kwhy
+ok "bases: the kernels can't all be told: the unnamed sets used_by=unknown, said" "$GM bases --porcelain >$W/out 2>$W/err && grep -q 'name=u1	used_by=unknown$' $W/out && grep -q 'name=kr	used_by=running$' $W/out && grep -q \"can't all be told: the default slot (/dev/x) holds no boot image\" $W/err"
+ok "the kernels can't be read (glassine-bootimg kernels fails): no module set removed, said" "rmdep >/dev/null 2>$W/err && [ \"\$(mnames)\" = 'k1 k2 kr u1 u2 um ' ] && grep -q 'unused module sets not removed: the default slot (/dev/x) holds no boot image' $W/err"
+echo 0 > $W/kexit
+ok "no glassine-bootimg: no module set removed, said" "mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && env GLASSINE_UNAME=kr GLASSINE_DEPLOY_BTIME=$LATER GLASSINE_BOOTIMG=$W/none $G remove km --yes >/dev/null 2>$W/err && [ \"\$(mnames)\" = 'k1 k2 kr u1 u2 um ' ] && grep -q 'unused module sets not removed: no $W/none' $W/err"
+ok "a start time that can't be read: no module set removed, said" "mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && env GLASSINE_UNAME=kr GLASSINE_DEPLOY_BTIME=x GLASSINE_BOOTIMG=$W/bootimg $G remove km --yes >/dev/null 2>$W/err && [ \"\$(mnames)\" = 'k1 k2 kr u1 u2 um ' ] && grep -q \"start's time can't be read\" $W/err"
+ok "a set received since this start: kept (its install may still come)" "mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && env GLASSINE_UNAME=kr GLASSINE_DEPLOY_BTIME=1 GLASSINE_BOOTIMG=$W/bootimg $G remove km --yes >/dev/null 2>&1 && [ \"\$(mnames)\" = 'k1 k2 kr u1 u2 um ' ]"
+: > $W/kmsg
+ok "remove: the unused module sets removed; the running kernel's, a mounted one and those glassine-bootimg names kept" "rmdep >$W/out 2>&1 && [ \"\$(mnames)\" = 'k1 k2 kr um ' ] && ! btrfs subvolume list $S | grep -q 'modules/u[12]$'"
+ok "... one line per removed set, on stdout and in the kernel log" "[ \$(grep -c 'removed: no kernel that can start uses them' $W/out) = 2 ] && grep -q '^<5>glassine-deploy: modules u1 removed: no kernel that can start uses them' $W/kmsg && grep -q '^<5>glassine-deploy: modules u2 removed' $W/kmsg"
+# the other points: a switch (reset --now, the recovery's command), an accept
+# (the accept makes the old current previous and the clean-up drops the old previous:
+# the deployments are put back whole)
+cp $S/state/deploy $W/stM; cp -a $U/deployments $W/depM
+mrestore() { cp $W/stM $S/state/deploy; rm -rf $U/deployments; cp -a $W/depM $U/deployments; }
+mkmod u3
+ok "reset --now (the switch): the unused module set removed" "$GM reset --full --now --yes >$W/out 2>&1 && [ \"\$(mnames)\" = 'k1 k2 kr um ' ] && grep -q 'modules u3 removed' $W/out"
+mkmod u4
+ok "accept: the unused module set removed" "$GM accept \$(st candidate) >$W/out 2>&1 && [ \"\$(mnames)\" = 'k1 k2 kr um ' ] && grep -q 'modules u4 removed' $W/out"
+mrestore; mkmod u5; echo 1 > $W/kexit
+ok "reset --now, the kernels can't be read: nothing removed, said" "$GM reset --full --now --yes >/dev/null 2>$W/err && [ \"\$(mnames)\" = 'k1 k2 kr u5 um ' ] && grep -q 'unused module sets not removed' $W/err"
+mrestore; echo 0 > $W/kexit
+# a real receive --modules: its change time is the receive's, so it counts as received
+# (the start time after u5 was made: only the receive is after it)
+btrfs -q subvolume snapshot -r $S/modules/u5 $S/rk; sleep 2; BT=$(date +%s)
+ok "receive --modules, then a remove with the start before it: the received set kept" "btrfs -q send $S/rk 2>/dev/null | $GM receive - --modules >/dev/null 2>&1 && mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && env GLASSINE_UNAME=kr GLASSINE_DEPLOY_BTIME=$BT GLASSINE_BOOTIMG=$W/bootimg $G remove km --yes >/dev/null 2>&1 && [ -d $S/modules/rk ] && [ ! -e $S/modules/u5 ]"
+btrfs property set -fts $S/rk ro false; btrfs -q subvolume delete $S/rk
+rm -rf $W/depM
+ok "... after the next start, unused: removed" "rmdep >/dev/null 2>&1 && [ \"\$(mnames)\" = 'k1 k2 kr um ' ]"
+umount $W/umv
+# a hibernated session's kernel (bases only reads: no hibernation gate there)
+mkdir -p $U/swap; head -c 1048576 /dev/zero > $U/swap/hibernate; mkswap $U/swap/hibernate >/dev/null 2>&1
+printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/dev/null
+printf 'deployment=d1\nkrel=um\n' > $U/swap/hibernate.guard
+ok "bases: a hibernated session's kernel named (the guard's krel)" "$GM bases --porcelain 2>/dev/null | grep -q 'name=um	used_by=hibernated$'"
+printf 'deployment=d1\n' > $U/swap/hibernate.guard
+ok "bases: a hibernated session whose kernel can't be told: said, the unnamed sets unknown" "$GM bases --porcelain >$W/out 2>$W/err && grep -q 'name=um	used_by=unknown$' $W/out && grep -q 'hibernated session whose kernel' $W/err"
+rm -f $U/swap/hibernate $U/swap/hibernate.guard
+# the real glassine-bootimg on a raw board with no kernel records (state/kernel names
+# nothing, as before the first kernel update), from the recovery: the running kernel
+# is not the system's, nothing bound; the default slot's kernel is what starts
+le32() { printf "$(printf '\\%03o\\%03o\\%03o\\%03o' $(($1 & 255)) $(($1 >> 8 & 255)) $(($1 >> 16 & 255)) $(($1 >> 24 & 255)))"; }
+# rawimg OUT REL: a boot image (header v0, page 4096) whose gzip kernel is release REL
+rawimg() { printf 'junk Linux version %s (gcc) #1 SMP junk' "$2" | gzip > $W/k.gz; { printf 'ANDROID!'; le32 "$(stat -c %s $W/k.gz)"; head -c 24 /dev/zero; le32 4096; le32 0; } > "$1"; truncate -s 4096 "$1"; cat $W/k.gz >> "$1"; truncate -s 1048576 "$1"; }
+rawimg $W/defslot k2
+printf 'ROOT_LAYOUT=deployments\nDEFAULT_DEV=/dev/disk/by-partlabel/defslot\nHANDOFF=\nTEST_DEV=\n' > $W/board.conf
+GR="env GLASSINE_UNAME=recovery-kernel GLASSINE_BI_UNAME=recovery-kernel GLASSINE_DEPLOY_BTIME=$LATER GLASSINE_BOOTIMG=/p/sbin/glassine-bootimg GLASSINE_BI_LIB=/p/lib GLASSINE_BI_BOARD=$W/board.conf GLASSINE_BI_DEFAULT_DEV=$W/defslot GLASSINE_BI_LOG=$W/bilog GLASSINE_BI_TMP=$W/run $G"
+ok "bases (real glassine-bootimg): the default slot's kernel's set is default-slot" "$GR bases --porcelain 2>$W/err | grep -q 'name=k2	used_by=default-slot$' && [ ! -s $W/err ]"
+dd if=/dev/zero of=$W/defslot bs=4096 count=1 conv=notrunc 2>/dev/null
+ok "the recovery, a default slot with no image (a cut write): no module set removed, said" "mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && $GR remove km --yes >/dev/null 2>$W/err && [ \"\$(mnames)\" = 'k1 k2 kr um ' ] && grep -q 'unused module sets not removed: the default slot .* holds no boot image' $W/err"
+rawimg $W/defslot k2; mv $S/state/kernel $W/kernel.save
+ok "the recovery, no state/kernel: no module set removed, said" "mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && $GR remove km --yes >/dev/null 2>$W/err && [ \"\$(mnames)\" = 'k1 k2 kr um ' ] && grep -q 'unused module sets not removed: .*state/kernel can.t be read' $W/err"
+mv $W/kernel.save $S/state/kernel
+ok "the recovery (running kernel not the system's, state/kernel empty): only the default slot's kernel's set stays" "mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && $GR remove km --yes >$W/out 2>&1 && [ \"\$(mnames)\" = 'k2 ' ] && grep -q 'modules k1 removed' $W/out"
+gs_update $S/state/kernel previous=pk; mkmod pk p2
+ok "a kernel state/kernel names (previous): kept" "mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && $GR remove km --yes >/dev/null 2>&1 && [ \"\$(mnames)\" = 'k2 pk ' ]"
+for v in $(mnames); do btrfs property set -fts $S/modules/$v ro false; btrfs -q subvolume delete $S/modules/$v; done
+rm -f $S/state/kernel $W/defslot $W/board.conf
+for v in $M0; do btrfs -q subvolume snapshot -r $S/keep/$v $S/modules/$v && btrfs property set -fts $S/keep/$v ro false; btrfs -q subvolume delete $S/keep/$v; done; rmdir $S/keep
+
 # --- receive into a full pool: the unused bases make room ---------------------------
 truncate -s 128M $W/small.img; mkfs.btrfs -q --mixed $W/small.img; loop $W/small.img; SM=$LOOP
 mkdir -p $W/smnt && mount -t btrfs "$SM" $W/smnt

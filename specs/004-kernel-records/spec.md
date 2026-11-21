@@ -334,7 +334,8 @@ row gives as none doesn't apply on that kind.
 
 ## Not in this feature (later)
 
-- `receive --boot`, and `bases remove` for modules and `boot/` files.
+- `receive --boot`, and `bases remove` for `boot/` files; the removal of unused module
+  sets (002 FR-008).
 - The feature table (`conf/kernel-features`), the `provides`/`needs` coverage of a
   deployment, and exit 8 "not covered by the current kernel".
 - The `DEVICE_PART` seed.

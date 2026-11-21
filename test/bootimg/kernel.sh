@@ -354,6 +354,42 @@ bset HANDOFF bootpart-test
 gs_update $K deferred=6.0.0-old; corrupt 2; rm -f $W/run/glassine-bootimg.notice
 ok "a deferred install that fails: exit 1, its keys cleared, the notice says so" "! $B promote 2>/dev/null && [ -z \"\$(kv deferred)\$(kv deferred_dtb)\$(kv deferred_initramfs)\" ] && grep -q 'Kernel 6.0.0-old could not be installed' $W/run/glassine-bootimg.notice"
 corrupt 0
+# --- kernels: every kernel this board can still start (the removal of unused module sets)
+# packimg OUT KERNELFILE: a boot image of this board with that kernel
+packimg() { python3 /p/lib/glassine-bootimg-pack $W/board.conf "$2" $SYS/boot/dtb/dev1@aaaa.dtb $SYS/boot/initramfs/c1.cpio.gz "$1" >/dev/null; }
+kl() { inc $B kernels 2>$W/kerr; }
+cpy
+ok "kernels: the running kernel, state/kernel's releases and images, the default slot's kernel (read from its image)" "kl > $W/kout && grep -qx '7.1.0-a running' $W/kout && grep -qx \"\$(ck current) current\" $W/kout && grep -qx \"\$(gs_kv $W/c/sys/state/bootimg/\$(ck current_img).manifest release) current_img\" $W/kout && grep -qx '7.1.0-a default-slot' $W/kout"
+ok "kernels: with bootpart-test the test slot's kernel too" "grep -q ' test-slot\$' $W/kout"
+ok "kernels: reads only (the state lock held by another writer, nothing written)" "cp -a $W/c/sys $W/c.before && ( exec 9>>$W/c/sys/state/.lock; flock -n 9 && kl >/dev/null ) && diff -r $W/c.before $W/c/sys >/dev/null && cmp -s $W/c/defslot $W/defslot"
+rm -rf $W/c.before
+gs_update $W/c/sys/state/kernel failed=7.1.0-b deferred=6.0.0-old
+ok "kernels: a failed kernel (retry can try it again) and a deferred one" "kl | grep -qx '7.1.0-b failed' && kl | grep -qx '6.0.0-old deferred'"
+mv $W/c/sys/state/kernel $W/c/kernel.save
+ok "kernels: no state/kernel: exit 1, said" "! kl >/dev/null && grep -q 'state/kernel can.t be read' $W/kerr"
+mv $W/c/kernel.save $W/c/sys/state/kernel
+CI=$(ck current_img); sed -i '/^release=/d' $W/c/sys/state/bootimg/$CI.manifest
+ok "kernels: an image record a key names without a release: exit 1, said" "! kl >/dev/null && grep -q \"image record $CI (current_img) names no release\" $W/kerr"
+cpy; dd if=/dev/zero of=$W/c/defslot bs=4096 count=1 conv=notrunc 2>/dev/null
+ok "kernels: a default slot with no boot image (a cut write): exit 1, said" "! kl >/dev/null && grep -q 'default slot .* holds no boot image' $W/kerr"
+printf 'no banner here' | gzip > $W/nob.gz; packimg $W/nob.img $W/nob.gz; cp $W/nob.img $W/c/defslot
+ok "kernels: a default slot whose kernel names no release: exit 1, said" "! kl >/dev/null && grep -q 'kernel release can.t be read' $W/kerr"
+printf 'junk Linux version 7.9.9-plain (gcc) #1 junk' > $W/plain.k; packimg $W/plain.img $W/plain.k; cp $W/plain.img $W/c/defslot
+ok "kernels: the default slot's kernel has no module set (a misread release?): exit 1, said" "! kl >/dev/null && grep -q 'kernel 7.9.9-plain has no module set' $W/kerr"
+mkdir -p $W/c/sys/modules/7.9.9-plain
+ok "kernels: an uncompressed kernel's release read" "kl | grep -qx '7.9.9-plain default-slot'"
+cp $W/nob.img $W/c/testslot
+ok "kernels: a test slot whose kernel can't be read: exit 1" "! kl >/dev/null && grep -q 'test slot .* kernel release can.t be read' $W/kerr"
+dd if=/dev/zero of=$W/c/testslot bs=4096 count=1 conv=notrunc 2>/dev/null
+ok "kernels: an empty test slot names nothing" "kl > $W/kout && ! grep -q test-slot $W/kout"
+bset HANDOFF ''
+ok "kernels: no hand-off (kernel updates paused): the default slot's kernel, the test slot not read" "cp $W/nob.img $W/c/testslot && kl | grep -qx '7.9.9-plain default-slot'"
+bset DEFAULT_DEV ''
+ok "kernels: a board with no default slot: exit 1, said" "! GLASSINE_BI_SYSTEM=$W/c/sys GLASSINE_BI_DEFAULT_DEV= $B kernels >/dev/null 2>$W/kerr && grep -q 'names no DEFAULT_DEV' $W/kerr"
+bset DEFAULT_DEV /dev/disk/by-partlabel/defslot
+bset HANDOFF frob
+ok "kernels: an unknown hand-off: exit 1" "! kl >/dev/null && grep -q \"unknown HANDOFF 'frob'\" $W/kerr"
+bset HANDOFF bootpart-test
 ok "usage: exit 2" "$B frob 2>/dev/null; a=\$?; $B status x 2>/dev/null; [ \$a\$? = 22 ]"
 ok "no temp files left in /run" "[ -z \"\$(ls $W/run | grep -v -e notice -e started)\" ]"
 

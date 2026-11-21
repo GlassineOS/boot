@@ -639,14 +639,46 @@ own: the image record's checksum covers the assembled file, which is kept as
    neither there: refused, naming the flag. Board key `DEVICE` is required, and a device tree for another device is
    refused. Names must have their form: `<device>@<hex>` and `<hex>@<hex>` (a bare hex
    initramfs commit is accepted from records written before the id).
-3. The trial, then accept (writes `state/kernel`). Modules of current, previous, the
-   candidate and deferred are never removed; older ones may be (`bases remove` extends to
-   modules).
+3. The trial, then accept (writes `state/kernel`). A module set stays as long as its
+   kernel can start ([below](#which-kernels-can-start)); the others go by themselves
+   ([deployments.md](deployments.md#unused-module-sets)).
 4. Accept runs inside the trial, where no hibernation image can exist, so it never waits.
    A `rollback` changes the selected kernel while the system runs; until the next reboot
    the selected kernel isn't the running one, and a resume under it would be cancelled.
    So `glassine-hibernate` refuses (exit 3, with that reason) while `state/kernel` selects
    another kernel than the running one, and during a trial.
+
+## Which kernels can start
+
+`glassine-bootimg kernels` prints every kernel this board can still start, one line
+`<release> <role>` each (a release may come more than once). It only reads and takes no
+lock, so `glassine-deploy` runs it while it holds `state/.lock`, to keep those kernels'
+module sets ([deployments.md](deployments.md#unused-module-sets)):
+
+| Role | The kernel |
+|---|---|
+| `running` | `uname -r` (in the recovery that is the recovery's own kernel) |
+| `current`, `previous`, `candidate`, `failed`, `deferred` | the release `state/kernel` names (a failed one: `retry` gives it a trial again) |
+| `current_img`, `previous_img`, `candidate_img`, `failed_img`, `writing` | the `release` of the image record the key names |
+| `default-slot` | not `uefi`: the kernel in the default slot's boot image (header version 0 to 2), read from the slot's own bytes: the kernel area, gunzipped when it is gzip, its `Linux version <release> ` string. So a kernel that reached the slot without a record (before the first accept seeds one, or written by hand) counts |
+| `test-slot` | `bootpart-test`: the same for the test slot, when it holds a boot image |
+| `blocklist` | `blocklist`: the release of the image the block-list record names |
+| `set:<id>` | `uefi`: the `release` of every kernel set on the boot partition (`glassine/sets/<id>/set.rec`; a directory without one is a cut write the loader doesn't start). The loader may start any set a slot names, and a set needn't have a record (the installer's default before the seed). The recovery image isn't listed: its kernel uses no module set |
+
+It exits 1, naming what it couldn't read, when `state/kernel` is missing, an image key
+names a record without a release, the default slot holds no boot image or one whose
+kernel release can't be read (another compression, another header version, a cut write),
+the default slot's kernel has no module set on the system partition (its only
+protection where no record names it, so a release that matches no set is taken as
+misread), the test slot holds such an image, the block-list record can't be read or names an image
+without a release, the boot partition can't be mounted or a set's `set.rec` names no
+release, `DEFAULT_DEV` is empty on a board without `uefi`, or `HANDOFF` is unknown. Then
+nothing it printed is the whole list. The plain layout has no `kernels` (usage, exit 2).
+
+On the Note Air today (no hand-off, `state/kernel` naming nothing until the first
+kernel update goes through `glassine-bootimg`) the kernels that can start are the
+running one and the default slot's. Its recovery partition's kernel is not counted: the board
+names no key for it, and the recovery's kernel uses no module set (everything built in).
 
 ## What the user sees
 
@@ -674,8 +706,8 @@ kernel (with a kexec loader) is a loader change, not a format change: an empty v
 
 | Where | What |
 |---|---|
-| `glassine-deploy` | `receive --boot FILE` ("On the system partition"; an existing name is a no-op); exit 8 for `select`/`stage`/`reset`; `reset --now` and `rollback` cancel a kernel candidate first; `switch` leaves a deployment staged while a kernel candidate is set; `bases remove` also removes unused modules and `boot/` files |
-| `glassine-bootimg` | kernel records, trial and accept on the system partition in the deployments layout; `install` defers during a deployment trial or with a staged deployment; `cancel` (new); `status` `format=1`; `rollback --limit` (`uefi`: the rollback after the loader's limit, 010 FR-013) |
+| `glassine-deploy` | `receive --boot FILE` ("On the system partition"; an existing name is a no-op); exit 8 for `select`/`stage`/`reset`; `reset --now` and `rollback` cancel a kernel candidate first; `switch` leaves a deployment staged while a kernel candidate is set; `bases remove` also removes unused `boot/` files; unused module sets go by themselves, `bases` lists their kernels ("Which kernels can start") |
+| `glassine-bootimg` | kernel records, trial and accept on the system partition in the deployments layout; `kernels` ("Which kernels can start"); `install` defers during a deployment trial or with a staged deployment; `cancel` (new); `status` `format=1`; `rollback --limit` (`uefi`: the rollback after the loader's limit, 010 FR-013) |
 | initramfs | the kernel trial (boots current, no deployment try, no accept); the `DEVICE_PART` mount, verified before it is bound |
 | `glassine-hibernate` | exit 3 while another kernel than the running one is selected, during a kernel trial, and while `DEVICE_PART` is read-write |
 | `board.conf` | `DEVICE_PART`, `HANDOFF`, `BOOT_FORM`, `RAMDISK_MAX`; `KERNEL`, `DTB`, `INITRAMFS` only for the plain layout |

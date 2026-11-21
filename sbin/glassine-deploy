@@ -57,7 +57,11 @@
 # kernel record names (docs/kernel-artifacts.md). A base no deployment on
 # userdata uses goes by itself, the same way: after a switch, an accept, a
 # remove and a stage (each after its clean-up of deployments), and in receive
-# when the stream doesn't fit (below).
+# when the stream doesn't fit (below). At the same four points (not in receive)
+# a module set goes when no kernel that can still start uses it: not the running
+# kernel's, not one mounted, not a hibernated session's, not one received since
+# this start, not one glassine-bootimg kernels names (state/kernel's kernels and
+# what the boot chain holds); when that list can't be read, nothing goes.
 # receive with a stream that needs more than the pool's free space (a file's
 # size) removes the unused bases first, but the stream's parent; a receive that
 # still runs out of space removes them (when it hadn't) and tries once more; no
@@ -127,6 +131,7 @@ USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata USERDATA_PREFIX=media/glassi
 RUN_DIR=/run/glassine SOFT_RESTART=yes RESTART_LIMIT_S=20 SWITCH_MIN_CAPACITY=30
 SOFT_START=/usr/lib/glassine-boot/soft-start
 KMSG=${GLASSINE_DEPLOY_KMSG:-/dev/kmsg}
+BOOTIMG=${GLASSINE_BOOTIMG:-/usr/sbin/glassine-bootimg}
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
 SWITCH_HOOK=${GLASSINE_SWITCH_HOOK:-/usr/sbin/glassine-switch-hook}
@@ -1076,6 +1081,7 @@ stage_new() {
         do_switch
     else
         gc_bases
+        gc_modules
         loader_publish "$SYSTEM_MNT" locked
         if [ "$carry" = none ]; then
             echo "glassine-deploy: $id ($kind${cur:+ of $cur}, base $base) is staged; the next shutdown selects it, with no settings carried over"
@@ -1153,6 +1159,7 @@ do_switch() {
     fi
     gc_deployments
     gc_bases
+    gc_modules
     loader_publish "$SYSTEM_MNT" locked
 }
 
@@ -1609,11 +1616,20 @@ cmd_bases() {
     done
     [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
     [ "$PORC" = 1 ] || printf '%-8s %-40s %s\n' KIND NAME USED_BY
+    # module set -> the kernels that use it (modules_users); unknown: none named,
+    # and the list can't be read whole
+    modules_users "$SYS_DIR" all
+    [ -z "$MU_WHY" ] || echo "glassine-deploy: the users of the module sets can't all be told: $MU_WHY" >&2
     for k in bases modules; do
         for d in "$SYS_DIR/$k"/*; do
             [ -d "$d" ] || continue
             n=${d##*/}; u=''
-            [ $k = bases ] && u=$(printf '%s' "$users" | awk -v b="$n" '$1 == b { printf "%s%s", s, $2; s = "," }')
+            if [ $k = bases ]; then
+                u=$(printf '%s' "$users" | awk -v b="$n" '$1 == b { printf "%s%s", s, $2; s = "," }')
+            else
+                u=$(mu_roles "$n")
+                [ -n "$u" ] || [ -z "$MU_WHY" ] || u=unknown
+            fi
             if [ "$PORC" = 1 ]; then
                 out type base; out kind "${k%s}"; out name "$n"; out used_by "$u"; emit
             else
@@ -1670,16 +1686,17 @@ base_delete() { btrfs -q subvolume delete --commit-after "$SYSTEM_MNT/bases/$1" 
 # space comes back only then)
 space_back() { btrfs -q subvolume sync "$SYSTEM_MNT" >/dev/null 2>&1 || :; }
 
-# base_mounted NAME: a mount of this namespace names bases/NAME (a mount point
-# in it, or an overlay with it as a layer)
-base_mounted() {
+# sub_mounted DIR NAME: a mount of this namespace names DIR/NAME (bases/ or
+# modules/: a mount point in it, a bind of it, or an overlay with it as a layer)
+sub_mounted() {
     while IFS= read -r _l; do
         case "$_l" in
-        *"/bases/$1/"*|*"/bases/$1 "*|*"/bases/$1,"*|*"/bases/$1:"*|*"/bases/$1") return 0 ;;
+        *"/$1/$2/"*|*"/$1/$2 "*|*"/$1/$2,"*|*"/$1/$2:"*|*"/$1/$2") return 0 ;;
         esac
     done < "${GLASSINE_DEPLOY_MOUNTINFO:-/proc/self/mountinfo}"
     return 1
 }
+base_mounted() { sub_mounted bases "$1"; }
 
 # gc_bases [KEEP…]: removes every base no deployment on userdata uses (no meta
 # names it as base=), but KEEP (the parent of a stream being received). Every
@@ -1736,6 +1753,97 @@ gc_bases() {
     [ -n "$GB_REMOVED" ] || return 0
     space_back
     boot_prune
+    return 0
+}
+
+# --- unused module sets (docs/deployments.md, "Unused module sets") --------------
+# modules_users DIR [all]: who uses each module set under DIR/modules/, in MU, one
+# "<name> <role>" line per use: running (the running kernel's), mounted, received
+# (received since this start: an install or a boot image write may still name it),
+# hibernated (the guard's krel), and glassine-bootimg kernels' roles (current,
+# previous, candidate, failed, deferred, the image keys, default-slot, test-slot,
+# blocklist, set:<id>). glassine-bootimg kernels runs only when a set has none of
+# the first four (always with all). MU_WHY: why MU may be incomplete, empty when it
+# is whole; a set no line names is unused only then.
+modules_users() {
+    MU='' MU_WHY=''
+    _mu_r=${GLASSINE_UNAME:-$(uname -r)}
+    _mu_bt=${GLASSINE_DEPLOY_BTIME:-$(awk '$1 == "btime" { print $2 }' /proc/stat 2>/dev/null)}
+    case "$_mu_bt" in ''|*[!0-9]*) _mu_bt=''; MU_WHY="this start's time can't be read" ;; esac
+    _mu_open='' _mu_any=''
+    for _mu_d in "$1"/modules/*; do
+        [ -d "$_mu_d" ] || continue
+        _mu_n=${_mu_d##*/} _mu_u='' _mu_any=1
+        [ "$_mu_n" != "$_mu_r" ] || _mu_u="$_mu_u running"
+        ! sub_mounted modules "$_mu_n" || _mu_u="$_mu_u mounted"
+        if [ -n "$_mu_bt" ]; then
+            # the root directory's change time: the receive's (nothing changes a
+            # read-only subvolume afterwards)
+            _mu_c=$(stat -c %Z "$_mu_d" 2>/dev/null)
+            case "$_mu_c" in
+            ''|*[!0-9]*) _mu_u="$_mu_u received" ;;
+            *) [ "$_mu_c" -lt "$_mu_bt" ] || _mu_u="$_mu_u received" ;;
+            esac
+        fi
+        for _mu_x in $_mu_u; do MU="$MU$_mu_n $_mu_x
+"; done
+        [ -n "$_mu_u" ] || _mu_open=1
+    done
+    [ -n "$_mu_any" ] || return 0
+    [ -n "$_mu_open" ] || [ -n "${2:-}" ] || return 0
+    # a hibernated session resumes only under its own kernel
+    if [ "$(hibernated)" != no ]; then
+        _mu_k=$(ud_cat swap/hibernate.guard | sed -n 's/^krel=//p' | head -n 1)
+        if [ -n "$_mu_k" ]; then MU="$MU$_mu_k hibernated
+"; else MU_WHY="userdata may hold a hibernated session whose kernel can't be told"; fi
+    fi
+    if [ ! -x "$BOOTIMG" ]; then
+        MU_WHY="no $BOOTIMG to tell which kernels can start"
+        return 0
+    fi
+    mkdir -p "$RUN_DIR" 2>/dev/null
+    _mu_e=$RUN_DIR/kernels.err.$$
+    if _mu_o=$(GLASSINE_BI_SYSTEM=$1 "$BOOTIMG" kernels 2>"$_mu_e"); then
+        MU="$MU$(printf '%s\n' "$_mu_o" | awk 'NF == 2')
+"
+    else
+        _mu_w=$(sed -n '$s/^glassine-bootimg: //p' "$_mu_e" 2>/dev/null)
+        MU_WHY=${_mu_w:-glassine-bootimg kernels failed}
+    fi
+    rm -f "$_mu_e"
+    return 0
+}
+
+# mu_roles NAME: the roles MU gives module set NAME, comma-separated, each once
+mu_roles() { printf '%s' "$MU" | awk -v n="$1" '$1 == n && !s[$2]++ { printf "%s%s", c, $2; c = "," }'; }
+
+# gc_modules: removes every module set no kernel that can still start uses
+# (modules_users), at the points gc_bases runs (not in receive); nothing while the
+# list can't be read whole (said). One line per removed set (stdout and the kernel
+# log), then waits until the space is back. Without btrfs-progs it does nothing.
+# Never fails. Needs state_open_rw.
+gc_modules() {
+    command -v btrfs >/dev/null || return 0
+    [ -d "$SYSTEM_MNT/modules" ] || return 0
+    modules_users "$SYSTEM_MNT"
+    _gm_un=''
+    for _gm_d in "$SYSTEM_MNT"/modules/*; do
+        [ -d "$_gm_d" ] || continue
+        [ -n "$(mu_roles "${_gm_d##*/}")" ] || _gm_un="$_gm_un ${_gm_d##*/}"
+    done
+    [ -n "$_gm_un" ] || return 0
+    if [ -n "$MU_WHY" ]; then
+        echo "glassine-deploy: unused module sets not removed: $MU_WHY" >&2
+        return 0
+    fi
+    _gm_rm=''
+    for _gm_n in $_gm_un; do
+        btrfs -q subvolume delete --commit-after "$SYSTEM_MNT/modules/$_gm_n" >/dev/null ||
+            { echo "glassine-deploy: cannot delete module set $_gm_n" >&2; continue; }
+        _gm_rm=1
+        klog "modules $_gm_n removed: no kernel that can start uses them"
+    done
+    [ -z "$_gm_rm" ] || space_back
     return 0
 }
 
@@ -1802,6 +1910,7 @@ cmd_accept() {
         UD=$USERDATA_MNT/$USERDATA_PREFIX
         gc_deployments
         gc_bases
+        gc_modules
     fi
     loader_publish "$SYSTEM_MNT" locked
 }
@@ -1830,6 +1939,7 @@ cmd_remove() {
     dep_remove "$ARG" || exit 1
     echo "glassine-deploy: deployment $ARG removed"
     gc_bases
+    gc_modules
     loader_publish "$SYSTEM_MNT" locked
 }
 
