@@ -800,6 +800,18 @@ ok "gd_boot: the journal needs recovery: nothing bound, DEVICE_PART not mounted"
 debugfs -w -R 'feature -needs_recovery' $DPD >/dev/null 2>&1
 ok "gd_boot: bound again once it verifies" "gdb && mountpoint -q $GD/run/glassine/device"
 gdun
+# a soft start's kept assembly has no e2fsprogs (busybox and the boot libraries):
+# the same results, the seed's verification deciding
+gdbk() { : > $FWP; (PATH=/bin:/usr/bin; command -v dumpe2fs >/dev/null && exit 9; gd_boot $GD $DPD $W/gdcmd $FWP) 2>$W/gdlog; }
+ok "gd_boot without e2fsprogs: a seed that verifies is bound read-only, firmware path set" "gdbk && [ \"\$(cat $GD/run/glassine/device/waveform.wbf)\" = w ] && ! touch $GD/run/glassine/device/x 2>/dev/null && grep -q 'seed bound on /run/glassine/device, firmware path set' $W/gdlog && ! grep -q 'ext4' $W/gdlog"
+gdun
+gdw "echo x > $W/dpmnt/glassine/waveform.wbf"
+ok "gd_boot without e2fsprogs: a file that doesn't verify: nothing bound, nothing left mounted" "gdbk && gdnone && grep -q \"doesn't verify\" $W/gdlog"
+gdw "echo w > $W/dpmnt/glassine/waveform.wbf && mv $W/dpmnt/glassine/manifest $W/dpmnt/glassine/manifest.off"
+ok "gd_boot without e2fsprogs: no seed: nothing bound, nothing left mounted, said" "gdbk && gdnone && grep -q 'no seed on $DPD yet' $W/gdlog"
+gdw "mv $W/dpmnt/glassine/manifest.off $W/dpmnt/glassine/manifest"
+dd if=/dev/zero of=$W/notext4 bs=1k count=1024 2>/dev/null
+ok "gd_boot: not ext4: nothing bound, the reason said (dumpe2fs's own words)" ": > $FWP; gd_boot $GD $W/notext4 $W/gdcmd $FWP 2>$W/gdlog; gdnone && grep -q \"$W/notext4 can't be read as ext4 (.*[a-z].*): nothing bound\" $W/gdlog"
 ok "gd_boot: DEVICE_PART's other files untouched" "mount -o ro $DPD $W/dpmnt && cmp -s $W/dpmnt/other $W/other; r=\$?; umount $W/dpmnt; [ \$r = 0 ]"
 
 finish
