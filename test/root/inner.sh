@@ -490,15 +490,15 @@ ok "now --reboot without /sys/power/disk: exit 3, guard gone, swap off, no hiber
 hpow; rm $HP/disk
 ok "now without /sys/power/disk: the kernel default (power off), hibernates" "hn now && [ \"\$(cat $HP/state)\" = disk ]"
 ok "now --bogus: usage" "hn now --bogus; [ \$? = 2 ]"
-# the picture (011 "The hibernate picture"): stand-ins for glassine-screen-picture
+# the picture (011 "The hibernate picture"): stand-ins for glassine-start-picture
 # (PICRC: its exit, PICHANG: it hangs) and glassine-splash-store (STORERC, STOREHANG),
 # both logging to the hook log, so their order against the device steps shows
 printf '#!/bin/sh\necho "picture $(basename "$1")" >> %s\n[ -z "${PICHANG:-}" ] || sleep 60\n[ "${PICRC:-0}" = 0 ] || exit "$PICRC"\nprintf "P5\\n2 2\\n255\\nABCD" > "$1"\n' $HL > $W/picture
 printf '#!/bin/sh\necho "store $1 $2 $([ "$2" = --picture ] && head -c 2 "$3")" >> %s\n[ -z "${STOREHANG:-}" ] || [ "$2" != --picture ] || sleep 60\nexit "${STORERC:-0}"\n' $HL > $W/store
 chmod +x $W/picture $W/store
-hpic() { GLASSINE_SCREEN_PICTURE=$W/picture GLASSINE_SPLASH_STORE=$W/store hn "$@"; }
+hpic() { GLASSINE_START_PICTURE=$W/picture GLASSINE_SPLASH_STORE=$W/store hn "$@"; }
 hpow; : > $HL
-ok "now, the picture: taken and written as the override before the device steps, removed after the resume" "hpic now && [ \"\$(cat $HL | tr '\n' ,)\" = 'picture hibernate-picture.pnm,store override --picture P5,10-a pre,20-b pre,20-b post resumed,10-a post resumed,store override --remove ,' ] && grep -q \"the screen's picture is the next start's override\" $W/hout && [ ! -e $W/run/hibernate-picture.pnm ]"
+ok "now, the picture: taken and written as the override before the device steps, removed after the resume" "hpic now && [ \"\$(cat $HL | tr '\n' ,)\" = 'picture hibernate-picture.pnm,store override --picture P5,10-a pre,20-b pre,20-b post resumed,10-a post resumed,store override --remove ,' ] && grep -q \"the session's picture is the next start's override\" $W/hout && [ ! -e $W/run/hibernate-picture.pnm ]"
 hpow; : > $HL; mount -o bind $HP/state $HP/state && mount -o remount,ro,bind $HP/state
 ok "now, the picture written, the kernel refuses: exit 1, the override removed" "hpic now; [ \$? = 1 ] && tail -n 1 $HL | grep -qx 'store override --remove '"
 umount $HP/state
@@ -506,9 +506,9 @@ hpow; : > $HL; : > $W/hookfail
 ok "now, the picture written, a pre hook cancels: the override removed" "hpic now; [ \$? = 1 ] && tail -n 1 $HL | grep -qx 'store override --remove '"
 rm -f $W/hookfail
 hpow; : > $HL
-ok "now, no picture to take (exit 3): hibernates, nothing written or removed" "PICRC=3 hpic now && ! grep -q '^store' $HL && grep -q 'no picture of the screen (glassine-screen-picture: exit 3)' $W/hout && [ \"\$(cat $HP/state)\" = disk ]"
+ok "now, no picture to take (exit 3): hibernates, nothing written or removed" "PICRC=3 hpic now && ! grep -q '^store' $HL && grep -q 'no picture for the next start (glassine-start-picture: exit 3)' $W/hout && [ \"\$(cat $HP/state)\" = disk ]"
 hpow; : > $HL
-ok "now, the store refuses the picture: hibernates, no removal" "STORERC=1 hpic now && [ \"\$(grep -c '^store' $HL)\" = 1 ] && grep -q \"the screen's picture not written\" $W/hout && [ \"\$(cat $HP/state)\" = disk ]"
+ok "now, the store refuses the picture: hibernates, no removal" "STORERC=1 hpic now && [ \"\$(grep -c '^store' $HL)\" = 1 ] && grep -q \"the session's picture not written\" $W/hout && [ \"\$(cat $HP/state)\" = disk ]"
 hpow; : > $HL
 ok "now, a picture tool that hangs: ended by its time limit, hibernates, nothing written" "t0=\$(date +%s); PICHANG=1 hpic now && [ \$((\$(date +%s) - t0)) -lt 20 ] && ! grep -q '^store' $HL && [ \"\$(cat $HP/state)\" = disk ]"
 hpow; : > $HL
@@ -517,7 +517,7 @@ hpow; : > $HL; echo HIBERNATE_PICTURE=no >> $W/deploy.conf
 ok "now, HIBERNATE_PICTURE=no: no picture taken" "hpic now && ! grep -q '^picture' $HL"
 sed -i '/^HIBERNATE_PICTURE/d' $W/deploy.conf
 hpow; : > $HL
-ok "now, without the picture tools: hibernates as before" "GLASSINE_SCREEN_PICTURE=$W/none GLASSINE_SPLASH_STORE=$W/store hn now && ! grep -q '^store' $HL"
+ok "now, without the picture tools: hibernates as before" "GLASSINE_START_PICTURE=$W/none GLASSINE_SPLASH_STORE=$W/store hn now && ! grep -q '^store' $HL"
 rm -rf $W/hooks
 hpow; mkdir $HP/resume_offset
 ok "now, the resume files cannot be written: exit 1, no hibernate, guard gone, swap off" "hn now; [ \$? = 1 ] && [ \"\$(cat $HP/state)\" = 'freeze mem disk' ] && [ ! -e $HS.guard ] && [ \"\$(cat $HC | tr '\n' ' ')\" = 'swapon swapoff ' ]"

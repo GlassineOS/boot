@@ -18,7 +18,7 @@ Next to it there is a one-time override: one image that is shown at the next sta
 place of the splash, and is gone after it was shown once.
 
 What the images show is the system's choice. One use of the override: before it
-hibernates, the system may put a picture of its screen there, so the next start shows
+hibernates, the session may put a picture of its own there, so the next start shows
 that picture long before the resume is done. Another: a shutdown screen on a bistable
 display that must stay through the next start (GlassineOS/shell 009): the cold shutdown
 writes the instruction to leave the screen as the override where the shell left
@@ -134,16 +134,17 @@ and an override that says to leave the screen,
 
 ### The hibernate picture
 
-- **FR-024** Before it hibernates, the hibernate step makes a picture of the screen as it
-  is the override: the running session's picture of its first display, upright and in the
-  display's pixels (GlassineOS/shell 010), written as an image for the display mode of
-  the picture's size, grey or RGB as the picture is, compressed for speed (FR-004a). The
-  step knows nothing of what the screen shows; it is the same on every machine and
-  every display.
+- **FR-024** Before it hibernates, the hibernate step makes the session's picture for the
+  next start the override. The session's shell provides it (GlassineOS/shell 010, the
+  start picture) and decides what it shows and in which orientation; the step asks the
+  shell's command for it and writes it as it is: an image for the display mode of the
+  picture's size, grey or RGB as the picture is, compressed for speed (FR-004a). The step
+  composes nothing, turns nothing and knows nothing of what the picture shows; it is the
+  same on every machine and every display.
 - **FR-025** The picture is taken and written before the machine's own hibernate steps
   run, so it shows the session and nothing those steps draw.
 - **FR-026** Taking and writing the picture each have a time limit. A picture that
-  can't be taken (no session, no copy of the screen) or written (no store, a full store,
+  can't be had (no session, none from the shell) or written (no store, a full store,
   a failed write) changes nothing else: the hibernate goes on, without an override.
 - **FR-027** Once the kernel returns, resumed or refusing, or the hibernate is cancelled,
   the step removes the override again: the start of a resume has already used it up
@@ -204,6 +205,7 @@ and an override that says to leave the screen,
 | The store's names on a PC | owned (new) | part of the boot partition's layout | `docs/boot-partition.md`, "The splash store" |
 | The store on a device without FAT | owned (new); the regions `splash-default`, `splash`, `override` of the boot partition's raw form | region table `format=1` | `docs/boot-partition.md`, "The raw form" |
 | The command that sets and removes the splash and the override | owned (new); used by the settings, the session, the cold shutdown and the hibernate step | — | `docs/boot.md`, "The splash store" |
+| The session's picture for the next start (`glassine-start-picture OUT`, its exit status) | consumed (GlassineOS/shell 010 FR-007 to FR-012) | — | `docs/boot.md`, "Hibernation" |
 | The earliest stage's display mode, readable by the running system | owned (new) | — | to be added to `docs/boot.md` |
 | The earliest stage on a PC | owned | — | 010 FR-048 |
 
