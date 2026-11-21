@@ -20,9 +20,10 @@
 #                                    (glassine-loader-mark healthy, 010 FR-023).
 #
 # The picture (specs/011 "The hibernate picture"): before the device steps, the
-# screen as it is (GlassineOS/shell's glassine-screen-picture) becomes the splash
-# store's one-time override (glassine-splash-store override --picture), so the next
-# start shows it while the resume runs. It knows nothing of what the screen shows.
+# session's picture for the next start (GlassineOS/shell's glassine-start-picture)
+# becomes the splash store's one-time override as it is (glassine-splash-store
+# override --picture), so the next start shows it while the resume runs. What it
+# shows is the shell's choice: this step neither composes nor turns it.
 # Each tool has a time limit; a picture that can't be taken or written changes
 # nothing else. Once the kernel returns (resumed or refused) or the hibernate is
 # cancelled, the override is removed again: a drawing earliest stage has already
@@ -49,7 +50,7 @@
 # GLASSINE_PROC_CMDLINE (/proc/cmdline), GLASSINE_UNAME (uname -r),
 # GLASSINE_PROC_MOUNTS (/proc/mounts), GLASSINE_BOARD_CONF (the board keys,
 # /etc/glassine-bootimg/board.conf: DEVICE_PART), GD_SYS_BLOCK
-# (/sys/class/block), GLASSINE_SCREEN_PICTURE (/usr/bin/glassine-screen-picture),
+# (/sys/class/block), GLASSINE_START_PICTURE (/usr/bin/glassine-start-picture),
 # GLASSINE_SPLASH_STORE (/usr/sbin/glassine-splash-store).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
@@ -61,9 +62,9 @@ SWAPS=${GLASSINE_PROC_SWAPS:-/proc/swaps}
 MOUNTS=${GLASSINE_PROC_MOUNTS:-/proc/mounts}
 BOARD=${GLASSINE_BOARD_CONF:-/etc/glassine-bootimg/board.conf}
 MARK_TOOL=${GLASSINE_LOADER_MARK:-/usr/sbin/glassine-loader-mark}
-PICTURE_TOOL=${GLASSINE_SCREEN_PICTURE:-/usr/bin/glassine-screen-picture}
+PICTURE_TOOL=${GLASSINE_START_PICTURE:-/usr/bin/glassine-start-picture}
 STORE_TOOL=${GLASSINE_SPLASH_STORE:-/usr/sbin/glassine-splash-store}
-PICTURE_MAX_S=5 STORE_MAX_S=10      # the time limits of the picture's two tools
+PICTURE_MAX_S=8 STORE_MAX_S=10      # the time limits of the picture's two tools
 DEVLIB=${LIB%/*}/glassine-device.sh
 SYSTEM_MNT=/run/glassine/system USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata
 USERDATA_PREFIX=media/glassine RUN_DIR=/run/glassine HIBERNATE_PICTURE=yes HIBERNATE_SIZE_MB='' HIBERNATE_RESERVE_MB=512
@@ -179,7 +180,7 @@ hooks() {
     done
 }
 
-# picture: the screen as it is, the next start's override (pic=yes once written)
+# picture: the session's picture for the next start, its override (pic=yes once written)
 pic=no
 picture() {
     [ "$HIBERNATE_PICTURE" = yes ] && [ -x "$PICTURE_TOOL" ] && [ -x "$STORE_TOOL" ] || return 0
@@ -187,18 +188,18 @@ picture() {
     rm -f "$_p" "$_p.tmp"
     timeout "$PICTURE_MAX_S" "$PICTURE_TOOL" "$_p" >/dev/null 2>&1 9>&-; _r=$?
     if [ $_r != 0 ]; then
-        say "no picture of the screen (glassine-screen-picture: exit $_r)"
+        say "no picture for the next start (glassine-start-picture: exit $_r)"
     elif timeout "$STORE_MAX_S" "$STORE_TOOL" override --picture "$_p" --wait 3 >/dev/null 2>&1 9>&-; then
-        pic=yes; say "the screen's picture is the next start's override"
+        pic=yes; say "the session's picture is the next start's override"
     else
-        say "the screen's picture not written (glassine-splash-store: exit $?)"
+        say "the session's picture not written (glassine-splash-store: exit $?)"
     fi
     rm -f "$_p" "$_p.tmp"
 }
 picture_gone() {
     [ $pic = yes ] || return 0
     timeout "$STORE_MAX_S" "$STORE_TOOL" override --remove --wait 3 >/dev/null 2>&1 9>&- ||
-        say "the screen's picture could not be removed from the splash store (exit $?)"
+        say "the session's picture could not be removed from the splash store (exit $?)"
     pic=no
 }
 
