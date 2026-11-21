@@ -54,7 +54,15 @@
 # the booted, current, candidate or staged deployment, and asks first when other
 # deployments (the previous one, usually) would lose theirs: those stay on
 # userdata but can no longer be selected. Then it removes the boot/ files no
-# kernel record names (docs/kernel-artifacts.md).
+# kernel record names (docs/kernel-artifacts.md). A base no deployment on
+# userdata uses goes by itself, the same way: after a switch, an accept, a
+# remove and a stage (each after its clean-up of deployments), and in receive
+# when the stream doesn't fit (below).
+# receive with a stream that needs more than the pool's free space (a file's
+# size) removes the unused bases first, but the stream's parent; a receive that
+# still runs out of space removes them (when it hadn't) and tries once more; no
+# fit is exit 5 with the space needed and free. A stream on stdin can't be
+# tried again: exit 5, nothing removed.
 # remove ID deletes a deployment's layers from userdata: it refuses the current,
 # candidate, staged and booted deployment and one that is mounted, and asks
 # first for the previous one (its rollback is lost). The clean-up does the same
@@ -118,6 +126,7 @@ SYSTEM_DEV='' SYSTEM_MNT=/run/glassine/system
 USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata USERDATA_PREFIX=media/glassine
 RUN_DIR=/run/glassine SOFT_RESTART=yes RESTART_LIMIT_S=20 SWITCH_MIN_CAPACITY=30
 SOFT_START=/usr/lib/glassine-boot/soft-start
+KMSG=${GLASSINE_DEPLOY_KMSG:-/dev/kmsg}
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
 SWITCH_HOOK=${GLASSINE_SWITCH_HOOK:-/usr/sbin/glassine-switch-hook}
@@ -131,7 +140,7 @@ SWITCH_HOOK=${GLASSINE_SWITCH_HOOK:-/usr/sbin/glassine-switch-hook}
 PORCELAIN_VERSION=1
 SWAPFILE="$USERDATA_PREFIX/swap/hibernate"
 GUARD="$USERDATA_PREFIX/swap/hibernate.guard"
-MOUNTED_HERE='' UD_MOUNTED_HERE='' TMP_VIEW='' NEW_DEP='' SWITCHING='' RECV_TMP='' RECV_BEFORE=''
+MOUNTED_HERE='' UD_MOUNTED_HERE='' TMP_VIEW='' NEW_DEP='' SWITCHING='' RECV_TMP='' RECV_BEFORE='' RECV_ERR='' GB_REMOVED=''
 REPLAY_MNT='' REPLAY_BINDS='' REPLAY_RESOLV='' REPLAY_TMP='' NEW_ETC=''
 
 die() { echo "glassine-deploy: $*" >&2; exit 1; }
@@ -161,6 +170,17 @@ replay_umount() {
     REPLAY_MNT=''
 }
 
+# recv_undo: a failed receive leaves nothing behind: what it added to RECV_TMP
+# (bases/ or modules/) since RECV_BEFORE goes
+recv_undo() {
+    [ -n "$RECV_TMP" ] || return 0
+    for _r in "$RECV_TMP"/*; do
+        [ -d "$_r" ] || continue
+        printf '%s\n' "$RECV_BEFORE" | grep -qxF -- "${_r##*/}" && continue
+        btrfs -q subvolume delete "$_r" >/dev/null 2>&1 || rm -rf "$_r"
+    done
+}
+
 cleanup() {
     replay_umount
     [ -n "$REPLAY_TMP" ] && rm -rf "$REPLAY_TMP"
@@ -174,16 +194,10 @@ cleanup() {
     # a half-built deployment never stays behind
     [ -n "$NEW_DEP" ] && rm -rf "$NEW_DEP"
     NEW_DEP=''
-    # a failed receive leaves nothing behind: what it added to RECV_TMP
-    # (bases/ or modules/) since RECV_BEFORE goes
-    if [ -n "$RECV_TMP" ]; then
-        for _r in "$RECV_TMP"/*; do
-            [ -d "$_r" ] || continue
-            printf '%s\n' "$RECV_BEFORE" | grep -qxF -- "${_r##*/}" && continue
-            btrfs -q subvolume delete "$_r" >/dev/null 2>&1 || rm -rf "$_r"
-        done
-    fi
+    recv_undo
     RECV_TMP=''
+    [ -n "$RECV_ERR" ] && rm -f "$RECV_ERR"
+    RECV_ERR=''
     # the state lock (fd 9, on $SYSTEM_MNT/state/.lock) keeps the system
     # partition busy; cleanup runs only before the lock is taken or at exit
     exec 9>&-
@@ -1061,6 +1075,7 @@ stage_new() {
     if [ "$NOW" = 1 ]; then
         do_switch
     else
+        gc_bases
         loader_publish "$SYSTEM_MNT" locked
         if [ "$carry" = none ]; then
             echo "glassine-deploy: $id ($kind${cur:+ of $cur}, base $base) is staged; the next shutdown selects it, with no settings carried over"
@@ -1137,6 +1152,7 @@ do_switch() {
         echo "glassine-deploy: $id boots next (2 tries, then a bare boot again)"
     fi
     gc_deployments
+    gc_bases
     loader_publish "$SYSTEM_MNT" locked
 }
 
@@ -1325,6 +1341,37 @@ subvol_received() {
     btrfs subvolume show "$1" 2>/dev/null | grep -q 'Received UUID:[[:space:]]*[0-9a-f]'
 }
 
+# recv_stream: one btrfs receive of ARG into $d, its errors into RECV_ERR
+recv_stream() {
+    case "$ARG" in
+    -) btrfs -q receive "$d" ;;
+    *.zst) zstd -dcq "$ARG" | btrfs -q receive "$d" ;;
+    *) btrfs -q receive -f "$ARG" "$d" ;;
+    esac 2>"$RECV_ERR"
+}
+
+# pool_free_k: the free space of the system partition, KiB
+pool_free_k() { df -Pk "$SYSTEM_MNT" | awk 'NR == 2 { print $4 + 0 }'; }
+
+# stream_parent: the base an incremental stream (ARG, a file) is received onto:
+# its first command names the parent by the UUID the sender saw, which is the
+# parent's received UUID here (its UUID for one made here). Empty for a full
+# stream or no match.
+stream_parent() {
+    case "$ARG" in
+    *.zst) _sp=$(zstd -dcq "$ARG" 2>/dev/null | btrfs receive --dump 2>/dev/null | head -n 1) ;;
+    *) _sp=$(btrfs receive --dump -f "$ARG" 2>/dev/null | head -n 1) ;;
+    esac
+    _sp=$(printf '%s\n' "$_sp" | sed -n 's/.*[[:space:]]parent_uuid=\([0-9a-f-]*\).*/\1/p')
+    [ -n "$_sp" ] || return 0
+    for _spd in "$SYSTEM_MNT"/bases/*; do
+        [ -d "$_spd" ] || continue
+        btrfs subvolume show "$_spd" 2>/dev/null | grep -qE "^[[:space:]]*(Received )?UUID:[[:space:]]*$_sp\$" &&
+            { echo "${_spd##*/}"; return 0; }
+    done
+    return 0
+}
+
 cmd_receive() {
     [ "$BOOT" = 1 ] && { cmd_receive_boot; return; }
     command -v btrfs >/dev/null || die "receive needs btrfs (btrfs-progs)"
@@ -1347,11 +1394,42 @@ cmd_receive() {
     mkdir -p "$d" || die "cannot create $d"
     RECV_BEFORE=$(for n in "$d"/*; do [ -e "$n" ] && echo "${n##*/}"; done)
     RECV_TMP=$d
-    case "$ARG" in
-    -) btrfs -q receive "$d" ;;
-    *.zst) zstd -dcq "$ARG" | btrfs -q receive "$d" ;;
-    *) btrfs -q receive -f "$ARG" "$d" ;;
-    esac || die "btrfs receive failed (a name that exists already, a cut stream or a missing parent); nothing kept"
+    mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
+    RECV_ERR=$RUN_DIR/receive.err.$$
+    # room for the stream (a file: its size, a lower bound for .zst): when the
+    # pool has less free, the unused bases go first, all but the stream's parent
+    need='' parent='' gced=0
+    if [ "$ARG" != - ]; then
+        need=$(( ($(stat -c %s "$ARG") + 1023) / 1024 ))
+        [ "$sub" = bases ] && parent=$(stream_parent)
+        if [ "$sub" = bases ] && [ "$(pool_free_k)" -lt "$need" ]; then
+            echo "glassine-deploy: $need KiB needed, $(pool_free_k) KiB free: removing the unused bases first"
+            gc_bases $parent; gced=1
+        fi
+    fi
+    if ! recv_stream; then
+        nospace=0; grep -q 'No space left' "$RECV_ERR" && nospace=1
+        # out of space: the unused bases go (once), then the stream again
+        if [ $nospace = 1 ] && [ "$ARG" != - ] && [ "$sub" = bases ] && [ $gced = 0 ]; then
+            recv_undo
+            echo "glassine-deploy: the system partition is full: removing the unused bases, then receiving again"
+            gc_bases $parent; gced=1
+            if [ -n "$GB_REMOVED" ] && recv_stream; then nospace=ok; else grep -q 'No space left' "$RECV_ERR" || nospace=0; fi
+        fi
+        if [ "$nospace" != ok ]; then
+            cat "$RECV_ERR" >&2
+            rm -f "$RECV_ERR"
+            if [ "$nospace" = 1 ]; then
+                if [ "$ARG" = - ]; then
+                    fail 5 "not enough space on the system partition for the stream ($(pool_free_k) KiB free); nothing kept. A stream from a file removes the unused bases and tries again by itself; glassine-deploy bases lists them"
+                fi
+                _sz="the stream's size"; case "$ARG" in *.zst) _sz="the compressed stream's size" ;; esac
+                fail 5 "not enough space on the system partition for $ARG: at least $need KiB needed ($_sz), $(pool_free_k) KiB free with no unused base left; nothing kept (glassine-deploy bases lists what is there)"
+            fi
+            die "btrfs receive failed (a name that exists already, a cut stream or a missing parent); nothing kept"
+        fi
+    fi
+    rm -f "$RECV_ERR"
     new=''
     for n in "$d"/*; do
         [ -e "$n" ] || continue
@@ -1570,11 +1648,95 @@ cmd_bases_remove() {
         case " $lose " in *" $prev "*) note=" Rollback to $prev is lost." ;; esac
         confirm "Remove base $ARG? Deployments that can no longer boot:$lose.$note"
     fi
-    btrfs -q subvolume delete --commit-after "$d" >/dev/null || die "cannot delete $d"
-    # the space comes back once the cleaner has dropped the subvolume
-    btrfs -q subvolume sync "$SYSTEM_MNT" >/dev/null 2>&1 || :
+    base_delete "$ARG" || die "cannot delete $d"
+    space_back
     echo "glassine-deploy: base $ARG removed"
     boot_prune
+}
+
+# --- unused bases (docs/deployments.md, "Clean-up") -----------------------------
+# klog LINE: stdout and the kernel log (a shutdown switch's output is gone with
+# the console)
+klog() {
+    echo "glassine-deploy: $*"
+    { [ -w "$KMSG" ] && echo "<5>glassine-deploy: $*" >> "$KMSG"; } 2>/dev/null
+    return 0
+}
+
+# base_delete NAME: the subvolume bases/NAME deleted, committed
+base_delete() { btrfs -q subvolume delete --commit-after "$SYSTEM_MNT/bases/$1" >/dev/null; }
+
+# space_back: wait until the cleaner has dropped the deleted subvolumes (their
+# space comes back only then)
+space_back() { btrfs -q subvolume sync "$SYSTEM_MNT" >/dev/null 2>&1 || :; }
+
+# base_mounted NAME: a mount of this namespace names bases/NAME (a mount point
+# in it, or an overlay with it as a layer)
+base_mounted() {
+    while IFS= read -r _l; do
+        case "$_l" in
+        *"/bases/$1/"*|*"/bases/$1 "*|*"/bases/$1,"*|*"/bases/$1:"*|*"/bases/$1") return 0 ;;
+        esac
+    done < "${GLASSINE_DEPLOY_MOUNTINFO:-/proc/self/mountinfo}"
+    return 1
+}
+
+# gc_bases [KEEP…]: removes every base no deployment on userdata uses (no meta
+# names it as base=), but KEEP (the parent of a stream being received). Every
+# deployment on userdata keeps its base, so the booted, current, previous,
+# candidate and staged ones do. Removes nothing while the current deployment's
+# meta can't be read, a deployment's meta names no base (unreadable must not
+# read as unused), or userdata may hold a hibernate image whose deployment's
+# base can't be told; a hibernated session's base is kept and said. A mounted
+# base stays. Then waits until the space is back and runs boot_prune. One line
+# per removed base (stdout and the kernel log). Without btrfs-progs it does
+# nothing. Never fails. Needs state_open_rw. Sets GB_REMOVED.
+gc_bases() {
+    GB_REMOVED=''
+    command -v btrfs >/dev/null || return 0
+    [ -d "$SYSTEM_MNT/bases" ] || return 0
+    _gb_cur=$(gs_kv "$S/deploy" current)
+    if [ -z "$_gb_cur" ] || [ -z "$(meta_kv "$(ud_cat "deployments/$_gb_cur/meta")" base)" ]; then
+        echo "glassine-deploy: unused bases not removed: the current deployment ${_gb_cur:-(none)} is not readable on userdata" >&2
+        return 0
+    fi
+    _gb_keep=" $* "
+    for _gb_id in $(ud_dirs deployments); do
+        valid_name "$_gb_id" || continue
+        _gb_b=$(meta_kv "$(ud_cat "deployments/$_gb_id/meta")" base)
+        [ -n "$_gb_b" ] || { echo "glassine-deploy: unused bases not removed: deployment $_gb_id names no base" >&2; return 0; }
+        _gb_keep="$_gb_keep$_gb_b "
+    done
+    # a hibernated session runs on its deployment's base (the guard names it)
+    _gb_hd='' _gb_hb=''
+    if [ "$(hibernated)" != no ]; then
+        _gb_hd=$(ud_cat swap/hibernate.guard | sed -n 's/^deployment=//p' | head -n 1)
+        [ -z "$_gb_hd" ] || _gb_hb=$(meta_kv "$(ud_cat "deployments/$_gb_hd/meta")" base)
+        if [ -z "$_gb_hb" ]; then
+            echo "glassine-deploy: unused bases not removed: userdata may hold a hibernated session whose base can't be told" >&2
+            return 0
+        fi
+    fi
+    for _gb_d in "$SYSTEM_MNT"/bases/*; do
+        [ -d "$_gb_d" ] || continue
+        _gb_n=${_gb_d##*/}
+        if [ "$_gb_n" = "$_gb_hb" ]; then
+            case "$_gb_keep" in *" $_gb_n "*) ;; *) klog "base $_gb_n kept: the hibernated session of $_gb_hd runs on it" ;; esac
+            continue
+        fi
+        case "$_gb_keep" in *" $_gb_n "*) continue ;; esac
+        if base_mounted "$_gb_n"; then
+            echo "glassine-deploy: base $_gb_n is mounted; not removed" >&2
+            continue
+        fi
+        base_delete "$_gb_n" || { echo "glassine-deploy: cannot delete base $_gb_n" >&2; continue; }
+        GB_REMOVED="$GB_REMOVED $_gb_n"
+        klog "base $_gb_n removed: no deployment uses it"
+    done
+    [ -n "$GB_REMOVED" ] || return 0
+    space_back
+    boot_prune
+    return 0
 }
 
 pkg_db() { awk -F: '$1 == "P" { p = $2 } $1 == "V" && p != "" { print p " " $2; p = "" }' "$1" 2>/dev/null | sort; }
@@ -1639,6 +1801,7 @@ cmd_accept() {
     if ud_mounted; then
         UD=$USERDATA_MNT/$USERDATA_PREFIX
         gc_deployments
+        gc_bases
     fi
     loader_publish "$SYSTEM_MNT" locked
 }
@@ -1666,6 +1829,7 @@ cmd_remove() {
     trash_purge
     dep_remove "$ARG" || exit 1
     echo "glassine-deploy: deployment $ARG removed"
+    gc_bases
     loader_publish "$SYSTEM_MNT" locked
 }
 

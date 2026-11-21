@@ -178,7 +178,8 @@ file and manifest, whichever build made them, and receiving an existing name is 
 A file may be removed only when no kernel record names it (`state/kernel`'s
 `deferred_dtb` and `deferred_initramfs` included) and it was received
 before the last `glassine-bootimg install` (so a file received for an install that hasn't
-happened yet stays). `bases remove` does this after it removed the base:
+happened yet stays). `bases remove` does this after it removed the base, and so does the
+removal of unused bases ([deployments.md](deployments.md#unused-bases)):
 
 - the names it keeps are `dtb` and `initramfs` of every image record in
   `state/bootimg/`, and `deferred_dtb` and `deferred_initramfs`; an initramfs is also kept

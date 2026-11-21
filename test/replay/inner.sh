@@ -44,13 +44,16 @@ echo /var/lib/new-pkg-state > $S/bases/b2/usr/share/glassine/migrate.d/new.list;
 echo version=1 > $S/state/format
 printf 'current=c1\nprevious=\ncandidate=\ntries=0\n' > $S/state/deploy
 D=$U/deployments/c1; mkdir -p $D/build $D/switch $D/work; printf 'base=b1\nkind=install\n' > $D/meta
+# b2 and b3 take turns as the staged base; a kept deployment on b2 (the last failed one)
+# keeps b2 when a stage on b3 removes the unused bases
+mkdir -p $U/deployments/hold; printf 'base=b2\nkind=update\n' > $U/deployments/hold/meta; gs_update $S/state/deploy failed=hold
 
 # the running deployment: its merged root, as the running system sees it
 R=$W/root; gr_mount_overlay $R "$S/bases/b1" $D/switch $D/work || { echo "FAIL no overlay"; exit 1; }
 echo c1 > $W/run/booted; export GLASSINE_DEPLOY_ROOT=$R
 mount --bind /dev $R/dev; mount -t proc proc $R/proc; cp /etc/resolv.conf $R/etc/resolv.conf
 ua() { chroot $R /sbin/apk --no-progress --cache-dir /var/cache/apk "$@" >/dev/null 2>&1; }
-newest() { for i in "$U"/deployments/*; do [ "${i##*/}" = c1 ] || echo "${i##*/}"; done; }
+newest() { for i in "$U"/deployments/*; do case "${i##*/}" in c1|hold) ;; *) echo "${i##*/}" ;; esac; done; }
 clear_staged() { for i in $(newest); do rm -rf "${U:?}/deployments/$i"; done; gs_update $S/state/deploy staged= candidate= tries=0; }
 nomnt() { ! grep -q "replay\." /proc/mounts && ! for i in "$W"/run/replay.*; do [ -e "$i" ] && echo x; done | grep -q x; }
 
