@@ -48,12 +48,17 @@ visible unlock.
 2. **Given** a package upgraded above the old base's version, **then** the replay
    upgrades it on the new base; a base that already has that version or newer takes
    over.
-3. **Given** a package that no longer resolves, or a package whose version would go
-   down, **then** stage stops with exit 7, names it, and stages nothing;
-   `--without NAME`, `--accept-downgrades` or `--no-replay` decide.
-4. **Given** no network, **then** the replay uses the package lists and packages in the
+3. **Given** an exact pin in the world (`name=version`, from an `apk add name=version`),
+   **then** a new base that has that version or a newer one takes over: the pin is not
+   replayed, the base's own entry for the name stays, and stage says so. A pin above
+   the new base's version, or of a package the new base doesn't have, is replayed.
+4. **Given** a package that no longer resolves, or a package whose version would go
+   down (below the running deployment's, or below the new base's), **then** stage
+   stops with exit 7, names it, and stages nothing; `--without NAME`,
+   `--accept-downgrades` or `--no-replay` decide.
+5. **Given** no network, **then** the replay uses the package lists and packages in the
    running deployment's apk cache.
-5. **Given** a repository the user added, **then** it comes along with its keys; the old
+6. **Given** a repository the user added, **then** it comes along with its keys; the old
    base's own repositories do not.
 
 ### Story 5: another repository replaces installed packages (P2)

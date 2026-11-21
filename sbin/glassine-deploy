@@ -38,9 +38,11 @@
 # the user's package changes replayed into the new deployment's build layer:
 # apk from the new base in a chroot, scripts on, an empty /run so that OpenRC
 # starts nothing. A package version going down, or a package that no longer
-# resolves, stops the stage with exit 7 and nothing staged: --accept-downgrades
+# resolves, stops the stage with exit 7 and nothing staged (down: below the running
+# deployment's version or below the new base's): --accept-downgrades
 # takes the lower versions, --without NAME leaves NAME's change out (added, or a changed entry's removal),
-# --no-replay stages the bare base;
+# --no-replay stages the bare base. An exact pin (name=version) that the new base has
+# or exceeds is not replayed: the base's version and its own entry take over;
 # receive puts a btrfs send stream (full or incremental, .zst by its name) under
 # bases/ (or modules/), read-only; receive --boot puts a device tree or an
 # initramfs with its manifest into boot/ (identity checked, an existing name a
@@ -904,7 +906,22 @@ do_replay() {
     pkg_db "$obd/lib/apk/db/installed" > "$t/oi" 2>/dev/null; pkg_db "$view/lib/apk/db/installed" > "$t/vi" 2>/dev/null
     pkg_db "$nbd/lib/apk/db/installed" > "$t/ni" 2>/dev/null
     # added and removed against the old base, as far as the new one differs
-    awk 'FILENAME == ARGV[1] { o[$0] = 1; next } FILENAME == ARGV[2] { n[$0] = 1; next } !($0 in o) && !($0 in n)' "$t/ow" "$t/nw" "$t/vw" > "$t/add0"
+    awk 'FILENAME == ARGV[1] { o[$0] = 1; next } FILENAME == ARGV[2] { n[$0] = 1; next } !($0 in o) && !($0 in n)' "$t/ow" "$t/nw" "$t/vw" > "$t/add1"
+    # an exact pin (name=version, an earlier `apk add name=version`) that the new base
+    # has or exceeds goes: the base takes over, its own entry for the name stays (as
+    # for a raised package). A pin above the new base, or of a package the new base
+    # doesn't have, is replayed
+    : > "$t/add0"; : > "$t/taken"
+    while read -r e; do
+        _n=${e%%=*} _pv=${e#*=} _nv=''
+        case $e in *[\<\>~@]*|=*) ;; *=*) _nv=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$t/ni") ;; esac
+        if [ -n "$_nv" ] && case $("$vapk" version -t "$_nv" "$_pv" 2>/dev/null) in '>'|'=') true ;; *) false ;; esac; then
+            echo "glassine-deploy: base $base has $_n $_nv: your pin $e goes, the base's version takes over"
+            echo "$_n" >> "$t/taken"
+        else
+            echo "$e" >> "$t/add0"
+        fi
+    done < "$t/add1"
     : > "$t/add"
     while read -r e; do
         _n=$(echo "$e" | sed 's/[<>=~@].*//')
@@ -914,7 +931,8 @@ do_replay() {
     # leaves out NAME's removal too: an entry the user changed (a pin, a local file)
     # shows as the plain entry removed plus the changed one added, and the base's
     # plain entry must stay
-    awk 'FILENAME == ARGV[1] { v[$0] = 1; next } FILENAME == ARGV[2] { n[$0] = 1; next } !($0 in v) && ($0 in n)' "$t/vw" "$t/nw" "$t/ow" > "$t/del0"
+    awk 'FILENAME == ARGV[1] { v[$0] = 1; next } FILENAME == ARGV[2] { n[$0] = 1; next } !($0 in v) && ($0 in n)' "$t/vw" "$t/nw" "$t/ow" |
+        awk 'FILENAME == ARGV[1] { k[$0] = 1; next } { e = $0; sub(/[<>=~@].*/, "", e) } !(e in k)' "$t/taken" - > "$t/del0"
     : > "$t/del"
     while read -r e; do
         _n=$(echo "$e" | sed 's/[<>=~@].*//')
@@ -982,7 +1000,8 @@ do_replay() {
         replay_umount
         rm -rf "$NEW_DEP/apk-cache"
     fi
-    # no silent downgrade: every package the running deployment has, against the new one
+    # no silent downgrade: every package the running deployment has, against the new
+    # one, and every package of the new base, against what the replay made of it
     down=''
     while read -r n v nv; do
         [ "$("$vapk" version -t "$v" "$nv" 2>/dev/null)" = '>' ] || continue
@@ -990,6 +1009,13 @@ do_replay() {
         down=1
     done <<EOF
 $(awk 'FILENAME == ARGV[1] { r[$1] = $2; next } ($1 in r) && r[$1] != $2 { print $1, $2, r[$1] }' "$t/ri" "$t/vi")
+EOF
+    while read -r n v nv; do
+        [ "$("$vapk" version -t "$v" "$nv" 2>/dev/null)" = '>' ] || continue
+        echo "glassine-deploy: goes below base $base: $n $v -> $nv"
+        down=1
+    done <<EOF
+$(awk 'FILENAME == ARGV[1] { r[$1] = $2; next } ($1 in r) && r[$1] != $2 { print $1, $2, r[$1] }' "$t/ri" "$t/ni")
 EOF
     if [ -n "$down" ] && [ "$ACCEPT_DOWN" != 1 ]; then
         fail 7 "these packages would go down in version; nothing staged. --accept-downgrades takes them, or stay on this base until a newer one"
