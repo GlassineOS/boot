@@ -72,10 +72,14 @@ services() {
     [ -z "${c% }" ]; res $? "no crashed service (rc-status --crashed: ${c:-none})"
 }
 
-# accepted ID: the boot-success step accepts the booted candidate ID
+# accepted ID: the boot-success step accepts the booted candidate ID. Waits for the
+# step's own verdict line, not only the state: glassine-deploy accept writes current=
+# first and then cleans up (removes unused deployments and bases), and the step says
+# "accepted" once that is done
 accepted() {
     n=0
-    while [ "$(st current)" != "$1" ] && [ $n -lt $((ACCEPT_AFTER + 180)) ]; do sleep 5; n=$((n + 5)); done
+    while ! dmesg | grep -qE "glassine-deploy-accept: ($1 accepted|$1 not accepted|accept $1 failed)" \
+        && [ $n -lt $((ACCEPT_AFTER + 180)) ]; do sleep 5; n=$((n + 5)); done
     dmesg | grep -q "glassine-deploy-accept: $1 accepted"; res $? "$1 accepted by the boot-success step"
     dmesg | grep -q "glassine-deploy-accept: $1 accepted" || say "info the boot-success step said: $(dmesg | sed -n 's/.*\(glassine-deploy-accept: .*\)/\1/p' | tr '\n' '|')"
     [ "$(st current)" = "$1" ] && [ -z "$(st candidate)" ]; res $? "$1 is current (previous: $(st previous))"
