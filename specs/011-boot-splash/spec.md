@@ -132,6 +132,26 @@ and an override that says to leave the screen,
 - **FR-015** The running system removes an override it finds at its start that the
   earliest stage didn't use up (a stage that can't write the store).
 
+### The hibernate picture
+
+- **FR-024** Before it hibernates, the hibernate step makes a picture of the screen as it
+  is the override: the running session's picture of its first display, upright and in the
+  display's pixels (GlassineOS/shell 010), written as an image for the display mode of
+  the picture's size, grey or RGB as the picture is, compressed for speed (FR-004a). The
+  step knows nothing of what the screen shows; it is the same on every machine and
+  every display.
+- **FR-025** The picture is taken and written before the machine's own hibernate steps
+  run, so it shows the session and nothing those steps draw.
+- **FR-026** Taking and writing the picture each have a time limit. A picture that
+  can't be taken (no session, no copy of the screen) or written (no store, a full store,
+  a failed write) changes nothing else: the hibernate goes on, without an override.
+- **FR-027** Once the kernel returns, resumed or refusing, or the hibernate is cancelled,
+  the step removes the override again: the start of a resume has already used it up
+  where the earliest stage draws, and no later start may show an old screen. The
+  earliest stage shows a picture made for another mode as FR-008 says: not at all.
+- **FR-028** A setting of the system turns the picture off; then the hibernate writes
+  no override.
+
 ### Keeping the picture on screen
 
 - **FR-016** From the earliest stage's drawing to the system's first frame, no stage
@@ -248,6 +268,13 @@ display at the earliest stage and at fixed points after it.
   no white flash and no refresh between power-on and the system's first update.
 - **SC-009** On a real PC, with the person's go: SC-001 and SC-002 by camera, with at
   most the one mode-set blank of FR-016.
+- **SC-010** In QEMU with OVMF, an override as the hibernate step writes it (a whole
+  screen of the display mode, RGB, compressed for speed) is drawn at the next start
+  pixel for pixel, and the start after it shows the splash.
+- **SC-011** On the host: the hibernate step writes the override before the machine's
+  own steps and removes it once the kernel returns or the hibernate is cancelled; a
+  picture tool or store that fails or hangs past its time limit leaves the hibernate
+  going on with no override.
 
 ## Assumptions
 
@@ -256,9 +283,9 @@ display at the earliest stage and at fixed points after it.
 
 ## Out of scope
 
-- What the splash and the override show, and when the system writes an override (a
-  picture of the screen before a hibernate and a shutdown screen kept through the next
-  start are two uses; the session's, the shutdown's and the hibernate step's own work).
+- What the splash and the override show, and when the system writes an override apart
+  from the hibernate picture (FR-024 to FR-028): a shutdown screen kept through the next
+  start is the session's and the shutdown's own work.
 - Animations, progress bars and text on the splash.
 - The firmware's own logo before the earliest stage.
 - The settings page that picks the picture.

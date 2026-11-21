@@ -512,6 +512,16 @@ ok "splash store, FAT: the next write after a cut: the new image, no .new" "sse 
 echo junk > $SO.new
 ok "splash store, FAT: override --remove: no override, no .new" "sse override --remove 2>/dev/null && [ ! -e $SO ] && [ ! -e $SO.new ]"
 ok "splash store, FAT: --remove with no override: 0" "sse override --remove 2>/dev/null"
+# --picture: a stand-in gspl-encode logs its arguments and writes the model's image
+printf '#!/bin/sh\necho "$*" > %s/enc-args\n[ -z "${ENCFAIL:-}" ] || exit 1\nfor a; do o=$i; i=$a; done\npython3 /p/test/bootraw/raw_model.py splash "$i" 4 2\n' $W > $W/enc; chmod +x $W/enc
+printf 'P5\n4 2\n255\nABCDEFGH' > $W/pic.pgm; printf 'P6\n1 1\n255\nRGB' > $W/pic.ppm; printf 'GIF89a' > $W/pic.gif
+export GLASSINE_GSPL_ENCODE=$W/enc
+ok "splash store, FAT: override --picture P5: grey8, fast, the encoder's image as the override, no temporary left" "sse override --picture $W/pic.pgm 2>/dev/null && grep -q '^--layout grey8 --compression fast $W/pic.pgm ' $W/enc-args && gspl $SO && ! ls $W/run | grep -q 'glassine-bootpart.picture'"
+ok "splash store, FAT: override --picture P6: rgb888" "sse override --picture $W/pic.ppm 2>/dev/null && grep -q '^--layout rgb888 --compression fast $W/pic.ppm ' $W/enc-args"
+cp $SO $W/keep.gspl
+ok "splash store, FAT: --picture of no PNM, a missing file, an encoder that fails: 1, the old override kept" "{ sse override --picture $W/pic.gif 2>/dev/null; [ \$? = 1 ]; } && { sse override --picture $W/none.pgm 2>/dev/null; [ \$? = 1 ]; } && { ENCFAIL=1 sse override --picture $W/pic.pgm 2>/dev/null; [ \$? = 1 ]; } && cmp -s $SO $W/keep.gspl"
+ok "splash store, FAT: --picture without a file, or with another override: usage" "{ sse override --picture 2>/dev/null; [ \$? = 2 ]; } && { sse override --leave --picture $W/pic.pgm 2>/dev/null; [ \$? = 2 ]; }"
+unset GLASSINE_GSPL_ENCODE
 SBD=$W/ssb; mkdir -p $SBD
 ok "splash store, FAT: no boot partition on the system partition's disk: has-store 3, override 3" "{ SDIR='' SSB=$SBD sse has-store 2>/dev/null; [ \$? = 3 ]; } && { SDIR='' SSB=$SBD sse override --leave 2>/dev/null; [ \$? = 3 ]; }"
 head -c 1048576 /dev/zero > $W/zeros.img
