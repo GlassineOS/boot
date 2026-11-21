@@ -469,7 +469,7 @@ le32() { printf "$(printf '\\%03o\\%03o\\%03o\\%03o' $(($1 & 255)) $(($1 >> 8 & 
 # rawimg OUT REL: a boot image (header v0, page 4096) whose gzip kernel is release REL
 rawimg() { printf 'junk Linux version %s (gcc) #1 SMP junk' "$2" | gzip > $W/k.gz; { printf 'ANDROID!'; le32 "$(stat -c %s $W/k.gz)"; head -c 24 /dev/zero; le32 4096; le32 0; } > "$1"; truncate -s 4096 "$1"; cat $W/k.gz >> "$1"; truncate -s 1048576 "$1"; }
 rawimg $W/defslot k2
-printf 'ROOT_LAYOUT=deployments\nDEFAULT_DEV=/dev/disk/by-partlabel/boot_b\nHANDOFF=\nTEST_DEV=\n' > $W/board.conf
+printf 'ROOT_LAYOUT=deployments\nDEFAULT_DEV=/dev/disk/by-partlabel/defslot\nHANDOFF=\nTEST_DEV=\n' > $W/board.conf
 GR="env GLASSINE_UNAME=recovery-kernel GLASSINE_BI_UNAME=recovery-kernel GLASSINE_DEPLOY_BTIME=$LATER GLASSINE_BOOTIMG=/p/sbin/glassine-bootimg GLASSINE_BI_LIB=/p/lib GLASSINE_BI_BOARD=$W/board.conf GLASSINE_BI_DEFAULT_DEV=$W/defslot GLASSINE_BI_LOG=$W/bilog GLASSINE_BI_TMP=$W/run $G"
 ok "bases (real glassine-bootimg): the default slot's kernel's set is default-slot" "$GR bases --porcelain 2>$W/err | grep -q 'name=k2	used_by=default-slot$' && [ ! -s $W/err ]"
 dd if=/dev/zero of=$W/defslot bs=4096 count=1 conv=notrunc 2>/dev/null

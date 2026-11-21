@@ -386,7 +386,7 @@ bset HANDOFF ''
 ok "kernels: no hand-off (kernel updates paused): the default slot's kernel, the test slot not read" "cp $W/nob.img $W/c/testslot && kl | grep -qx '7.9.9-plain default-slot'"
 bset DEFAULT_DEV ''
 ok "kernels: a board with no default slot: exit 1, said" "! GLASSINE_BI_SYSTEM=$W/c/sys GLASSINE_BI_DEFAULT_DEV= $B kernels >/dev/null 2>$W/kerr && grep -q 'names no DEFAULT_DEV' $W/kerr"
-sed -i "s#^DEFAULT_DEV=.*#DEFAULT_DEV=/dev/disk/by-partlabel/boot_b#" $W/board.conf
+bset DEFAULT_DEV /dev/disk/by-partlabel/defslot
 bset HANDOFF frob
 ok "kernels: an unknown hand-off: exit 1" "! kl >/dev/null && grep -q \"unknown HANDOFF 'frob'\" $W/kerr"
 bset HANDOFF bootpart-test

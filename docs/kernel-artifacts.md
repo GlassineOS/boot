@@ -669,7 +669,7 @@ nothing it printed is the whole list. The plain layout has no `kernels` (usage, 
 
 On the Note Air today (no hand-off, `state/kernel` naming nothing until the first
 kernel update goes through `glassine-bootimg`) the kernels that can start are the
-running one and `boot_b`'s. Its recovery partition's kernel is not counted: the board
+running one and the default slot's. Its recovery partition's kernel is not counted: the board
 names no key for it, and the recovery's kernel uses no module set (everything built in).
 
 ## What the user sees
