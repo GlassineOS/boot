@@ -36,6 +36,8 @@
 #   glassine-bootimg install REL [--dtb DEVICE@ID] [--initramfs COMMIT12@ID]
 #                                   pack from modules/REL and boot/, make it the candidate
 #   glassine-bootimg status         format=1, state=none|candidate|trial|finishing|writing|failed, the keys
+#   glassine-bootimg kernels        every kernel this board can still start: "<release> <role>" per line
+#                                   (exit 1: one can't be read; glassine-deploy then removes no module set)
 #   glassine-bootimg cancel         drop the kernel candidate (the default boot is untouched)
 #   glassine-bootimg reboot-test    the reboot into the candidate's trial
 #   glassine-bootimg retry          the candidate's (or the failed one's) image back on the test slot, tries=1

@@ -307,6 +307,19 @@ mv $BP/glassine/loader.a $W/keep.a; mv $BP/glassine/loader.b $W/keep.b
 ok "no valid loader record: install refused, nothing written to the boot partition" "! $B install 7.1.0-b --initramfs c1@1 >/dev/null 2>$W/err && grep -q 'no slot of the loader record is valid' $W/err && [ ! -e $BP/glassine/loader.a ]"
 mv $W/keep.a $BP/glassine/loader.a; mv $W/keep.b $BP/glassine/loader.b
 
+# kernels: every set on the boot partition can start (the loader may take any slot's);
+# the removal of unused module sets keeps their releases
+ok "kernels: each set on the boot partition with its release, the recovery not counted" "$B kernels >$W/kout 2>$W/err && for d in $BP/glassine/sets/*/; do i=\${d%/}; i=\${i##*/}; grep -qx \"\$(gp_get \$d/set.rec release) set:\$i\" $W/kout || exit 1; done && ! grep -q 714c2000398993cc $W/kout && grep -q ' running$' $W/kout && grep -q ' current$' $W/kout"
+mkdir -p $BP/glassine/sets/00000000c0ffee00; cp $BP/glassine/sets/$LC/set.rec $BP/glassine/sets/00000000c0ffee00/set.rec
+sed -i 's/^release=.*/release=9.9.9-only-a-set/' $BP/glassine/sets/00000000c0ffee00/set.rec
+ok "kernels: a set no kernel record names (an installer's default before the seed) counts" "$B kernels 2>/dev/null | grep -qx '9.9.9-only-a-set set:00000000c0ffee00'"
+sed -i '/^release=/d' $BP/glassine/sets/00000000c0ffee00/set.rec
+ok "kernels: a set whose set.rec names no release: exit 1, said" "! $B kernels >/dev/null 2>$W/err && grep -q 'set 00000000c0ffee00 on the boot partition names no release' $W/err"
+rm -f $BP/glassine/sets/00000000c0ffee00/set.rec
+ok "kernels: a set directory without set.rec (a cut write: the loader starts none) not counted" "$B kernels >$W/kout 2>/dev/null && ! grep -q c0ffee00 $W/kout"
+rm -rf $BP/glassine/sets/00000000c0ffee00
+ok "kernels: the boot partition can't be mounted: exit 1, said" "! GLASSINE_BI_BOOTPART_DIR= GLASSINE_BI_CMDLINE=$W/nocmdline $B kernels >/dev/null 2>$W/err && grep -q 'boot partition can.t be mounted' $W/err"
+
 # the boot partition's device: the partition named glassine-boot on the system partition's disk
 unset GLASSINE_BI_BOOTPART_DIR
 . /p/lib/glassine-kernel.sh 2>/dev/null

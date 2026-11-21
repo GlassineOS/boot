@@ -1025,6 +1025,90 @@ gk_bl_install() {
     echo "glassine-bootimg: kernel $_rel is ready. Reboot to test it (glassine-bootimg reboot-test)."
 }
 
+# gk_slot_release DEV: the release of the kernel in the boot image DEV holds (a
+# header of version 0 to 2: its kernel area, gunzipped when it is gzip, and the
+# kernel's "Linux version <release> " string), the device's own bytes. Empty when
+# DEV holds no boot image; 1 when it holds one whose kernel release can't be read.
+gk_slot_release() {
+    _sf=$TMP/glassine-bootimg.kern.$$
+    gk_read "$1" 4096 > "$_sf" && [ "$(stat -c %s "$_sf")" = 4096 ] || { rm -f "$_sf"; return 1; }
+    [ "$(head -c 8 "$_sf")" = 'ANDROID!' ] || { rm -f "$_sf"; return 0; }
+    _sks=$(gk_u32 "$_sf" 8) _sps=$(gk_u32 "$_sf" 36) _shv=$(gk_u32 "$_sf" 40)
+    case "$_sps:$_shv" in 2048:[012]|4096:[012]|8192:[012]|16384:[012]) ;; *) rm -f "$_sf"; return 1 ;; esac
+    case "$_sks" in ''|0|*[!0-9]*) rm -f "$_sf"; return 1 ;; esac
+    dd if="$1" bs="$_sps" skip=1 count=$(((_sks + _sps - 1) / _sps)) iflag=direct 2>/dev/null | head -c "$_sks" > "$_sf"
+    [ "$(stat -c %s "$_sf")" = "$_sks" ] || { rm -f "$_sf"; return 1; }
+    if [ "$(od -An -tx1 -N2 "$_sf" | tr -d ' \n')" = 1f8b ]; then gunzip -c < "$_sf" 2>/dev/null; else cat "$_sf"; fi |
+        grep -ao 'Linux version [A-Za-z0-9._+-]* ' | head -n 1 > "$_sf.v"
+    _srel=$(sed -n 's/^Linux version \([^ ]*\) $/\1/p' "$_sf.v")
+    rm -f "$_sf" "$_sf.v"
+    [ -n "$_srel" ] || return 1
+    echo "$_srel"
+}
+
+# gk_kernels (kernels): every kernel this board can still start, one line each,
+# "<release> <role>": the running one (running); state/kernel's releases (current,
+# previous, candidate, failed: retry gives it a trial again, deferred) and the release
+# of each image record a key names (current_img, previous_img, candidate_img,
+# failed_img, writing); and what the boot chain holds: on uefi every set on the boot
+# partition (set:<id>), else the default slot's kernel (default-slot), with
+# bootpart-test the test slot's (test-slot), with blocklist the record's image
+# (blocklist). A release may come more than once. Reads only, takes no lock (the
+# caller may hold it: glassine-deploy's removal of unused module sets). 1 = one of
+# them can't be read, the default slot's kernel has no module set (more likely
+# misread than real), or this board's boot can't be told (said): nothing it
+# printed is the whole list.
+gk_kernels() {
+    gk_open
+    [ -r "$K" ] || { echo "glassine-bootimg: $K can't be read" >&2; return 1; }
+    _r=$(uname_r); [ -z "$_r" ] || echo "$_r running"
+    for _key in current previous candidate failed deferred; do
+        _v=$(k "$_key"); [ -z "$_v" ] || echo "$_v $_key"
+    done
+    for _key in current_img previous_img candidate_img failed_img writing; do
+        _i=$(k "$_key"); [ -n "$_i" ] || continue
+        _v=$(man "$_i" release)
+        [ -n "$_v" ] || { echo "glassine-bootimg: the image record $_i ($_key) names no release" >&2; return 1; }
+        echo "$_v $_key"
+    done
+    case "$HANDOFF" in
+    uefi)
+        gk_ue_mount ro 2>/dev/null || { echo "glassine-bootimg: the boot partition can't be mounted" >&2; return 1; }
+        for _d in "$GK_BP"/glassine/sets/*; do
+            [ -d "$_d" ] || continue
+            # set.rec is written last: a directory without one is no set the loader starts
+            [ -e "$_d/set.rec" ] || continue
+            _v=$(gp_get "$_d/set.rec" release)
+            [ -n "$_v" ] || { echo "glassine-bootimg: set ${_d##*/} on the boot partition names no release" >&2; return 1; }
+            echo "$_v set:${_d##*/}"
+        done
+        ;;
+    ''|bootpart-test|blocklist)
+        [ -n "$DEFDEV" ] || { echo "glassine-bootimg: $BOARD names no DEFAULT_DEV: what this board starts can't be told" >&2; return 1; }
+        _v=$(gk_slot_release "$DEFDEV") || { echo "glassine-bootimg: the default slot ($DEFDEV) holds a boot image whose kernel release can't be read" >&2; return 1; }
+        [ -n "$_v" ] || { echo "glassine-bootimg: the default slot ($DEFDEV) holds no boot image" >&2; return 1; }
+        # the one kernel nothing else may name (no record yet, the recovery): a release
+        # with no module set here is more likely misread than real
+        [ -d "$SYS/modules/$_v" ] || { echo "glassine-bootimg: the default slot's kernel $_v has no module set (modules/$_v)" >&2; return 1; }
+        echo "$_v default-slot"
+        if [ "$HANDOFF" = bootpart-test ] && [ -n "$TESTDEV" ]; then
+            _v=$(gk_slot_release "$TESTDEV") || { echo "glassine-bootimg: the test slot ($TESTDEV) holds a boot image whose kernel release can't be read" >&2; return 1; }
+            [ -z "$_v" ] || echo "$_v test-slot"
+        fi
+        if [ "$HANDOFF" = blocklist ]; then
+            _i=$(gk_bl_id "$DEFDEV") || { echo "glassine-bootimg: the block-list record in $DEFDEV can't be read" >&2; return 1; }
+            case "$_i" in
+            none|bad) ;;
+            *) _v=$(man "$_i" release)
+               [ -n "$_v" ] || { echo "glassine-bootimg: the block-list record names image $_i, which has no record with a release" >&2; return 1; }
+               echo "$_v blocklist" ;;
+            esac
+        fi
+        ;;
+    *) echo "glassine-bootimg: unknown HANDOFF '$HANDOFF' in $BOARD" >&2; return 1 ;;
+    esac
+}
+
 gk_status() {
     gk_open
     _run=$(run_id) _w=$(k writing) _ci=$(k candidate_img) _fi=$(k failed_img)
@@ -1446,6 +1530,7 @@ gk_main() {
     case "$_cmd:$#" in
     install:*) gk_install "$@" ;;
     status:0) gk_status ;;
+    kernels:0) gk_kernels ;;
     cancel:0) gk_cancel ;;
     reboot-test:0) gk_reboot_test ;;
     retry:0) gk_retry ;;

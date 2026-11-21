@@ -28,7 +28,8 @@ memberships survive a base change and a reset alike.
    half way, or one whose name exists already, **then** nothing new stays on the
    system partition and the exit code says so.
 3. **Given** the bases on the system partition, **when** `bases` runs, **then** each
-   base and modules subvolume is listed with the deployments that use it.
+   base is listed with the deployments that use it, and each module set with the
+   kernels that use it (FR-008), or as unknown when those can't all be told.
 
 ### Story 2: move to the new base, keep my settings (P1)
 
@@ -74,6 +75,22 @@ memberships survive a base change and a reset alike.
 4. **Given** a hibernated session on userdata, **then** a switch or a receive refuses
    (exit 4) and no base is removed.
 
+### Story 5: the system partition never fills with old kernel modules (P1)
+
+**Acceptance:**
+
+1. **Given** a switch, an accept, a remove or a stage, **then** afterwards the system
+   partition holds exactly the module sets of the kernels that can still start (FR-008),
+   and each removed set is reported in one line on stdout and in the kernel log.
+2. **Given** a source of those kernels that can't be read (the kernel state, a kernel
+   record it names, the default boot slot's image, the boot partition's kernel sets,
+   this start's time, a hibernated session's kernel), or a board whose boot can't be
+   told, **then** no module set is removed and the reason is said.
+3. **Given** the recovery, whose own kernel runs and binds no module set, on a board
+   whose kernel state names no kernel, **then** the module set of the kernel in the
+   default boot slot stays.
+4. **Given** a module set that is mounted, or the running kernel's, **then** it stays.
+
 ### Edge cases
 
 - `subuid`/`subgid` ranges are carried by name.
@@ -110,6 +127,28 @@ memberships survive a base change and a reset alike.
   and after a `btrfs receive` that runs out of space, then receives it once more. When
   it still doesn't fit: exit 5, the space needed and free, nothing kept. From stdin:
   exit 5, nothing removed.
+- **FR-008** A module set no kernel that can still start uses is removed after a switch,
+  an accept (where userdata is mounted), a remove and a stage, after the unused bases
+  (FR-006); never in `receive`. The kernels that can still start are:
+  - the running kernel, and the kernel of a module set that is mounted;
+  - the kernels the kernel state names (current, previous, candidate, failed, deferred)
+    and the kernels of the kernel records it names (current, previous, candidate,
+    failed, the one being written);
+  - what the boot chain holds: on a board with a raw default boot slot, the kernel in
+    the slot's image (read from its bytes), and the test slot's on a board that tries
+    kernels there, and the block-list record's image; on a PC, the kernel of every
+    kernel set on the boot partition;
+  - a hibernated session's kernel;
+  - a module set received since this start (its kernel's install or boot image may
+    still come; it goes at the first of these points after the next start that nothing
+    else names it).
+
+  Nothing is removed while any of these can't be read, while the default slot's kernel
+  has no module set (a release that matches none is taken as misread), or on a board
+  whose default boot can't be told (no default slot, an unknown hand-off). The removal never fails
+  the command and needs btrfs-progs (without it, nothing). `bases` lists each module
+  set with the kernels that use it (their roles), empty when none, `unknown` when none
+  is named and the kernels can't all be told.
 
 ## Not in this feature (later)
 
