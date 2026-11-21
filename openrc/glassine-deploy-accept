@@ -4,13 +4,16 @@
 # up the boot; the service stays "started". As the system goes down (a shutdown
 # or a restart, not a plain stop of the service) its stop runs the loader's
 # shutdown step (glassine-loader-mark shutdown, 010 FR-012), before localmount
-# takes the system partition away.
+# takes the system partition and the boot partition it mounts away: `need`, so
+# localmount's stop stops this service first and waits for it; `after *` alone
+# orders nothing once OpenRC stops services in parallel (rc_parallel).
 # shellcheck disable=SC2034  # read by openrc-run
 description="glassine: accept the booted deployment candidate after a healthy boot"
 
 JOBPID=/run/glassine-deploy-accept.job
 
 depend() {
+	need localmount
 	after *
 }
 
