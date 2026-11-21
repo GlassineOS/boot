@@ -12,7 +12,7 @@
 #   glassine-splash-store override FILE       FILE, a format-2 image, as the override
 #   glassine-splash-store override --picture PNM
 #                                             PNM (a binary P5 grey or P6 RGB picture,
-#                                             glassine-screen-picture's) as the override:
+#                                             glassine-start-picture's) as the override:
 #                                             made into an image for the display mode of
 #                                             the picture's size, grey or RGB as the
 #                                             picture is, LZ4 without the filter (fast,

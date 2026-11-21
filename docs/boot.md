@@ -245,8 +245,10 @@ hibernate, switches the swap file on (if it isn't), writes the guard, then
 `resume_offset` and `resume` (the same block and device the initramfs will use),
 `shutdown` to `/sys/power/disk` (exit 3 if the kernel doesn't offer the mode), stops the watchdog daemon (magic close) and writes
 `disk` to `/sys/power/state`. Before all that, before the device steps, it takes the
-picture of the screen (GlassineOS/shell's `glassine-screen-picture`, at most 5 s) and
-writes it as the splash store's override (`glassine-splash-store override --picture`,
+session's picture for the next start (GlassineOS/shell's `glassine-start-picture`, at
+most 8 s: the screen with the shell's resume notice, in the display's resting
+orientation; the shell decides what it shows) and writes it as it is as the splash
+store's override (`glassine-splash-store override --picture`,
 at most 10 s), so the next start shows it while the resume runs (011 FR-024 to
 FR-028); a picture that can't be taken or written is said and changes nothing else, and
 `HIBERNATE_PICTURE=no` in `deploy.conf` turns it off. When the kernel returns (resumed, or it refused), it
