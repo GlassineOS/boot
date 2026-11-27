@@ -1,7 +1,7 @@
 # Golden files
 
 Made by the loader's own code, GlassineOS/loader at commit
-`eef8233adf7fe7820d2a1ad7233880f0f8bd3eab` (`core/src/raw.rs`):
+`6e7d1ee3fd900084152eda5519cddfef6a7298aa` (`core/src/raw.rs`):
 
 - `table-16mib.hex`: `raw::build_table(16 << 20, &raw::layout_16mib())`, the region
   table of `docs/boot-partition.md`, "Sizes", for a 16 MiB partition.
