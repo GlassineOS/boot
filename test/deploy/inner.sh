@@ -434,7 +434,7 @@ printf '%s\n' '36 25 0:31 / /run/glassine/root rw,relatime shared:9 - overlay ov
     '37 25 0:32 / /run/x rw - overlay overlay rw,upperdir=/u/deployments/k1x/switch,workdir=/u/deployments/k1x/work' > $W/mi
 export GLASSINE_DEPLOY_MOUNTINFO=$W/mi
 deps() { ls $U/deployments | tr '\n' ' '; }
-ok "accept: the clean-up keeps current, previous, candidate, staged, the last failed one, the booted and the mounted one; the rest goes" "$G accept n >$W/out 2>$W/err && [ \"\$(deps)\" = 'bt c f mt n s ' ] && grep -q 'clean-up: removed k1 k2 oldf p' $W/out && grep -q 'deployment mt is mounted; not removed' $W/err"
+ok "accept: the clean-up keeps current, previous, candidate, staged, the last failed one, the booted and the mounted one; the rest goes (the old previous by the count of 1)" "$G accept n >$W/out 2>$W/err && [ \"\$(deps)\" = 'bt c f mt n s ' ] && grep -q 'clean-up: removed k1 k2 oldf$' $W/out && grep -q 'deployment p removed: count (this device keeps 1)' $W/out && grep -q 'deployment mt is mounted; not removed' $W/err"
 ok "accept: the state is the accept's (previous = the old current), nothing else touched" "[ \"\$(gs_kv \$D current)\" = n ] && [ \"\$(gs_kv \$D previous)\" = c ] && [ \"\$(gs_kv \$D staged)\" = s ] && [ \"\$(gs_kv \$D failed)\" = f ] && [ -z \"\$(gs_kv \$D candidate)\" ]"
 ok "accept publishes the list after its clean-up: previous c, failed f, kept bt and mt (no version, no date: no label); not the current n nor the staged s" "[ \"\$(tr '\\n' ' ' < $W/list)\" = 'c previous f failed bt kept mt kept ' ] && grep -qx locked=1 $W/lenv"
 ok "clean-up: nothing left in deployments.removing; list shows the mounted one as kept" "[ -z \"\$(ls -A $U/deployments.removing)\" ] && [ \"\$(lst mt state)\" = kept ] && [ \"\$(lst f state)\" = failed ]"

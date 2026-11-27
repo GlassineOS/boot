@@ -400,6 +400,115 @@ for v in $S/bases/*; do [ "${v##*/}" = b1 ] || btrfs -q subvolume delete "$v"; d
 cp $W/stG $S/state/deploy
 for d in "$U"/deployments/*; do echo "$DG0" | grep -qx "${d##*/}" || rm -rf "$d"; done
 
+# --- how many deployments are kept (spec 007) ---------------------------------------
+cp $S/state/deploy $W/st7; rm -rf $W/dep7; cp -a $U/deployments $W/dep7; rm -f $W/run/booted
+k7conf() { { cat $W/deploy.conf; echo "KEEP_UPDATES=$1"; echo "HIBERNATE_RESERVE_MB=$2"; } > $W/deploy7.conf; }
+ROOM7=0
+g7() { env GLASSINE_DEPLOY_CONF=$W/deploy7.conf GLASSINE_DEPLOY_UPDATE_ROOM_K=$ROOM7 $G "$@"; }
+# cycle: a new deployment accepted over the current one (the recovery's reset, then
+# the boot-success step); CYC = the ids, oldest first
+C0=$(st current); for d in $U/deployments/*; do [ "${d##*/}" = "$C0" ] || rm -rf "$d"; done
+printf 'current=%s\nprevious=\ncandidate=\ntries=0\nstaged=\nfailed=\n' "$C0" > $S/state/deploy
+CYC=$C0
+cycle() { sleep 1; g7 reset --full --now --yes >/dev/null 2>&1 && c=$(st candidate) && g7 accept "$c" >>$W/c7out 2>>$W/c7err && CYC="$CYC $c"; }
+nth() { echo $CYC | cut -d ' ' -f "$1"; }
+deps7() { ls $U/deployments | sort | tr '\n' ' '; }
+want7() { for i in "$@"; do nth "$i"; done | sort | tr '\n' ' '; }
+lst7() { $G list --porcelain | grep "id=$1	" | tr '\t' '\n' | sed -n "s/^$2=//p"; }
+k7conf 1 0; : > $W/c7out; : > $W/c7err
+cycle; cycle; cycle
+ok "keep 1, three accepts: current and previous only, the older ones removed by the count" "[ \"\$(deps7)\" = \"\$(want7 3 4)\" ] && [ \"\$(st previous)\" = \"\$(nth 3)\" ] && grep -q \"deployment \$(nth 2) removed: count (this device keeps 1)\" $W/c7out && [ \$(grep -c 'removed: count' $W/c7out) = 2 ]"
+ok "keep 1: each count removal in the kernel log" "grep -q \"^<5>glassine-deploy: deployment \$(nth 1) removed: count\" $W/kmsg"
+ok "the replaced current's meta: current_until, seconds since the epoch; the current one has none" "grep -qx 'current_until=[0-9]*' $U/deployments/\$(nth 3)/meta && ! grep -q current_until $U/deployments/\$(nth 4)/meta"
+ok "status: keep_updates=1; list: pinned=no, current_until" "g7 status --porcelain | grep -q '	keep_updates=1	' && [ \"\$(lst7 \$(nth 3) pinned)\" = no ] && [ -n \"\$(lst7 \$(nth 3) current_until)\" ] && [ -z \"\$(lst7 \$(nth 4) current_until)\" ]"
+k7conf 0 0
+ok "keep_updates 0 or not a number: 1" "g7 status --porcelain | grep -q '	keep_updates=1	' && k7conf x 0 && g7 status --porcelain | grep -q '	keep_updates=1	'"
+# keep 4: the four most recently current before the running one stay
+k7conf 4 0; : > $W/c7out; CYC="$(nth 3) $(nth 4)"   # previous and current
+cycle; cycle; cycle
+ok "keep 4, three more accepts: every earlier one kept (four)" "[ \"\$(deps7)\" = \"\$(want7 1 2 3 4 5)\" ] && ! grep -q removed: $W/c7out"
+cycle
+ok "keep 4, the next accept: the oldest earlier one goes by the count" "[ \"\$(deps7)\" = \"\$(want7 2 3 4 5 6)\" ] && grep -q \"deployment \$(nth 1) removed: count (this device keeps 4)\" $W/c7out"
+ok "status: keep_updates=4" "g7 status --porcelain | grep -q '	keep_updates=4	'"
+# a pin: never removed, counts towards the four
+ok "pin: pinned=1 in the meta, list pinned=yes" "g7 pin \$(nth 2) >/dev/null && grep -qx pinned=1 $U/deployments/\$(nth 2)/meta && [ \"\$(lst7 \$(nth 2) pinned)\" = yes ]"
+cycle; cycle
+ok "keep 4 with a pinned oldest: pinned + previous + the two most recent others" "[ \"\$(deps7)\" = \"\$(want7 2 5 6 7 8)\" ] && grep -q \"deployment \$(nth 3) removed: count\" $W/c7out && grep -q \"deployment \$(nth 4) removed: count\" $W/c7out"
+ok "remove of a pinned one: exit 1, said, still there" "g7 remove \$(nth 2) --yes 2>$W/err; [ \$? = 1 ] && grep -q 'is pinned; nothing removed' $W/err && [ -d $U/deployments/\$(nth 2) ]"
+k7conf 1 0
+cycle
+ok "keep 1 with a pin: the pinned one stays, previous stays, nothing else" "[ \"\$(deps7)\" = \"\$(want7 2 8 9)\" ]"
+ok "unpin: the key gone, list pinned=no; the next clean-up removes it by the count" "g7 unpin \$(nth 2) >/dev/null && ! grep -q pinned $U/deployments/\$(nth 2)/meta && [ \"\$(lst7 \$(nth 2) pinned)\" = no ] && cycle && [ \"\$(deps7)\" = \"\$(want7 9 10)\" ]"
+# a pinned staged deployment replaced by another reset: kept
+g7 reset --yes >/dev/null; PS=$(st staged); g7 pin $PS >/dev/null; sleep 1
+ok "a pinned staged deployment replaced by a new reset: kept, said" "g7 reset --yes >$W/out 2>&1 && [ \"\$(st staged)\" != $PS ] && [ -d $U/deployments/$PS ] && grep -q \"staged deployment $PS is pinned; kept\" $W/out"
+ok "a pinned never-current one survives the clean-up" "g7 switch >/dev/null 2>&1 && [ -d $U/deployments/$PS ]"
+g7 unpin $PS >/dev/null; g7 remove $PS --yes >/dev/null; rm -rf "$U/deployments/$(st candidate)"; gs_update $S/state/deploy candidate= tries=0
+# the room: deployments of 8 MiB set up by hand, then an accept
+# mk7 ID CURRENT_UNTIL BASE: a deployment (8 MiB in its switch layer)
+mk7() { mkdir -p $U/deployments/$1/build $U/deployments/$1/switch $U/deployments/$1/work && printf 'base=%s\nkind=reset\ncreated=2026-01-01T00:00:00Z\n%s' "$3" "${2:+current_until=$2
+}" > $U/deployments/$1/meta && head -c 8388608 /dev/urandom > $U/deployments/$1/switch/blob; }
+room7() {
+    rm -rf $U/deployments; mkdir -p $U/deployments
+    mk7 rc '' b1; mk7 rn '' b1; mk7 rp 300 b1; mk7 r1 100 "${1:-b1}"; mk7 r2 200 "${2:-b1}"
+    printf 'current=rc\nprevious=rp\ncandidate=rn\ntries=1\n' > $S/state/deploy; sync
+    # the room a replay from rn needs (its layers are empty) plus the reserve
+    RN=$(( $(du -sk $U/deployments/rn/build $U/deployments/rn/switch/usr 2>/dev/null | awk '{ s += $1 } END { print s + 0 }') ))
+    RN=$((RN + RN / 4 + 16384)); UF=$(df -Pk $W/udmnt | awk 'NR == 2 { print $4 }')
+}
+# reserve7 SHORT_KIB: the reserve (MiB) that leaves userdata about SHORT_KIB short
+reserve7() { echo $(( (UF + $1 - RN) / 1024 + 1 )); }
+room7; k7conf 4 "$(reserve7 4096)"; : > $W/kmsg
+ok "room short on userdata: the oldest earlier one removed for room, logged room, the rest kept" "g7 accept rn >$W/out 2>$W/err && [ \"\$(deps7)\" = 'r2 rc rn rp ' ] && grep -q 'deployment r1 removed: room' $W/out && grep -q '^<5>glassine-deploy: deployment r1 removed: room' $W/kmsg && [ \$(grep -c 'removed: room' $W/out) = 1 ]"
+room7; k7conf 4 "$(reserve7 20480)"
+ok "room short by more: the oldest ones in turn, previous never (rc is previous now)" "g7 accept rn >$W/out 2>$W/err && [ \"\$(deps7)\" = 'rc rn ' ] && [ \"\$(st previous)\" = rc ] && grep -q 'r1 removed: room' $W/out && grep -q 'r2 removed: room' $W/out && grep -q 'rp removed: room' $W/out"
+room7; k7conf 4 "$(reserve7 102400)"
+ok "room that removing every earlier one would not make: all kept, said, the accept done" "g7 accept rn >$W/out 2>$W/err && [ \"\$(deps7)\" = 'r1 r2 rc rn rp ' ] && grep -q 'would not make it: all kept' $W/err && [ \"\$(st current)\" = rn ]"
+room7; printf 'pinned=1\n' >> $U/deployments/r1/meta; k7conf 4 "$(reserve7 20480)"
+ok "a pinned one is never removed for room (the rest would not make it: all kept)" "g7 accept rn >$W/out 2>$W/err && [ \"\$(deps7)\" = 'r1 r2 rc rn rp ' ] && ! grep -q 'removed: room' $W/out"
+room7; k7conf 4 "$(reserve7 102400)"
+mkdir -p $W/shimdf; printf '#!/bin/sh\nexit 1\n' > $W/shimdf/df; chmod +x $W/shimdf/df
+ok "free space that can't be read: nothing removed for room, said, the count alone decides" "PATH=$W/shimdf:\$PATH g7 accept rn >$W/out 2>$W/err && [ \"\$(deps7)\" = 'r1 r2 rc rn rp ' ] && grep -q \"no earlier deployment removed for room: the free space can't be read\" $W/err"
+room7; k7conf 4 "$(reserve7 4096)"
+mkdir -p $W/shimmv; printf '#!/bin/sh\ncase "$*" in *deployments.removing*) exit 1 ;; esac\nexec /bin/mv "$@"\n' > $W/shimmv/mv; chmod +x $W/shimmv/mv
+ok "a room removal that fails: said, the next one tried, the accept still exit 0" "PATH=$W/shimmv:\$PATH g7 accept rn >$W/out 2>$W/err && [ \"\$(st current)\" = rn ] && grep -q 'cannot move deployment r1 aside' $W/err && grep -q 'cannot move deployment r2 aside' $W/err && [ -d $U/deployments/r1 ]"
+room7; printf 'current=rc\nprevious=rp\ncandidate=rn\ntries=1\n' > $S/state/deploy; k7conf 2 0
+ok "a count removal that fails: said, the accept still exit 0" "PATH=$W/shimmv:\$PATH g7 accept rn >$W/out 2>$W/err && [ \"\$(st current)\" = rn ] && grep -q 'cannot move deployment r1 aside' $W/err && [ -d $U/deployments/r1 ] && [ -d $U/deployments/r2 ]"
+# the system partition short: the room comes back only after the removed one's base goes
+rm -rf $U/deployments; mkdir -p $U/deployments; mkbase7() { for n in "$@"; do btrfs -q subvolume create $S/bases/$n && cp -a $B/etc $S/bases/$n/ && head -c 8388608 /dev/urandom > $S/bases/$n/blob && btrfs property set -ts $S/bases/$n ro true; done; sync; }
+mkbase7 sb1 sb2
+room7 sb1 sb2; k7conf 4 0; btrfs -q subvolume sync $S; btrfs filesystem sync $S
+# shellcheck disable=SC2034  # read in the ok strings
+SF=$(df -Pk $S | awk 'NR == 2 { print $4 }')
+ok "room short on the system partition: the oldest earlier one and its base go, then the room is there" "ROOM7=\$((SF + 4096)) && g7 accept rn >$W/out 2>$W/err && grep -q 'deployment r1 removed: room' $W/out && grep -q 'base sb1 removed' $W/out && [ ! -e $S/bases/sb1 ] && [ -e $S/bases/sb2 ] && [ -d $U/deployments/r2 ]"
+# a stage of a base no deployment uses yet, under room pressure: the room step's base
+# clean-up keeps it, the stage goes on
+ROOM7=0; room7 sb2 sb2; gs_update $S/state/deploy candidate= tries=0; mkbase7 sn; btrfs -q subvolume sync $S; btrfs filesystem sync $S
+# shellcheck disable=SC2034  # read in the ok strings
+SF=$(df -Pk $S | awk 'NR == 2 { print $4 }')
+ok "stage of a fresh base under room pressure: earlier ones removed for room, the fresh base kept and staged" "ROOM7=\$((SF + 4096)) && g7 stage sn --no-replay --yes >$W/out 2>$W/err && grep -q 'deployment r2 removed: room' $W/out && [ -e $S/bases/sn ] && grep -qx base=sn $U/deployments/\$(st staged)/meta"
+ROOM7=0; rm -rf "$U/deployments/$(st staged)"; gs_update $S/state/deploy staged=; btrfs -q subvolume delete $S/bases/sn >/dev/null 2>&1
+mkbase7 sb2
+ROOM7=0; room7 sb2 sb2; sed -i 's/^base=b1$/base=sb2/' $U/deployments/rn/meta; btrfs -q subvolume sync $S; btrfs filesystem sync $S
+# shellcheck disable=SC2034  # read in the ok strings
+SF=$(df -Pk $S | awk 'NR == 2 { print $4 }')
+ok "room short on the system partition, the only freeable base used by a deployment that stays: all kept, said" "ROOM7=\$((SF + 4096)) && g7 accept rn >$W/out 2>$W/err && [ \"\$(deps7)\" = 'r1 r2 rc rn rp ' ] && grep -q 'all kept' $W/err && [ -e $S/bases/sb2 ]"
+ROOM7=0; btrfs -q subvolume delete $S/bases/sb2 >/dev/null 2>&1
+# an older deployment's meta (no current_until): its created time stands in
+rm -rf $U/deployments; mkdir -p $U/deployments
+mk7 lc '' b1; mk7 ln '' b1; mk7 lp '' b1; mk7 lk 50 b1
+printf 'current=lc\nprevious=lp\ncandidate=ln\ntries=1\n' > $S/state/deploy; k7conf 4 0
+ok "a previous one with an older meta: on the accept it gets its created time as current_until, stays an earlier one" "g7 accept ln >/dev/null 2>&1 && grep -qx current_until=1767225600 $U/deployments/lp/meta && [ \"\$(deps7)\" = 'lc lk ln lp ' ] && [ \"\$(lst7 lp current_until)\" = 1767225600 ]"
+k7conf 2 0
+ok "keep 2, ordered by current_until (lp's created time before lc's accept, lk the oldest): lk goes" "g7 select lp >/dev/null && g7 accept lp >$W/out 2>&1 && [ \"\$(deps7)\" = 'lc ln lp ' ] && grep -q 'deployment lk removed: count' $W/out && ! grep -q current_until $U/deployments/lp/meta"
+# hibernated: the accept refuses before any clean-up
+mkdir -p $U/swap; head -c 1048576 /dev/zero > $U/swap/hibernate; mkswap $U/swap/hibernate >/dev/null 2>&1
+printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/dev/null
+mk7 lh 10 b1; gs_update $S/state/deploy candidate=lc tries=1; k7conf 1 0
+ok "hibernated: an accept refuses (exit 4), nothing removed" "g7 accept lc 2>/dev/null; [ \$? = 4 ] && [ -d $U/deployments/lh ]"
+rm -rf $U/swap
+rm -rf $U/deployments; cp -a $W/dep7 $U/deployments; rm -rf $W/dep7; cp $W/st7 $S/state/deploy
+
 # --- unused module sets go by themselves -----------------------------------------
 # the kernels that can start come from glassine-bootimg kernels: a stub first
 # ($W/kernels, $W/kexit, $W/kwhy), then the real one on a raw default slot

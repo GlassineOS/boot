@@ -118,7 +118,9 @@ memberships survive a base change and a reset alike.
   switch, an accept (where userdata is mounted), a remove and a stage, after the
   clean-up of deployments, the way `bases remove` removes one (the wait for the space,
   then the `boot/` files no kernel record names). The bases kept follow from the
-  deployments; there is no count of its own. A mounted base stays. Nothing is removed
+  deployments; there is no count of its own: how many earlier deployments stay, and
+  so their bases, is spec [007](../007-keep-deployments/spec.md)'s (the device's
+  `KEEP_UPDATES` and the room on both partitions). A mounted base stays. Nothing is removed
   while the current deployment's meta can't be read, a deployment's meta names no base,
   or a hibernated session's base can't be told; a hibernated session's base is kept.
   The removal never fails the command and needs btrfs-progs (without it, nothing).
