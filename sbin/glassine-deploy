@@ -18,6 +18,8 @@
 #   glassine-deploy bases [--porcelain]
 #   glassine-deploy bases remove BASE [--yes] [--discard-hibernation]
 #   glassine-deploy remove ID [--yes] [--discard-hibernation]
+#   glassine-deploy pin ID [--discard-hibernation]
+#   glassine-deploy unpin ID [--discard-hibernation]
 #   glassine-deploy packages [ID] [--porcelain]
 #   glassine-deploy switch [--discard-hibernation]
 #   glassine-deploy accept ID
@@ -68,14 +70,23 @@
 # fit is exit 5 with the space needed and free. A stream on stdin can't be
 # tried again: exit 5, nothing removed.
 # remove ID deletes a deployment's layers from userdata: it refuses the current,
-# candidate, staged and booted deployment and one that is mounted, and asks
-# first for the previous one (its rollback is lost). The clean-up does the same
-# by itself after a switch, after an accept and before a new deployment is
-# staged: every deployment that is not current, previous, candidate, staged,
-# the last failed one or the booted one goes. A removal is moved out of
-# deployments/ first and then deleted, so a cut one never shows as a
+# candidate, staged and booted deployment, a pinned one and one that is mounted,
+# and asks first for the previous one (its rollback is lost). The clean-up does
+# the same by itself after a switch, after an accept and before a new deployment
+# is staged (spec 007): current, previous, candidate, staged, the last failed
+# one, the booted one and every pinned one stay; of the earlier deployments (once
+# current, replaced by an accept: meta current_until=, else created=) the
+# KEEP_UPDATES most recent stay, previous and the pinned ones counted among
+# them; then, while the system partition has less free than one update's room
+# or userdata less than a replay's estimate plus HIBERNATE_RESERVE_MB, the
+# oldest earlier one that is not previous or pinned goes, one at a time (only
+# when removing all of them would make the room; free space that can't be read
+# removes nothing for room). Every other deployment goes. A removal is moved
+# out of deployments/ first and then deleted, so a cut one never shows as a
 # deployment and the next clean-up finishes it. stage checks the free space on
-# userdata for the replay first (exit 5, nothing staged).
+# userdata for the replay first (exit 5, nothing staged). pin ID and unpin ID
+# set and clear pinned=1 in a deployment's meta: a pinned one is never removed
+# by itself.
 # packages lists how a deployment's packages differ from its base's (current
 # by default): added and removed world entries, packages installed in another
 # version (raised/lowered, by apk version -t when apk is there, else changed);
@@ -130,6 +141,7 @@ SYSTEM_DEV='' SYSTEM_MNT=/run/glassine/system
 USERDATA_DEV='' USERDATA_MNT=/run/glassine/userdata USERDATA_PREFIX=media/glassine
 RUN_DIR=/run/glassine SOFT_RESTART=yes RESTART_LIMIT_S=20 SWITCH_MIN_CAPACITY=30
 SOFT_START=/usr/lib/glassine-boot/soft-start
+KEEP_UPDATES=1 HIBERNATE_RESERVE_MB=512
 KMSG=${GLASSINE_DEPLOY_KMSG:-/dev/kmsg}
 BOOTIMG=${GLASSINE_BOOTIMG:-/usr/sbin/glassine-bootimg}
 # shellcheck source=/dev/null
@@ -146,6 +158,11 @@ PORCELAIN_VERSION=1
 SWAPFILE="$USERDATA_PREFIX/swap/hibernate"
 GUARD="$USERDATA_PREFIX/swap/hibernate.guard"
 MOUNTED_HERE='' UD_MOUNTED_HERE='' TMP_VIEW='' NEW_DEP='' SWITCHING='' RECV_TMP='' RECV_BEFORE='' RECV_ERR='' GB_REMOVED=''
+GC_BASE_KEEP=''
+# one base update's room on the system partition (64 MiB, an incremental
+# stream of a normal update, × 1.25 for the file system's slack), KiB (the test
+# hook GLASSINE_DEPLOY_UPDATE_ROOM_K sets another)
+UPDATE_ROOM_K=${GLASSINE_DEPLOY_UPDATE_ROOM_K:-81920}
 REPLAY_MNT='' REPLAY_BINDS='' REPLAY_RESOLV='' REPLAY_TMP='' NEW_ETC=''
 
 die() { echo "glassine-deploy: $*" >&2; exit 1; }
@@ -447,30 +464,186 @@ dep_remove() {
         { echo "glassine-deploy: deployment $1 is gone from the list, but not all of it is deleted; the next clean-up finishes it" >&2; return 1; }
 }
 
-# gc_deployments: the clean-up. Every deployment on userdata that is not current,
-# previous, candidate, staged, the last failed one (state failed=) or the booted
-# one is removed (dep_remove: never a mounted one). Needs state_open_rw + UD.
-# Never fails: it runs after the state write of a switch or an accept, which
-# must not read as failed because of it. Does nothing while the current
-# deployment is not on userdata (an unreadable state or another userdata must
-# not read as "nothing is needed").
+# keep_updates: KEEP_UPDATES as a whole number of 1 or more (anything else: 1)
+keep_updates() {
+    case "$KEEP_UPDATES" in ''|*[!0-9]*) echo 1; return ;; esac
+    [ "$KEEP_UPDATES" -ge 1 ] 2>/dev/null && echo $((KEEP_UPDATES + 0)) || echo 1
+}
+
+# iso_epoch TIME: a UTC time YYYY-MM-DDTHH:MM:SS[Z] (meta created=) in seconds
+# since the epoch; empty when it is not one
+iso_epoch() {
+    printf '%s\n' "$1" | awk -F '[-T:Z]' '
+        NF >= 6 && $1 ~ /^[0-9][0-9][0-9][0-9]$/ && $2 ~ /^[0-9][0-9]$/ && $3 ~ /^[0-9][0-9]$/ {
+            y = $1 + 0; m = $2 + 0; d = $3 + 0
+            if (m <= 2) { y--; m += 12 }
+            days = 365 * y + int(y / 4) - int(y / 100) + int(y / 400) + int((153 * (m - 3) + 2) / 5) + d - 719469
+            print days * 86400 + $4 * 3600 + $5 * 60 + $6
+        }'
+}
+
+# dep_when META: when the deployment stopped being current (current_until=),
+# else its created= time, else 0; seconds since the epoch
+dep_when() {
+    _dw=$(meta_kv "$1" current_until)
+    case "$_dw" in ''|*[!0-9]*) _dw=$(iso_epoch "$(meta_kv "$1" created)") ;; esac
+    echo "${_dw:-0}"
+}
+
+# meta_drop FILE KEY: KEY out of a meta, in one atomic write
+meta_drop() {
+    grep -v "^$2=" "$1" | gs_write "$1"
+}
+
+# free_k DIR: the free KiB of DIR's file system, empty when it can't be read
+free_k() {
+    _fk=$(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }')
+    case "$_fk" in ''|*[!0-9]*) return 0 ;; esac
+    echo "$_fk"
+}
+
+# replay_need_k ID: the room on userdata a replay from deployment ID is likely to
+# need, KiB: what the user's packages take in it (its build layer and the package
+# directories of its switch layer), a quarter more for the downloads, and 16 MiB
+replay_need_k() {
+    _rn_d=$UD/deployments/$1
+    _rn_k=$(du -sk "$_rn_d/build" "$_rn_d/switch/usr" "$_rn_d/switch/lib" "$_rn_d/switch/bin" "$_rn_d/switch/sbin" "$_rn_d/switch/opt" 2>/dev/null |
+        awk '{ s += $1 } END { print s + 0 }')
+    echo $((_rn_k + _rn_k / 4 + 16384))
+}
+
+# room_read CUR: the free space and the room needed on both partitions, KiB:
+# RS_SYS RS_SYS_NEED RS_UD RS_UD_NEED; RS_WHY empty when both could be read
+room_read() {
+    RS_WHY='' RS_SYS='' RS_UD=''
+    RS_SYS_NEED=$UPDATE_ROOM_K
+    _rs_r=$HIBERNATE_RESERVE_MB; case "$_rs_r" in ''|*[!0-9]*) _rs_r=512 ;; esac
+    RS_UD_NEED=$(( $(replay_need_k "$1") + _rs_r * 1024 ))
+    if ! command -v btrfs >/dev/null; then
+        RS_WHY="no btrfs-progs (a base's space can't be given back)"
+    else
+        RS_SYS=$(free_k "$SYSTEM_MNT")
+        RS_UD=$(free_k "$UD")
+        [ -n "$RS_SYS" ] && [ -n "$RS_UD" ] || RS_WHY="the free space can't be read"
+    fi
+}
+room_short() { [ "$RS_SYS" -lt "$RS_SYS_NEED" ] || [ "$RS_UD" -lt "$RS_UD_NEED" ]; }
+
+# base_excl_k BASE: the KiB only BASE holds on the system partition (btrfs
+# filesystem du's exclusive part: a lower bound of what its removal frees), 0
+# when it can't be read
+base_excl_k() {
+    btrfs filesystem du -s --raw "$SYSTEM_MNT/bases/$1" 2>/dev/null |
+        awk 'NR == 2 && $2 ~ /^[0-9]+$/ { e = int($2 / 1024) } END { print e + 0 }'
+}
+
+# room_reachable IDS: would removing all of IDS (earlier deployments, from the
+# meta) make the room? Userdata: its free space plus what they take; the system
+# partition: its free space plus the exclusive part of each base only they use
+# (a lower bound). Needs room_read.
+room_reachable() {
+    _rr_ud=$RS_UD _rr_sys=$RS_SYS _rr_bases=''
+    for _rr_id in $1; do
+        _rr_ud=$((_rr_ud + $(du -sk "$UD/deployments/$_rr_id" 2>/dev/null | awk '{ print $1 + 0 }')))
+    done
+    if [ "$RS_SYS" -lt "$RS_SYS_NEED" ]; then
+        # the bases the deployments that stay use (and the one being staged)
+        _rr_keep=" $GC_BASE_KEEP "
+        for _rr_d in "$UD/deployments"/*; do
+            [ -d "$_rr_d" ] || continue
+            case " $1 " in *" ${_rr_d##*/} "*) continue ;; esac
+            _rr_keep="$_rr_keep$(meta_kv "$(cat "$_rr_d/meta" 2>/dev/null)" base) "
+        done
+        for _rr_id in $1; do
+            _rr_b=$(meta_kv "$(cat "$UD/deployments/$_rr_id/meta" 2>/dev/null)" base)
+            [ -n "$_rr_b" ] && [ -d "$SYSTEM_MNT/bases/$_rr_b" ] || continue
+            case "$_rr_keep $_rr_bases " in *" $_rr_b "*) continue ;; esac
+            _rr_bases="$_rr_bases $_rr_b"
+            _rr_sys=$((_rr_sys + $(base_excl_k "$_rr_b")))
+        done
+    fi
+    [ "$_rr_sys" -ge "$RS_SYS_NEED" ] && [ "$_rr_ud" -ge "$RS_UD_NEED" ]
+}
+
+# gc_deployments: the clean-up (spec 007). Always kept: current, previous,
+# candidate, staged, the last failed one (state failed=), the booted one, a
+# mounted one (dep_remove) and every pinned one (meta pinned=1). An earlier
+# deployment (meta current_until=, or the previous one) is kept while it is one
+# of the KEEP_UPDATES most recent (dep_when), previous and the pinned earlier
+# ones counted among them; older ones go ("count"). Then the room: while either
+# partition is short (room_read), the oldest earlier one that is not previous or
+# pinned goes ("room"), one at a time, the free space read again after it and
+# after its base (gc_bases, all but GC_BASE_KEEP); only when removing all of
+# them would make the room (room_reachable). Every other deployment (never
+# current: a replaced staged one, an older failed one) goes. One line per
+# earlier one removed, with why (stdout and the kernel log). Needs
+# state_open_rw + UD. Never fails: it runs after the state write of a switch or
+# an accept, which must not read as failed because of it. Does nothing while
+# the current deployment is not on userdata (an unreadable state or another
+# userdata must not read as "nothing is needed").
 gc_deployments() {
     _gc_cur=$(gs_kv "$S/deploy" current)
     if [ -z "$_gc_cur" ] || [ ! -r "$UD/deployments/$_gc_cur/meta" ]; then
         echo "glassine-deploy: clean-up skipped: the current deployment ${_gc_cur:-(none)} is not on userdata" >&2
         return 0
     fi
-    _gc_keep=" $_gc_cur $(gs_kv "$S/deploy" previous) $(gs_kv "$S/deploy" candidate) $(gs_kv "$S/deploy" staged) $(gs_kv "$S/deploy" failed) $(cat "$RUN_DIR/booted" 2>/dev/null) "
+    _gc_prev=$(gs_kv "$S/deploy" previous)
+    _gc_keep=" $_gc_cur $_gc_prev $(gs_kv "$S/deploy" candidate) $(gs_kv "$S/deploy" staged) $(gs_kv "$S/deploy" failed) $(cat "$RUN_DIR/booted" 2>/dev/null) "
+    _gc_n=$(keep_updates)
     trash_purge
-    _gc_done=''
+    _gc_done='' _gc_early='' _gc_used=0
     for _gc_d in "$UD/deployments"/*; do
         [ -d "$_gc_d" ] || continue
         _gc_id=${_gc_d##*/}
         valid_name "$_gc_id" || continue
+        _gc_m=$(cat "$_gc_d/meta" 2>/dev/null)
+        _gc_cu=$(meta_kv "$_gc_m" current_until)
+        if [ -n "$_gc_prev" ] && [ "$_gc_id" = "$_gc_prev" ]; then
+            _gc_used=$((_gc_used + 1)); continue
+        fi
         case "$_gc_keep" in *" $_gc_id "*) continue ;; esac
+        if [ "$(meta_kv "$_gc_m" pinned)" = 1 ]; then
+            [ -z "$_gc_cu" ] || _gc_used=$((_gc_used + 1))
+            continue
+        fi
+        if [ -n "$_gc_cu" ]; then
+            _gc_early="$_gc_early$(dep_when "$_gc_m") $_gc_id
+"
+            continue
+        fi
         dep_remove "$_gc_id" && _gc_done="$_gc_done $_gc_id"
     done
     [ -z "$_gc_done" ] || echo "glassine-deploy: clean-up: removed$_gc_done"
+    # the count: the most recent first
+    _gc_room=''
+    for _gc_id in $(printf '%s' "$_gc_early" | sort -k1,1nr -k2,2r | cut -d ' ' -f 2); do
+        if [ "$_gc_used" -lt "$_gc_n" ]; then
+            _gc_used=$((_gc_used + 1)); _gc_room="$_gc_id $_gc_room"
+            continue
+        fi
+        dep_remove "$_gc_id" && klog "deployment $_gc_id removed: count (this device keeps $_gc_n)"
+    done
+    # the room: the oldest first (_gc_room is oldest first)
+    [ -n "$_gc_room" ] || return 0
+    room_read "$_gc_cur"
+    if [ -n "$RS_WHY" ]; then
+        echo "glassine-deploy: no earlier deployment removed for room: $RS_WHY" >&2
+        return 0
+    fi
+    room_short || return 0
+    if ! room_reachable "$_gc_room"; then
+        echo "glassine-deploy: room short (system ${RS_SYS}/${RS_SYS_NEED} KiB, userdata ${RS_UD}/${RS_UD_NEED} KiB free/needed), and removing every earlier deployment beyond previous would not make it: all kept" >&2
+        return 0
+    fi
+    for _gc_id in $_gc_room; do
+        dep_remove "$_gc_id" || continue
+        klog "deployment $_gc_id removed: room (system ${RS_SYS}/${RS_SYS_NEED} KiB, userdata ${RS_UD}/${RS_UD_NEED} KiB free/needed)"
+        # shellcheck disable=SC2086  # one base per word
+        gc_bases $GC_BASE_KEEP
+        room_read "$_gc_cur"
+        [ -z "$RS_WHY" ] || { echo "glassine-deploy: no more earlier deployments removed for room: $RS_WHY" >&2; return 0; }
+        room_short || return 0
+    done
     return 0
 }
 
@@ -654,6 +827,7 @@ cmd_status() {
         out tries "$(gs_kv "$S/deploy" tries)"
         out kernel_current "$(gs_kv "$S/kernel" current)"
         out kernel_previous "$(gs_kv "$S/kernel" previous)"
+        out keep_updates "$(keep_updates)"
     else
         out migrated yes
         rc=3
@@ -694,7 +868,7 @@ cmd_list() {
         staged=$(gs_kv "$SYS_DIR/state/deploy" staged)
     fi
     [ "$PORC" = 1 ] && echo "glassine-deploy $PORCELAIN_VERSION"
-    [ "$PORC" = 1 ] || printf '%-24s %-10s %-20s %-16s %-20s %s\n' ID STATE BASE KERNEL CREATED KIB
+    [ "$PORC" = 1 ] || printf '%-24s %-10s %-20s %-16s %-20s %-10s %s\n' ID STATE BASE KERNEL CREATED KIB PINNED
     for id in $(ud_dirs deployments); do
         m=$(ud_cat "deployments/$id/meta")
         if [ "$id" = "$cur" ]; then st=current
@@ -714,10 +888,14 @@ cmd_list() {
             bv=''; [ -n "$b" ] && [ "$bp" = yes ] && bv=$(base_version "$SYS_DIR" "$b")
             out version "$bv"; out kernel "$(meta_kv "$m" kernel)"
             out created "$(meta_kv "$m" created)"; out size_kib "$(ud_size_kib "deployments/$id")"
+            out current_until "$(meta_kv "$m" current_until)"
+            pin=no; [ "$(meta_kv "$m" pinned)" = 1 ] && pin=yes
+            out pinned "$pin"
             emit
         else
-            printf '%-24s %-10s %-20s %-16s %-20s %s\n' "$id" "$st" "$(meta_kv "$m" base)" \
-                "$(meta_kv "$m" kernel)" "$(meta_kv "$m" created)" "$(ud_size_kib "deployments/$id")"
+            pin=''; [ "$(meta_kv "$m" pinned)" = 1 ] && pin=pinned
+            printf '%-24s %-10s %-20s %-16s %-20s %-10s %s\n' "$id" "$st" "$(meta_kv "$m" base)" \
+                "$(meta_kv "$m" kernel)" "$(meta_kv "$m" created)" "$(ud_size_kib "deployments/$id")" "$pin"
         fi
     done
 }
@@ -1047,15 +1225,11 @@ EOF
 }
 
 # replay_space_check: refuses (exit 5, nothing staged) when userdata has less
-# free space than the replay is likely to need: what the user's packages take in
-# the current deployment (its build layer and the package directories of its
-# switch layer), a quarter more for the downloads, and 16 MiB. An estimate, not
-# a promise: a replay that still runs out of space removes what it made.
+# free space than the replay is likely to need (replay_need_k of the current
+# deployment). An estimate, not a promise: a replay that still runs out of space
+# removes what it made.
 replay_space_check() {
-    _rc_d=$UD/deployments/$cur
-    _rc_k=$(du -sk "$_rc_d/build" "$_rc_d/switch/usr" "$_rc_d/switch/lib" "$_rc_d/switch/bin" "$_rc_d/switch/sbin" "$_rc_d/switch/opt" 2>/dev/null |
-        awk '{ s += $1 } END { print s + 0 }')
-    _rc_need=$((_rc_k + _rc_k / 4 + 16384))
+    _rc_need=$(replay_need_k "$cur")
     _rc_avail=$(df -Pk "$UD" | awk 'NR == 2 { print $4 }')
     [ "${_rc_avail:-0}" -ge "$_rc_need" ] ||
         fail 5 "not enough space on userdata for the replay: about ${_rc_need} KiB needed, ${_rc_avail:-?} KiB free; nothing staged (glassine-deploy list shows what takes space; remove ID frees a deployment)"
@@ -1064,7 +1238,10 @@ replay_space_check() {
 # stage_new: a new deployment on $base (kind, carry set) becomes the staged one;
 # --now switches at once. Needs state_open_rw + UD, cur.
 stage_new() {
+    # the base being staged has no user yet: the clean-up's room step keeps it
+    GC_BASE_KEEP=$base
     gc_deployments
+    GC_BASE_KEEP=''
     [ "$kind" = update ] && [ "$NOREPLAY" = 0 ] && replay_space_check
     id=$(new_id)
     NEW_DEP=$UD/deployments/$id
@@ -1076,7 +1253,13 @@ stage_new() {
     old=$(gs_kv "$S/deploy" staged)
     gs_update "$S/deploy" "staged=$id" || die "cannot write $S/deploy"
     NEW_DEP=''
-    [ -n "$old" ] && [ "$old" != "$id" ] && { dep_remove "$old" || :; }
+    if [ -n "$old" ] && [ "$old" != "$id" ]; then
+        if [ "$(gs_kv "$UD/deployments/$old/meta" pinned)" = 1 ]; then
+            echo "glassine-deploy: the replaced staged deployment $old is pinned; kept"
+        else
+            dep_remove "$old" || :
+        fi
+    fi
     if [ "$NOW" = 1 ]; then
         do_switch
     else
@@ -1682,9 +1865,12 @@ klog() {
 # base_delete NAME: the subvolume bases/NAME deleted, committed
 base_delete() { btrfs -q subvolume delete --commit-after "$SYSTEM_MNT/bases/$1" >/dev/null; }
 
-# space_back: wait until the cleaner has dropped the deleted subvolumes (their
-# space comes back only then)
-space_back() { btrfs -q subvolume sync "$SYSTEM_MNT" >/dev/null 2>&1 || :; }
+# space_back: wait until the cleaner has dropped the deleted subvolumes, then
+# commit (their space shows as free only after both)
+space_back() {
+    btrfs -q subvolume sync "$SYSTEM_MNT" >/dev/null 2>&1 || :
+    btrfs filesystem sync "$SYSTEM_MNT" >/dev/null 2>&1 || :
+}
 
 # sub_mounted DIR NAME: a mount of this namespace names DIR/NAME (bases/ or
 # modules/: a mount point in it, a bind of it, or an overlay with it as a layer)
@@ -1902,12 +2088,14 @@ cmd_accept() {
     cur=$(gs_kv "$S/deploy" current)
     [ "$ARG" = "$cur" ] && return 0
     [ "$ARG" = "$(gs_kv "$S/deploy" candidate)" ] || die "$ARG is not the candidate"
+    oprev=$(gs_kv "$S/deploy" previous)
     gs_update "$S/deploy" "previous=$cur" "current=$ARG" candidate= tries=0 || die "cannot write $S/deploy"
     echo "glassine-deploy: $ARG accepted (previous: ${cur:-none})"
     # the clean-up only where userdata is mounted already (the running system):
     # an accept never mounts it for that
     if ud_mounted; then
         UD=$USERDATA_MNT/$USERDATA_PREFIX
+        accept_stamp
         gc_deployments
         gc_bases
         gc_modules
@@ -1915,11 +2103,55 @@ cmd_accept() {
     loader_publish "$SYSTEM_MNT" locked
 }
 
+# accept_stamp: after an accept's state write (cur: the replaced current, oprev:
+# the replaced previous, ARG: the accepted one), the meta records who was current
+# until when (spec 007 FR-005): the replaced current gets current_until=now; the
+# replaced previous, made before that key, gets its created time (it was current
+# once, and stays an earlier deployment); the accepted one loses its stale one (a
+# rollback). A failed write is said and never fails the accept.
+accept_stamp() {
+    if [ -n "$cur" ] && [ -r "$UD/deployments/$cur/meta" ]; then
+        gs_update "$UD/deployments/$cur/meta" "current_until=$(date +%s)" ||
+            echo "glassine-deploy: cannot write current_until into $cur's meta; its created time stands in" >&2
+    fi
+    if [ -n "$oprev" ] && [ "$oprev" != "$ARG" ] && [ "$oprev" != "$cur" ] && [ -r "$UD/deployments/$oprev/meta" ] &&
+        [ -z "$(gs_kv "$UD/deployments/$oprev/meta" current_until)" ]; then
+        _as=$(iso_epoch "$(gs_kv "$UD/deployments/$oprev/meta" created)")
+        gs_update "$UD/deployments/$oprev/meta" "current_until=${_as:-0}" ||
+            echo "glassine-deploy: cannot write current_until into $oprev's meta" >&2
+    fi
+    if [ -r "$UD/deployments/$ARG/meta" ] && grep -q '^current_until=' "$UD/deployments/$ARG/meta"; then
+        meta_drop "$UD/deployments/$ARG/meta" current_until ||
+            echo "glassine-deploy: cannot clear current_until in $ARG's meta" >&2
+    fi
+    return 0
+}
+
+# pin ID / unpin ID: set or clear pinned=1 in a deployment's meta (spec 007
+# FR-009), with the state lock, in one atomic write
+cmd_pin() {
+    valid_name "$ARG" || fail 2 "not a deployment id: $ARG"
+    state_open_rw
+    ud_open_rw
+    _pm=$UD/deployments/$ARG/meta
+    [ -r "$_pm" ] || die "no deployment $ARG on userdata"
+    if [ "$CMD" = pin ]; then
+        [ "$(gs_kv "$_pm" pinned)" = 1 ] && { echo "glassine-deploy: $ARG is pinned already"; return 0; }
+        gs_update "$_pm" pinned=1 || die "cannot write $_pm"
+        echo "glassine-deploy: $ARG pinned: it is never removed by itself"
+    else
+        grep -q '^pinned=' "$_pm" || { echo "glassine-deploy: $ARG is not pinned"; return 0; }
+        meta_drop "$_pm" pinned || die "cannot write $_pm"
+        echo "glassine-deploy: $ARG unpinned"
+    fi
+}
+
 cmd_remove() {
     valid_name "$ARG" || fail 2 "not a deployment id: $ARG"
     state_open_rw
     ud_open_rw
     [ -d "$UD/deployments/$ARG" ] || die "no deployment $ARG on userdata"
+    [ "$(gs_kv "$UD/deployments/$ARG/meta" pinned)" = 1 ] && die "$ARG is pinned; nothing removed (glassine-deploy unpin $ARG first)"
     for _k in current candidate staged; do
         [ "$ARG" = "$(gs_kv "$S/deploy" $_k)" ] && die "$ARG is the $_k deployment; nothing removed"
     done
@@ -2032,6 +2264,7 @@ receive:1) cmd_receive ;;
 bases:0) cmd_bases ;;
 bases:2) cmd_bases_remove ;;
 remove:1) cmd_remove ;;
+pin:1|unpin:1) cmd_pin ;;
 packages:0|packages:1) cmd_packages ;;
 switch:0) cmd_switch ;;
 accept:1) cmd_accept ;;

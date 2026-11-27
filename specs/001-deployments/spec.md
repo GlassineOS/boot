@@ -103,8 +103,10 @@ the running system.
 **Acceptance:**
 
 1. **Given** a switch that has made a new candidate, or an accept, **then** every
-   deployment other than current, previous, candidate, staged, the last failed one
-   and the booted one is removed from userdata, and the ones kept are exactly those.
+   deployment other than current, previous, candidate, staged, the last failed one,
+   the booted one and the earlier deployments the device keeps
+   ([007](../007-keep-deployments/spec.md)) is removed from userdata, and the ones kept
+   are exactly those.
 2. **Given** a removal cut off at any point (power loss, a failing delete), **then**
    the deployment no longer shows in `list`, the state names nothing that is gone, and
    the next clean-up deletes the rest.
@@ -182,14 +184,16 @@ the running system.
 
 - **FR-020** The clean-up runs after a switch has set the candidate, after an accept,
   and before a new deployment is staged. It keeps current, previous, candidate,
-  staged, the state's last failed deployment and the booted one, removes every other
-  deployment that is not mounted, and never fails the command that runs it.
+  staged, the state's last failed deployment, the booted one and the earlier
+  deployments spec [007](../007-keep-deployments/spec.md) keeps (the device's count,
+  the room, the pinned ones), removes every other deployment that is not mounted, and
+  never fails the command that runs it.
 - **FR-021** A deployment is removed by a rename out of `deployments/` followed by the
   delete; what a cut delete leaves is deleted by the next clean-up or `remove`. State
   keys that name it are cleared before the rename.
 - **FR-022** `remove ID` follows the hibernation gate and exit codes of the other
-  writing commands, refuses the current, candidate, staged, booted and mounted
-  deployments, and asks before removing the previous one.
+  writing commands, refuses the current, candidate, staged, booted, pinned (007) and
+  mounted deployments, and asks before removing the previous one.
 - **FR-023** `stage` with a replay refuses (exit 5, nothing staged) when userdata has
   less free space than the estimate in
   [docs/deployments.md § Clean-up](../../docs/deployments.md#clean-up).

@@ -20,7 +20,9 @@ run on hardware**.
 | previous | The deployment that was current before the last accept. |
 | staged | A deployment that is prepared but not yet selected: the next switch carries state into it and makes it the candidate. |
 | failed | The last candidate that ran out of tries or did not assemble (`state/deploy` `failed=`). |
-| kept | Any other deployment. Nothing boots it; the next clean-up removes it ([Clean-up](#clean-up)). |
+| earlier | A deployment that was current and was replaced by an accept (meta `current_until`). The device keeps `KEEP_UPDATES` of them for going back ([Clean-up](#clean-up)). |
+| pinned | A deployment whose meta has `pinned=1` (`glassine-deploy pin`). No clean-up removes it. |
+| kept | Any other deployment (an earlier one, a pinned one, or one the clean-up could not remove). Nothing boots it unless it is selected. |
 
 ## On-disk layout
 
@@ -150,6 +152,8 @@ it and removes it.
 | `from` | the deployment it was made from |
 | `created` | UTC time |
 | `failed` | `1` once it failed (alternative to `state/deploy` `failed=`) |
+| `current_until` | seconds since the epoch: when an accept replaced it as current (spec 007). A meta without it uses `created`. |
+| `pinned` | `1`: pinned (`pin`, `unpin`); never removed by a clean-up, `remove` refuses it |
 
 Deployment ids match `[A-Za-z0-9._-]+` and never start with a dot. New ids are the UTC
 time `YYYYMMDD-HHMMSS`, with a `-N` suffix if that one is taken.
@@ -200,6 +204,8 @@ glassine-deploy receive FILE --boot [--sha256 HEX] [--discard-hibernation]
 glassine-deploy bases [--porcelain]
 glassine-deploy bases remove BASE [--yes] [--discard-hibernation]
 glassine-deploy remove ID [--yes] [--discard-hibernation]
+glassine-deploy pin ID [--discard-hibernation]
+glassine-deploy unpin ID [--discard-hibernation]
 glassine-deploy packages [ID] [--porcelain]
 glassine-deploy switch [--discard-hibernation]
 glassine-deploy accept ID
@@ -209,8 +215,9 @@ glassine-deploy init POOL_MOUNT [--install-marker]
 
 | Command | Does |
 |---|---|
-| `status` | format (state and supported), the system file system, current/previous/candidate/staged/tries, the kernels, `hibernated=yes\|no\|unknown`, `twrp_keep`, the person's storage as this boot left it (`home`, `flatpak`: `bound`, `failed` with `<name>_error`, or empty on a bare boot or outside a deployments boot; `<name>_hidden`; `vartmp`: `shared` or `failed`), what a restart now would be (`restart=soft\|cold`, `restart_reason=`; without the switch's space check, which only `restart --check` makes) and how this start came (`last_start=cold\|soft`, [Restart](#restart)). `--no-restart` leaves out `restart` and `restart_reason`, which read the loader record: the shutdown switch and the boot-success step need only the state |
-| `list` | one record per deployment: id, state (`current`, `candidate`, `staged`, `previous`, `failed`, `kept`), base, kernel, created, size |
+| `status` | format (state and supported), the system file system, current/previous/candidate/staged/tries, the kernels, `keep_updates` (the device's `KEEP_UPDATES`), `hibernated=yes\|no\|unknown`, `twrp_keep`, the person's storage as this boot left it (`home`, `flatpak`: `bound`, `failed` with `<name>_error`, or empty on a bare boot or outside a deployments boot; `<name>_hidden`; `vartmp`: `shared` or `failed`), what a restart now would be (`restart=soft\|cold`, `restart_reason=`; without the switch's space check, which only `restart --check` makes) and how this start came (`last_start=cold\|soft`, [Restart](#restart)). `--no-restart` leaves out `restart` and `restart_reason`, which read the loader record: the shutdown switch and the boot-success step need only the state |
+| `list` | one record per deployment: id, state (`current`, `candidate`, `staged`, `previous`, `failed`, `kept`), base, kernel, created, size, `current_until`, `pinned=yes\|no` |
+| `pin ID`, `unpin ID` | set and clear `pinned=1` in the deployment's meta, with the state lock, in one atomic write. Any deployment can be pinned; a pinned one is never removed by a clean-up (a replaced staged one included) and `remove` refuses it. |
 | `select ID` | ID becomes the candidate with 2 tries; selecting current cancels a candidate. Never makes an untried deployment current. |
 | `rollback` | `select` previous |
 | `hibernate-invalidate` | turns a hibernate image back into a plain swap file (that session is lost) |
@@ -224,10 +231,10 @@ glassine-deploy init POOL_MOUNT [--install-marker]
 | `bases remove BASE` | deletes the subvolume and waits until its space is back. For a base some deployment still uses; the unused ones go by themselves ([Unused bases](#unused-bases)). Refuses the base of the booted, current, candidate or staged deployment. Other deployments on it stay on userdata but can no longer be selected (`list` shows `base_present=no`); it asks first (`--yes`), naming them and a lost rollback. Then it removes the `boot/` files no kernel record names ([kernel-artifacts.md](kernel-artifacts.md#on-the-system-partition)). Module sets go by themselves ([Unused module sets](#unused-module-sets)). |
 | `switch` | for a staged deployment: clears its switch layer, carries the migrate list from current (unless `carry=none`), merges the accounts (below), syncs, then sets `candidate=<id> tries=2 staged=`, then the clean-up, the unused bases and the unused module sets. Interrupted = nothing selected, redone in full next time. |
 | `publish` | the loader record's deployment list (`deploys`, `deployN`: previous, candidate, failed, kept; boot-partition.md) written through `glassine-loader-mark deploys` where the board has a loader record, only when it differs. Run by every command that changes the deployments (select, switch, accept, remove, stage) and by the boot-success service on a start that accepts nothing; never fails the command. |
-| `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous, then the clean-up, the unused bases and the unused module sets (where userdata is mounted already). Refuses a non-candidate; accepting current is a no-op. |
+| `accept ID` | the boot-success service's step: the booted candidate becomes current, the old current becomes previous, then (where userdata is mounted) the old current's meta gets `current_until`, the clean-up, the unused bases and the unused module sets (where userdata is mounted already). Refuses a non-candidate; accepting current is a no-op. |
 | `init POOL_MOUNT` | lays out an empty btrfs that the caller made and mounted (the image builder, for the pool image an installer writes to the system partition): `bases/`, `modules/`, `state/` with `deploy` and `kernel` naming nothing, `.lock`; `--install-marker` adds `state/install`. `state/format` is written last, so a cut `init` reads as not migrated. Refuses a path that is not a mount point, a file system other than btrfs, a subvolume mount (not the top level) and a pool that is not empty. Needs no `deploy.conf` (`GLASSINE_DEPLOY_CONF=/dev/null` on a build host) and no btrfs-progs. The caller then receives the base and the kernel's modules into it. |
 | `restart` | restarts: soft where the rules allow, else cold ([Restart](#restart)). `--check` reports which and why, writing nothing (exit 0 soft, 9 cold); `--soft` restarts only soft (exit 9 otherwise, nothing stopped); `--cold` always cold; `--once ID` starts ID for the incoming session only, by a soft restart. `--restart` on `select`, `rollback`, `reset` and `stage`: the command, then `restart`. |
-| `remove ID` | deletes a deployment's layers from userdata, the way the clean-up does. Refuses the current, candidate, staged and booted deployment and a mounted one. The previous one: asks first (`--yes`), naming the lost rollback, and clears `previous=`; the last failed one: clears `failed=`. Then the unused bases and the unused module sets. |
+| `remove ID` | deletes a deployment's layers from userdata, the way the clean-up does. Refuses the current, candidate, staged and booted deployment, a pinned one (exit 1: `unpin` first) and a mounted one. The previous one: asks first (`--yes`), naming the lost rollback, and clears `previous=`; the last failed one: clears `failed=`. Then the unused bases and the unused module sets. |
 
 Where it reads and writes:
 
@@ -248,10 +255,33 @@ are removed by themselves:
   `reset` or `stage` makes a new deployment. Each point keeps everything the boot can
   fall back to (candidate, then current, then previous). A clean-up that fails is
   logged and never fails the command that ran it.
-- **What stays:** current, previous, candidate, staged, the last failed one
+- **What always stays:** current, previous, candidate, staged, the last failed one
   (`failed=`, for a look at what went wrong; an older failed one goes once a newer
-  candidate fails) and the booted one (`/run/glassine/booted`). Every other
-  deployment (`kept` in `list`) is removed.
+  candidate fails), the booted one (`/run/glassine/booted`) and every pinned one.
+- **Earlier deployments** (spec 007): one with `current_until` in its meta, or the
+  previous one. They are ordered by `current_until` (else `created`), the most recent
+  first. The `KEEP_UPDATES` most recent stay (`deploy.conf`, from the device's
+  description; missing or not a whole number of 1 or more: 1), the previous one and
+  the pinned earlier ones counted among them: they take their places first, and the
+  rest go to the most recent others. Older ones are removed (`count`).
+- **Room:** then, while the system partition has less free space than one base
+  update's room (64 MiB × 1.25) or userdata less than a replay's estimate (below,
+  from current) plus `HIBERNATE_RESERVE_MB`, the oldest earlier deployment that is
+  not previous or pinned is removed (`room`), one at a time. The free space is read
+  again after each, and after its base has gone ([Unused bases](#unused-bases); the
+  base being staged stays). Only when removing all of them would make the room:
+  userdata's free space plus their size, the system partition's free space plus the
+  exclusive part of the bases only they use (a lower bound); otherwise all stay,
+  said on stderr, and the command goes on (a stage or switch that lacks space then
+  stops with exit 5). Free space that can't be read (or no btrfs-progs) removes
+  nothing for room: the count alone decides.
+- **Everything else** goes: a deployment that was never current (a replaced staged
+  one, an older failed one).
+- **Said:** each earlier deployment removed is one line on stdout and in the kernel
+  log, with its id and why: `glassine-deploy: deployment <id> removed: count (this
+  device keeps <N>)` or `… removed: room (…)`. The others are one line on stdout,
+  `glassine-deploy: clean-up: removed <id>…`. A removal that fails is said on stderr
+  and the clean-up goes on with the next.
 - **Never:** a deployment that is mounted: a mount point in its directory, or an
   overlay with one of its layers (`/proc/self/mountinfo`). It stays `kept` until a
   later clean-up finds it unmounted. Nothing at all while the current deployment is
@@ -262,7 +292,8 @@ are removed by themselves:
   (`previous=`, `failed=`) before the rename, so the state never names a deployment
   that is gone.
 
-**Free space for a replay.** `stage` with a replay needs the room for the user's
+**Free space for a replay.** (This estimate is also the clean-up's room on userdata.)
+`stage` with a replay needs the room for the user's
 packages in the new build layer. Before it makes anything (and after the clean-up), it
 compares userdata's free space with an estimate: what the current deployment's build
 layer and the package directories of its switch layer (`/usr`, `/lib`, `/bin`,
@@ -292,8 +323,8 @@ lists them.
 
 ### Unused bases
 
-The system partition holds one base as received and the room for a few updates
-(installer spec 002 FR-019a), so a base no deployment uses goes by itself:
+The system partition holds one base as received and the room for `KEEP_UPDATES`
+base updates (installer spec 002 FR-019a), so a base no deployment uses goes by itself:
 
 - **When:** after a `switch` has set the candidate, after an `accept` (where userdata is
   mounted), after a `remove`, and after `reset` or `stage` has staged its deployment
@@ -399,7 +430,7 @@ Keys may be added within a version, so readers ignore keys they don't know.
 
 ```
 glassine-deploy 1
-type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previous=…	candidate=…	staged=…	failed=…	tries=…	kernel_current=…	kernel_previous=…	hibernated=no	userdata_prefix=media/glassine	twrp_keep=yes	home=bound	home_hidden=no	flatpak=bound	flatpak_hidden=no	vartmp=shared	restart=soft	restart_reason=	last_start=cold	swapfile=…	guard=…
+type=status	format=1	supported=1	system_fs=btrfs	migrated=yes	current=…	previous=…	candidate=…	staged=…	failed=…	tries=…	kernel_current=…	kernel_previous=…	keep_updates=1	hibernated=no	userdata_prefix=media/glassine	twrp_keep=yes	home=bound	home_hidden=no	flatpak=bound	flatpak_hidden=no	vartmp=shared	restart=soft	restart_reason=	last_start=cold	swapfile=…	guard=…
 ```
 
 ```
@@ -409,7 +440,7 @@ type=restart	restart=cold	restart_reason=not-healthy	restart_target=…	switch=n
 
 ```
 glassine-deploy 1
-type=deployment	id=…	state=current	base=…	base_present=yes	version=…	kernel=…	created=…	size_kib=…
+type=deployment	id=…	state=current	base=…	base_present=yes	version=…	kernel=…	created=…	size_kib=…	current_until=…	pinned=no
 ```
 
 ```
@@ -426,7 +457,10 @@ type=package	change=raised	name=musl	version=1.2.5-r11	base_version=1.2.5-r10
 
 `state` is one of current, candidate, staged, failed, previous, kept (the first that
 applies, so a failed deployment that is also previous shows failed). A `kept` one is
-there only until the next clean-up (one that was mounted, or left by an older tool). `base_present` is
+an earlier or pinned one the clean-up keeps, or one it could not remove (a mounted
+one). `current_until` is the meta's (seconds since the epoch), empty for one that was
+never replaced as current and for a meta made before the key; `pinned` is `yes` or
+`no`. `base_present` is
 `yes` when the deployment's base is a subvolume under the system partition's `bases/`,
 `no` when it is not, empty when the system partition is not readable or the meta names
 no base. `version` is the base's version: the image version of its base manifest
@@ -574,7 +608,7 @@ which mounts nothing read-write before the hibernation step), makes the system:
 The initramfs and every command except the two below run with busybox and e2fsprogs'
 `e2fsck`, `dumpe2fs` and `debugfs` ([boot.md](boot.md#files-in-the-image)). `receive`
 (but `receive --boot`) and `bases remove` need btrfs-progs (and zstd for a `.zst` stream), and the removal of
-unused bases and module sets uses it where it is there (without it, nothing is removed); the first start needs
+unused bases and module sets uses it where it is there (without it, nothing is removed), as does the clean-up's room step (`btrfs filesystem du` for a base's exclusive part; without it, nothing is removed for room); the first start needs
 btrfs-progs (the resize) and e2fsprogs' `mke2fs`. `init` needs neither. So a base that
 an installer ships must contain btrfs-progs and e2fsprogs.
 
@@ -642,7 +676,7 @@ mounted or the prefix is not under `media/`).
 
 See [`conf/deploy.conf.example`](../conf/deploy.conf.example): `SYSTEM_DEV`,
 `SYSTEM_MNT`, `USERDATA_DEV`, `USERDATA_MNT`, `USERDATA_PREFIX`, `RUN_DIR`,
-`USERDATA_RESERVE_KIB` (default 0: the KiB the first start leaves free at the end of userdata), `SWITCH_MIN_CAPACITY`, `SOFT_RESTART` (default `yes`; `no`: every restart is cold), `RESTART_LIMIT_S` (default 20: each step of a soft start gives up after this many seconds and the restart turns cold), `RESTART_INIT_S` (default 60: how long `restart` waits for PID 1 to start the soft restart before it restarts cold), `ACCEPT_AFTER`, `ACCEPT_HEALTH_DIR`, `ACCEPT_BUSY_S` (default 600: how long the accept retries while the state is busy), `SLOT_TOOL` (default empty: no boot slot marking), `HIBERNATE_SIZE_MB`, `HIBERNATE_RESERVE_MB`. A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
+`USERDATA_RESERVE_KIB` (default 0: the KiB the first start leaves free at the end of userdata), `KEEP_UPDATES` (default 1: how many earlier deployments the clean-up keeps; the device package derives it from the description's `keep_updates`, never set by hand), `SWITCH_MIN_CAPACITY`, `SOFT_RESTART` (default `yes`; `no`: every restart is cold), `RESTART_LIMIT_S` (default 20: each step of a soft start gives up after this many seconds and the restart turns cold), `RESTART_INIT_S` (default 60: how long `restart` waits for PID 1 to start the soft restart before it restarts cold), `ACCEPT_AFTER`, `ACCEPT_HEALTH_DIR`, `ACCEPT_BUSY_S` (default 600: how long the accept retries while the state is busy), `SLOT_TOOL` (default empty: no boot slot marking), `HIBERNATE_SIZE_MB`, `HIBERNATE_RESERVE_MB` (default 512; also part of the clean-up's room on userdata). A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
 
 ## Runtime directory: `/run/glassine/`
 

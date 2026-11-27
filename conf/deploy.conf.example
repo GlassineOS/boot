@@ -23,6 +23,13 @@ USERDATA_PREFIX=media/glassine
 # refuses a file system that fills the partition).
 USERDATA_RESERVE_KIB=16
 
+# How many earlier deployments (once current, replaced by an accept) the
+# clean-up keeps for going back, previous and pinned ones counted among them
+# (spec 007). Derived by the device package from the device description's
+# [data_partition] keep_updates; never set by hand. Missing: 1. The Note Air
+# keeps 1.
+KEEP_UPDATES=1
+
 # Locks and markers of running operations (a tmpfs).
 RUN_DIR=/run/glassine
 
@@ -54,7 +61,8 @@ SLOT_TOOL=
 
 # Hibernation (glassine-hibernate): the swap file's size in MiB (empty = half
 # the RAM), the free space setup leaves on userdata, and the board's hook
-# directory (pre/post steps around a hibernate, docs/boot.md).
+# directory (pre/post steps around a hibernate, docs/boot.md). The reserve is
+# also part of the room the clean-up keeps free on userdata (spec 007).
 HIBERNATE_SIZE_MB=
 HIBERNATE_RESERVE_MB=512
 HIBERNATE_HOOKS=/etc/glassine/hibernate.d
