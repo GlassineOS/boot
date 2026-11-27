@@ -48,6 +48,14 @@ start() {
 		. /usr/lib/glassine-boot/glassine-state.sh
 		# shellcheck source=../lib/glassine-root.sh
 		. /usr/lib/glassine-boot/glassine-root.sh
+		# a PC's deploy.conf names neither: the partitions this boot's command line
+		# names (010 FR-051); one that can't be found is logged and left to the
+		# shutdown's own handling
+		# shellcheck source=../lib/glassine-bootpart.sh
+		if [ -r /usr/lib/glassine-boot/glassine-bootpart.sh ] && . /usr/lib/glassine-boot/glassine-bootpart.sh; then
+			gp_conf_dev SYSTEM_DEV glassine.system /proc/cmdline || { ewarn "$GP_WHY"; SYSTEM_DEV=''; }
+			gp_conf_dev USERDATA_DEV glassine.userdata /proc/cmdline || { ewarn "$GP_WHY"; USERDATA_DEV=''; }
+		fi
 		rc=0
 		for dev in "$USERDATA_DEV" "$SYSTEM_DEV"; do
 			[ -z "$dev" ] || gr_shutdown_ro "$dev" || rc=1

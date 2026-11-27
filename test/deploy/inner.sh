@@ -525,5 +525,77 @@ printf 'S1SUSPEND\000' | dd of=$U/swap/hibernate bs=1 seek=4086 conv=notrunc 2>/
 ok "receive --boot: hibernated: exit 4, nothing written" "$G receive $(mkbf dtb example-board dtb-four) --boot </dev/null 2>/dev/null; [ \$? = 4 ] && [ \$(ls $SB/dtb/*.dtb | wc -l) = 2 ]"
 gs_invalidate_file $U/swap/hibernate
 
+# --- the partitions by the command line's identities (a PC; 010 FR-051) -------
+# A deploy.conf that names neither partition; a sysfs stand-in with the
+# installation's userdata (vda3) and a second disk's partition of the same name
+# (vdb3, an install medium): only the one the command line names is read or written.
+SU=0f3e26a1-5c7b-4a55-9b8d-2c4f6e8a1b3d UU=6d1a5e2b-8c4f-4b3a-a9e7-1f2d3c4b5a69 OU=22222222-2222-4222-8222-222222222222
+PW=$W/pc; mkdir -p $PW/sb/vda2 $PW/sb/vda3 $PW/sb/vdb3 $PW/dev $PW/sys/state
+cp -a $W/sysmnt/state/. $PW/sys/state/
+for i in pcud decoy; do
+    head -c 33554432 /dev/zero > $PW/$i.img; mke2fs -q -F -t ext4 -b 4096 $PW/$i.img
+    for d in /media /$P /$P/swap /$P/deployments /$P/deployments/$i; do debugfs -w -R "mkdir $d" $PW/$i.img 2>/dev/null; done
+    printf 'base=v3.22.1\n' > $PW/meta; debugfs -w -R "write $PW/meta /$P/deployments/$i/meta" $PW/$i.img >/dev/null 2>&1
+    debugfs -w -R "write $W/swap /$P/swap/hibernate" $PW/$i.img >/dev/null 2>&1
+    b=$(gs_dev_block $PW/$i.img $P/swap/hibernate)
+    printf 'S1SUSPEND\000' | dd of=$PW/$i.img bs=1 seek=$((b * 4096 + 4086)) conv=notrunc 2>/dev/null
+done
+: > $PW/sys.img
+ln -s $PW/sys.img $PW/dev/vda2; ln -s $PW/pcud.img $PW/dev/vda3; ln -s $PW/decoy.img $PW/dev/vdb3
+pcpart() { printf 'DEVNAME=%s\nPARTN=%s\nPARTNAME=%s\nPARTUUID=%s\n' $1 $2 $3 $4 > $PW/sb/$1/uevent; }
+pcpart vda2 2 glassine-system $SU; pcpart vda3 3 glassine-userdata $UU; pcpart vdb3 3 glassine-userdata $OU
+printf 'SYSTEM_DEV=\nSYSTEM_MNT=%s/sys\nUSERDATA_DEV=\nUSERDATA_MNT=%s/noud\nUSERDATA_PREFIX=%s\nRUN_DIR=%s/run\n' $PW $PW $P $W > $PW/conf
+pc() { GLASSINE_DEPLOY_CONF=$PW/conf GLASSINE_DEPLOY_CMDLINE=$PW/cmdline GLASSINE_BI_SYSBLOCK=$PW/sb GLASSINE_BI_DEVDIR=$PW/dev $G "$@"; }
+cmd() { echo "BOOT_IMAGE=vmlinuz quiet $*" > $PW/cmdline; }
+pcsum() { cat $PW/sys/state/deploy $PW/pcud.img $PW/decoy.img | sha256sum; }
+cmd "glassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=$UU"
+ok "pc: neither partition in deploy.conf: userdata is the one the command line names, not the other disk's of the same name" "pc list --porcelain > $PW/o && grep -q '	id=pcud	' $PW/o && ! grep -q decoy $PW/o"
+ok "pc: status reads the hibernate image through that partition" "pc status --porcelain | grep -q '	hibernated=yes'"
+ok "pc: a write (hibernate-invalidate) lands on that partition only" "pc hibernate-invalidate --yes >/dev/null && [ \"\$(gs_sig_dev $PW/pcud.img \$(gs_dev_block $PW/pcud.img $P/swap/hibernate))\" = SWAPSPACE2 ] && [ \"\$(gs_sig_dev $PW/decoy.img \$(gs_dev_block $PW/decoy.img $P/swap/hibernate))\" = S1SUSPEND ]"
+cmd "glassine.system=PARTUUID=$(echo $SU | tr a-f A-F) glassine.userdata=PARTUUID=$(echo $UU | tr a-f A-F)"
+ok "pc: the identities in upper case: compared in lower case" "pc list --porcelain | grep -q '	id=pcud	'"
+pcrefuse() {    # pcrefuse NAME MESSAGE: list, select and a write refused with MESSAGE, nothing written
+    _s=$(pcsum)
+    ok "pc: $1: list refused" "pc list 2>$PW/err; [ \$? = 1 ] && grep -qF -- \"$2\" $PW/err"
+    ok "pc: $1: status not refused, reads what it can, the reason on stderr" "pc status --porcelain >$PW/o 2>$PW/err && grep -q '	migrated=yes	' $PW/o && grep -qF -- \"$2\" $PW/err"
+    ok "pc: $1: select, hibernate-invalidate and remove refused, nothing written" "pc select pcud --yes 2>/dev/null; a=\$?; pc hibernate-invalidate --yes 2>/dev/null; b=\$?; pc remove pcud --yes 2>/dev/null; [ \$a\$b\$? = 111 ] && [ \"\$(pcsum)\" = \"$_s\" ]"
+}
+printf 'S1SUSPEND\000' | dd of=$PW/pcud.img bs=1 seek=$(($(gs_dev_block $PW/pcud.img $P/swap/hibernate) * 4096 + 4086)) conv=notrunc 2>/dev/null
+cmd "glassine.system=PARTUUID=$SU"
+pcrefuse "no glassine.userdata=" "USERDATA_DEV is not set (deploy.conf) and this boot's command line has no glassine.userdata=PARTUUID=<uuid>"
+cmd "glassine.userdata=PARTUUID=$UU"
+pcrefuse "no glassine.system=" "SYSTEM_DEV is not set (deploy.conf) and this boot's command line has no glassine.system=PARTUUID=<uuid>"
+cmd "glassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=$UU glassine.userdata=PARTUUID=$OU"
+pcrefuse "glassine.userdata= twice" "glassine.userdata= is given more than once"
+cmd "glassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=${UU%-*}"
+pcrefuse "a part of an identity" "glassine.userdata=PARTUUID=${UU%-*} on this boot's command line is not PARTUUID=<uuid>"
+cmd "glassine.system=PARTUUID=$SU glassine.userdata=$UU"
+pcrefuse "no PARTUUID=" "glassine.userdata=$UU on this boot's command line is not PARTUUID=<uuid>"
+cmd "glassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=33333333-3333-4333-8333-333333333333"
+pcrefuse "an identity no partition carries" "no partition carries PARTUUID=33333333-3333-4333-8333-333333333333"
+cmd "xglassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=$UU"
+pcrefuse "only whole words" "has no glassine.system=PARTUUID=<uuid>"
+pcpart vdb3 3 glassine-userdata $UU
+cmd "glassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=$UU"
+pcrefuse "two partitions carry the identity (a cloned disk)" "2 partitions carry PARTUUID=$UU"
+pcpart vdb3 3 glassine-userdata $OU
+# deploy.conf names a partition too: the same one (through another path) is fine,
+# another one is refused; without the key the name is used (a fixed-name board)
+sed -i "s|^USERDATA_DEV=.*|USERDATA_DEV=$PW/pcud.img|" $PW/conf
+ok "pc: deploy.conf and the command line name the same partition: used" "pc list --porcelain | grep -q '	id=pcud	'"
+sed -i "s|^USERDATA_DEV=.*|USERDATA_DEV=$PW/decoy.img|" $PW/conf
+pcrefuse "deploy.conf names another partition than the command line" "USERDATA_DEV=$PW/decoy.img (deploy.conf) is not the partition this boot's glassine.userdata=PARTUUID=$UU names ($PW/dev/vda3)"
+sed -i "s|^SYSTEM_DEV=.*|SYSTEM_DEV=$PW/sys.img|" $PW/conf
+cmd ""
+ok "pc: deploy.conf names both, no key on the command line: its names used" "pc list --porcelain > $PW/o && grep -q '	id=decoy	' $PW/o"
+ok "pc: no command line to read at all: deploy.conf's names" "GLASSINE_DEPLOY_CONF=$PW/conf GLASSINE_DEPLOY_CMDLINE=$PW/none $G list --porcelain | grep -q '	id=decoy	'"
+printf 'SYSTEM_DEV=\nUSERDATA_DEV=\n' > $PW/conf
+ok "pc: init needs neither partition: not refused for a missing key" "pc init $PW/nomnt 2>$PW/err; ! grep -q 'command line' $PW/err"
+# the library on its own: the boot partition's disk refuses a system identity two partitions carry
+. /p/lib/glassine-bootpart.sh
+pcpart vdb3 3 glassine-userdata $SU
+cmd "glassine.system=PARTUUID=$SU"
+ok "gp_boot_dev: two partitions carry the system partition's identity: refused" "! GLASSINE_BI_SYSBLOCK=$PW/sb gp_boot_dev $PW/cmdline glassine-boot > $PW/o && grep -q '2 partitions carry PARTUUID=$SU' $PW/o"
+
 echo "$fails failed"
 [ $fails = 0 ]

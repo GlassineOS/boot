@@ -527,13 +527,68 @@ gp_raw_dev() {
     echo "$_gp_rd"
 }
 
+# gp_cmdkey KEY CMDLINE: the value of the word KEY=<value> on the command line (a
+# file), matched as a whole word. 0 = given once (the value printed), 1 = not given
+# (or no command line to read), 2 = given more than once
+gp_cmdkey() {
+    { tr ' \t' '\n\n' < "$2"; } 2>/dev/null | awk -v k="$1=" 'index($0, k) == 1 { n++; v = substr($0, length(k) + 1) }
+        END { if (n == 1) print v; exit (n == 0 ? 1 : (n == 1 ? 0 : 2)) }'
+}
+
 # gp_cmdpart KEY CMDLINE: the identity the command line (a file) gives KEY
 # (KEY=PARTUUID=<uuid>, once), in lower case; 1 = none
 gp_cmdpart() {
-    _gp_cq=$(tr ' ' '\n' < "$2" | awk -v k="$1=" 'index($0, k) == 1 { n++; v = substr($0, length(k) + 1) } END { if (n == 1) print v }')
+    _gp_cq=$(gp_cmdkey "$1" "$2") || return 1
     case $_gp_cq in PARTUUID=*) _gp_cq=$(echo "${_gp_cq#PARTUUID=}" | tr A-F a-f) ;; *) return 1 ;; esac
     echo "$_gp_cq" | grep -qx '[0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}' || return 1
     echo "$_gp_cq"
+}
+
+# gp_uuid_dev UUID: the one partition that carries the unique partition identity UUID
+# (lower case; gp_part_uuid): GP_DEV its device node, GP_PDIR its sysfs directory.
+# 1 = no partition carries it, or more than one (a cloned disk): GP_WHY says which.
+# Test hooks: GLASSINE_BI_SYSBLOCK (/sys/class/block), GLASSINE_BI_DEVDIR (/dev).
+gp_uuid_dev() {
+    _gp_xn=0 GP_DEV='' GP_PDIR=''
+    for _gp_xu in "${GLASSINE_BI_SYSBLOCK:-/sys/class/block}"/*/uevent; do
+        grep -q '^PARTN=' "$_gp_xu" 2>/dev/null || continue
+        [ "$(gp_part_uuid "${_gp_xu%/uevent}")" = "$1" ] || continue
+        _gp_xn=$((_gp_xn + 1)) GP_PDIR=${_gp_xu%/uevent}
+        GP_DEV=${GLASSINE_BI_DEVDIR:-/dev}/$(sed -n 's/^DEVNAME=//p' "$_gp_xu")
+    done
+    [ $_gp_xn = 1 ] && return 0
+    if [ $_gp_xn = 0 ]; then GP_WHY="no partition carries PARTUUID=$1"
+    else GP_WHY="$_gp_xn partitions carry PARTUUID=$1 (a cloned disk?)"; fi
+    GP_DEV='' GP_PDIR=''
+    return 1
+}
+
+# gp_conf_dev VAR KEY CMDLINE: the partition VAR (SYSTEM_DEV or USERDATA_DEV, as
+# deploy.conf set it) is, checked against the one KEY=PARTUUID=<uuid> on the command
+# line (a file) names (010 FR-051). VAR empty: set to that partition's device node.
+# VAR set, KEY not given (a machine whose names are fixed): VAR kept. Both: the same
+# device, else refused. 1 = refused (KEY missing with VAR empty, given twice, not
+# PARTUUID=<uuid>, no partition or two carry it, VAR another device): GP_WHY says
+# why, VAR unchanged. Test hooks: as gp_uuid_dev's.
+gp_conf_dev() {
+    eval "_gp_cv=\${$1:-}"
+    _gp_ck=$(gp_cmdkey "$2" "$3"); _gp_cr=$?
+    case $_gp_cr in
+    1)
+        [ -n "$_gp_cv" ] && return 0
+        GP_WHY="$1 is not set (deploy.conf) and this boot's command line has no $2=PARTUUID=<uuid>"
+        return 1 ;;
+    2) GP_WHY="$2= is given more than once on this boot's command line: no partition taken"; return 1 ;;
+    esac
+    _gp_cu=$(gp_cmdpart "$2" "$3") ||
+        { GP_WHY="$2=$_gp_ck on this boot's command line is not PARTUUID=<uuid>: no partition taken"; return 1; }
+    gp_uuid_dev "$_gp_cu" || { GP_WHY="$2=PARTUUID=$_gp_cu: $GP_WHY: no partition taken"; return 1; }
+    if [ -n "$_gp_cv" ]; then
+        [ "$(readlink -f "$_gp_cv" 2>/dev/null)" = "$(readlink -f "$GP_DEV" 2>/dev/null)" ] ||
+            { GP_WHY="$1=$_gp_cv (deploy.conf) is not the partition this boot's $2=PARTUUID=$_gp_cu names ($GP_DEV)"; return 1; }
+        return 0
+    fi
+    eval "$1=\$GP_DEV"
 }
 
 # gp_boot_dev CMDLINE NAME: the boot partition's device: the partition named NAME
@@ -544,15 +599,9 @@ gp_cmdpart() {
 # (/sys/class/block), GLASSINE_BI_DEVDIR (/dev).
 gp_boot_dev() {
     [ -z "${GLASSINE_BI_BOOTPART_DEV:-}" ] || { echo "$GLASSINE_BI_BOOTPART_DEV"; return 0; }
-    _gp_sb=${GLASSINE_BI_SYSBLOCK:-/sys/class/block}
     _gp_su=$(gp_cmdpart glassine.system "$1") || { echo "this boot's command line names no system partition (glassine.system=PARTUUID=)"; return 1; }
-    _gp_sd=''
-    for _gp_u in "$_gp_sb"/*/uevent; do
-        grep -q '^PARTN=' "$_gp_u" 2>/dev/null || continue
-        [ "$(gp_part_uuid "${_gp_u%/uevent}")" = "$_gp_su" ] || continue
-        _gp_sd=$(cd -P "${_gp_u%/uevent}/.." && pwd -P) || continue
-    done
-    [ -n "$_gp_sd" ] || { echo "no partition is the system partition $_gp_su"; return 1; }
+    gp_uuid_dev "$_gp_su" || { echo "the system partition: $GP_WHY"; return 1; }
+    _gp_sd=$(cd -P "$GP_PDIR/.." && pwd -P) || { echo "the system partition $_gp_su has no disk"; return 1; }
     _gp_bn=0 _gp_bd=''
     for _gp_u in "$_gp_sd"/*/uevent; do
         grep -qx "PARTNAME=$2" "$_gp_u" 2>/dev/null || continue

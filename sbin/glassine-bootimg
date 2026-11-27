@@ -280,12 +280,13 @@ if [ "${ROOT_LAYOUT:-plain}" = deployments ]; then
     GBLIB=${GLASSINE_BI_LIB:-/usr/lib/glassine-boot}
     # shellcheck source=../lib/glassine-state.sh
     . "$GBLIB/glassine-state.sh" || die "cannot read $GBLIB/glassine-state.sh"
+    # the boot partition (HANDOFF=uefi) and the partitions by the command line's
+    # identities (every hand-off, 010 FR-051): before glassine-kernel.sh, which
+    # finds userdata with it
+    # shellcheck source=../lib/glassine-bootpart.sh
+    . "$GBLIB/glassine-bootpart.sh" || die "cannot read $GBLIB/glassine-bootpart.sh"
     # shellcheck source=../lib/glassine-kernel.sh
     . "$GBLIB/glassine-kernel.sh" || die "cannot read $GBLIB/glassine-kernel.sh"
-    if [ "${HANDOFF:-}" = uefi ]; then
-        # shellcheck source=../lib/glassine-bootpart.sh
-        . "$GBLIB/glassine-bootpart.sh" || die "cannot read $GBLIB/glassine-bootpart.sh"
-    fi
     gk_main "$@"
     exit $?
 fi

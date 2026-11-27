@@ -11,8 +11,8 @@ run on hardware**.
 
 | Term | Meaning |
 |---|---|
-| system partition | The partition named by `SYSTEM_DEV` btrfs. Holds the read-only bases, the kernel modules and `state/`. |
-| userdata | The partition named by `USERDATA_DEV`, ext4. Holds the deployments under `USERDATA_PREFIX`, the hibernate swap file, and the person's storage (home and Flatpak's system data), outside the deployments. |
+| system partition | The partition named by `SYSTEM_DEV`, or on a PC the one this boot's `glassine.system=PARTUUID=` names ("Configuration"), btrfs. Holds the read-only bases, the kernel modules and `state/`. |
+| userdata | The partition named by `USERDATA_DEV`, or on a PC the one `glassine.userdata=PARTUUID=` names, ext4. Holds the deployments under `USERDATA_PREFIX`, the hibernate swap file, and the person's storage (home and Flatpak's system data), outside the deployments. |
 | base | A read-only btrfs subvolume with a complete system (`bases/<id>/`). |
 | deployment | One bootable root: a base plus its own layers on userdata (`deployments/<id>/`). |
 | current | The deployment that boots normally. |
@@ -677,6 +677,41 @@ mounted or the prefix is not under `media/`).
 See [`conf/deploy.conf.example`](../conf/deploy.conf.example): `SYSTEM_DEV`,
 `SYSTEM_MNT`, `USERDATA_DEV`, `USERDATA_MNT`, `USERDATA_PREFIX`, `RUN_DIR`,
 `USERDATA_RESERVE_KIB` (default 0: the KiB the first start leaves free at the end of userdata), `KEEP_UPDATES` (default 1: how many earlier deployments the clean-up keeps; the device package derives it from the description's `keep_updates`, never set by hand), `SWITCH_MIN_CAPACITY`, `SOFT_RESTART` (default `yes`; `no`: every restart is cold), `RESTART_LIMIT_S` (default 20: each step of a soft start gives up after this many seconds and the restart turns cold), `RESTART_INIT_S` (default 60: how long `restart` waits for PID 1 to start the soft restart before it restarts cold), `ACCEPT_AFTER`, `ACCEPT_HEALTH_DIR`, `ACCEPT_BUSY_S` (default 600: how long the accept retries while the state is busy), `SLOT_TOOL` (default empty: no boot slot marking), `HIBERNATE_SIZE_MB`, `HIBERNATE_RESERVE_MB` (default 512; also part of the clean-up's room on userdata). A recovery passes its own file with `GLASSINE_DEPLOY_CONF`.
+
+### Which partitions
+
+`SYSTEM_DEV` and `USERDATA_DEV` are paths of the two partitions, for a machine whose
+device description fixes the partition names (one disk, its names unique): a name such
+as `/dev/disk/by-partlabel/<name>` is then safe. A PC's `deploy.conf` leaves both empty:
+a PC can hold several disks with partitions of the same names (an install medium, a
+clone, a second installation), and a name points at whichever disk the system saw
+last. Each empty one is then the partition its key on this boot's command line names,
+`glassine.system=PARTUUID=<uuid>` and `glassine.userdata=PARTUUID=<uuid>`
+([boot.md](boot.md#command-line-keys); the kernel set's command line carries both,
+[boot-partition.md](boot-partition.md#the-command-line)), found as the initramfs
+finds it: the key given once, `PARTUUID=` and a whole identity (compared in lower
+case), the identity from the kernel's uevent or else the disk's GPT, carried by
+exactly one partition (010 FR-051).
+
+- A key that is missing (with the value empty), given twice or malformed, or an
+  identity that no partition or two partitions carry (a cloned disk): the partition is
+  not found. Every command but `init` (which needs neither) then refuses with the
+  reason (exit 1), before it reads or writes anything; `status` reports what it can
+  read without that partition and gives the reason on stderr.
+- A value set and its key given too: both must be the same partition (compared as
+  device nodes, links resolved), else the same refusal. The command line names what
+  this start runs on, so a name pointing elsewhere is a fault, never a choice.
+- A value set and no key on the command line (a fixed-name machine): the value.
+
+`glassine-first-start` and `glassine-hibernate` find userdata the same way (a refusal
+before their first write), and so does `glassine-bootimg` for the block-list hand-off
+(with the key given; without it `USERDATA_DEV`, else the board's `USERDATA_PART`): a
+userdata it can't find leaves no device, so the check of the kernel file on it fails
+and nothing is written, with the reason logged. The shutdown's read-only step (`glassine-mount-ro`, the soft
+start's cold fallback) logs the reason of a partition it can't find and leaves that one
+to the shutdown's own handling. The command line is `/proc/cmdline`; the host tests read
+another file (`GLASSINE_DEPLOY_CMDLINE`, `glassine-hibernate`: `GLASSINE_PROC_CMDLINE`),
+and a sysfs and `/dev` stand-in (`GLASSINE_BI_SYSBLOCK`, `GLASSINE_BI_DEVDIR`).
 
 ## Runtime directory: `/run/glassine/`
 

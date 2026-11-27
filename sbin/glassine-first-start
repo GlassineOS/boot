@@ -35,6 +35,8 @@
 # Needs btrfs-progs (step 2) and e2fsprogs (mke2fs, dumpe2fs; step 3).
 # Configuration: /etc/glassine/deploy.conf (SYSTEM_MNT, USERDATA_DEV, RUN_DIR,
 # USERDATA_RESERVE_KIB; glassine-deploy reads the rest), or GLASSINE_DEPLOY_CONF.
+# USERDATA_DEV empty (a PC): the partition glassine.userdata=PARTUUID= names on
+# this boot's command line (GLASSINE_DEPLOY_CMDLINE, /proc/cmdline).
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 LIB=${GLASSINE_DEPLOY_LIB:-/usr/lib/glassine-boot/glassine-state.sh}
@@ -47,6 +49,13 @@ USERDATA_RESERVE_KIB=0
 [ -r "$CONF" ] && . "$CONF"
 # shellcheck source=../lib/glassine-state.sh
 . "$LIB" || { echo "glassine-first-start: cannot read $LIB" >&2; exit 1; }
+# shellcheck source=../lib/glassine-bootpart.sh
+. "${LIB%/*}/glassine-bootpart.sh" || { echo "glassine-first-start: cannot read ${LIB%/*}/glassine-bootpart.sh" >&2; exit 1; }
+# userdata: deploy.conf's USERDATA_DEV, or the partition this boot's
+# glassine.userdata=PARTUUID= names (010 FR-051, gp_conf_dev); a refusal stops
+# the preflight, before any write
+UD_WHY=''
+gp_conf_dev USERDATA_DEV glassine.userdata "${GLASSINE_DEPLOY_CMDLINE:-/proc/cmdline}" || UD_WHY=$GP_WHY
 # tests: GLASSINE_FIRST_START_AFTER_<STEP> (KERNEL, GROW, FORMAT, STAGE, CLEAR)
 # is shell code run right after that step (a power cut), only with
 # GLASSINE_FIRST_START_TEST=1
@@ -102,6 +111,7 @@ esac
 # --- preflight: everything checked before the first write ---------------------
 command -v btrfs >/dev/null || die "btrfs (btrfs-progs) is missing"
 command -v mke2fs >/dev/null && command -v dumpe2fs >/dev/null || die "mke2fs or dumpe2fs (e2fsprogs) is missing"
+[ -z "$UD_WHY" ] || die "$UD_WHY"
 [ -n "$USERDATA_DEV" ] && [ -b "$(readlink -f "$USERDATA_DEV")" ] || die "no userdata device ($USERDATA_DEV)"
 mountpoint -q "$SYSTEM_MNT" || die "the system partition is not mounted at $SYSTEM_MNT"
 base=''

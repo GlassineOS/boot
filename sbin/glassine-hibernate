@@ -42,7 +42,8 @@
 # could run another kernel image), 4 busy (a switch or a restart is running:
 # /run/glassine/switching, restarting; the deployment state is locked).
 #
-# Configuration: deploy.conf (SYSTEM_MNT, USERDATA_DEV, USERDATA_MNT: a real
+# Configuration: deploy.conf (SYSTEM_MNT, USERDATA_DEV (empty, a PC: the partition
+# glassine.userdata=PARTUUID= names on the command line), USERDATA_MNT: a real
 # mount point, on another device than its parent directory,
 # USERDATA_PREFIX, RUN_DIR, HIBERNATE_PICTURE (yes), HIBERNATE_SIZE_MB, HIBERNATE_RESERVE_MB: free
 # space setup leaves on userdata, default 512; HIBERNATE_HOOKS). For the host test:
@@ -77,6 +78,12 @@ HIBERNATE_HOOKS=/etc/glassine/hibernate.d
 . "$ROOTLIB" || { echo "glassine-hibernate: cannot read $ROOTLIB" >&2; exit 3; }
 # shellcheck source=../lib/glassine-device.sh
 . "$DEVLIB" || { echo "glassine-hibernate: cannot read $DEVLIB" >&2; exit 3; }
+# shellcheck source=../lib/glassine-bootpart.sh
+. "${LIB%/*}/glassine-bootpart.sh" || { echo "glassine-hibernate: cannot read ${LIB%/*}/glassine-bootpart.sh" >&2; exit 3; }
+# userdata: deploy.conf's USERDATA_DEV, or the partition this boot's
+# glassine.userdata=PARTUUID= names (010 FR-051, gp_conf_dev)
+UD_WHY=''
+gp_conf_dev USERDATA_DEV glassine.userdata "$CMDLINE" || UD_WHY=$GP_WHY
 
 REL=$USERDATA_PREFIX/swap/hibernate
 SWAP=$USERDATA_MNT/$REL
@@ -125,6 +132,7 @@ ready() {
     why=$(gs_kernel_refusal "$SYSTEM_MNT/state/kernel" "$CMDLINE" "${GLASSINE_UNAME:-$(uname -r)}")
     [ -z "$why" ] || die 3 "$why: the image would be cancelled"
     grep -qw disk "$SYSPOWER/state" 2>/dev/null || die 3 "the kernel cannot hibernate (no 'disk' in $SYSPOWER/state)"
+    [ -z "$UD_WHY" ] || die 3 "$UD_WHY"
     [ -b "$USERDATA_DEV" ] || die 3 "USERDATA_DEV is not a block device: '$USERDATA_DEV'"
     mountpoint -q "$USERDATA_MNT" || die 3 "userdata is not mounted at $USERDATA_MNT"
     [ -f "$SWAP" ] || die 3 "no swap file: run glassine-hibernate setup"
