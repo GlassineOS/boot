@@ -200,9 +200,14 @@ case $stage in
     come_up "$R" "$B1"
     [ "$(meta "$R" kind)" = reset ]; res $? "$R is a reset (kind=reset)"
     accepted "$R"
-    # the accept's clean-up: $S (previous until this accept) is neither current nor previous now
+    # the accept's clean-up (spec 007): $S (previous until this accept) is now the second
+    # most recent earlier deployment: it stays where the device keeps more than one
     S=$(cat "$Q/S")
-    [ ! -e "$UD/$P/deployments/$S" ] && [ -e "$UD/$P/deployments/d1/meta" ]; res $? "clean-up after the accept: $S removed, d1 (previous) kept"
+    if [ "${KEEP_UPDATES:-1}" -gt 1 ]; then
+        [ -e "$UD/$P/deployments/$S/meta" ] && [ -e "$UD/$P/deployments/d1/meta" ]; res $? "clean-up after the accept: $S and d1 (previous) kept (KEEP_UPDATES=$KEEP_UPDATES)"
+    else
+        [ ! -e "$UD/$P/deployments/$S" ] && [ -e "$UD/$P/deployments/d1/meta" ]; res $? "clean-up after the accept: $S removed, d1 (previous) kept"
+    fi
     services
     [ "$(cat /etc/hostname)" = qtest-carried ]; res $? "reset kept: /etc/hostname (migrate list)"
     cmp -s /etc/machine-id "$Q/machine-id"; res $? "reset kept: the machine id"
