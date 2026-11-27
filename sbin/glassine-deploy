@@ -133,7 +133,10 @@
 # kernel trial).
 #
 # Configuration: /etc/glassine/deploy.conf (conf/deploy.conf.example), or
-# the file named by GLASSINE_DEPLOY_CONF.
+# the file named by GLASSINE_DEPLOY_CONF. SYSTEM_DEV/USERDATA_DEV empty (a PC):
+# the partitions glassine.system=/glassine.userdata=PARTUUID= name on this boot's
+# command line (GLASSINE_DEPLOY_CMDLINE, /proc/cmdline; docs/deployments.md,
+# "Which partitions").
 set -u
 CONF=${GLASSINE_DEPLOY_CONF:-/etc/glassine/deploy.conf}
 LIB=${GLASSINE_DEPLOY_LIB:-/usr/lib/glassine-boot/glassine-state.sh}
@@ -153,6 +156,17 @@ SWITCH_HOOK=${GLASSINE_SWITCH_HOOK:-/usr/sbin/glassine-switch-hook}
 . "${LIB%/*}/glassine-root.sh" || { echo "glassine-deploy: cannot read ${LIB%/*}/glassine-root.sh" >&2; exit 1; }
 # shellcheck source=../lib/glassine-accounts.sh
 . "${LIB%/*}/glassine-accounts.sh" || { echo "glassine-deploy: cannot read ${LIB%/*}/glassine-accounts.sh" >&2; exit 1; }
+# shellcheck source=../lib/glassine-bootpart.sh
+. "${LIB%/*}/glassine-bootpart.sh" || { echo "glassine-deploy: cannot read ${LIB%/*}/glassine-bootpart.sh" >&2; exit 1; }
+# The system partition and userdata: deploy.conf's SYSTEM_DEV/USERDATA_DEV, or the
+# partitions this boot's glassine.system=/glassine.userdata=PARTUUID= name (a PC,
+# whose deploy.conf names neither); both given: the same partition (010 FR-051,
+# gp_conf_dev). A partition not found is emptied and its reason kept: every
+# command but init (which needs neither) and status (which reads only what it
+# can without it, the reason on stderr) refuses before anything is read or written.
+DEV_WHY=''
+gp_conf_dev SYSTEM_DEV glassine.system "${GLASSINE_DEPLOY_CMDLINE:-/proc/cmdline}" || { DEV_WHY=$GP_WHY; SYSTEM_DEV=''; }
+gp_conf_dev USERDATA_DEV glassine.userdata "${GLASSINE_DEPLOY_CMDLINE:-/proc/cmdline}" || { DEV_WHY="$DEV_WHY${DEV_WHY:+; }$GP_WHY"; USERDATA_DEV=''; }
 
 PORCELAIN_VERSION=1
 SWAPFILE="$USERDATA_PREFIX/swap/hibernate"
@@ -2251,6 +2265,11 @@ esac
 [ "$NORESTART" = 0 ] || [ "$CMD" = status ] || usage
 # then_restart: the command, then restart (its exit code when it failed)
 then_restart() { [ "$RESTART" = 1 ] || return 0; cleanup; RS_MODE='' cmd_restart; }
+case $CMD:$DEV_WHY in
+init:*|*:) ;;
+status:*) echo "glassine-deploy: $DEV_WHY" >&2 ;;
+*) die "$DEV_WHY" ;;
+esac
 case "$CMD:$NARG" in
 restart:0) cmd_restart ;;
 status:0) cmd_status ;;

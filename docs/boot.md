@@ -48,6 +48,10 @@ refused (no partition taken, no request).
 | `glassine.deploy.once=<deployment id>` | the one-shot deployment request ([010](../specs/010-uefi-deployments/spec.md) FR-042 to FR-047): start this deployment for this boot only, in place of the pick, with no state written. Only the boot chain adds it, for one start; it is never part of a stored command line. What the initramfs does with it is in "Deployments layout", step 3 |
 
 In the plain layout the identities are not read: `ROOT_PART` is found by its name.
+The running system's tools that work on the two partitions after the initramfs
+(`glassine-deploy`, the first start, hibernation, the shutdown's read-only step) find them
+by the same two keys where `deploy.conf` names neither, under the same rules
+([deployments.md](deployments.md#which-partitions)).
 `DEVICE_PART` is always found by its name.
 
 A machine whose partition names are unique to it by construction (a device with one

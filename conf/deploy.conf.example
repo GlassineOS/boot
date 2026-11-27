@@ -6,6 +6,13 @@
 # This example describes the Onyx Boox Note Air (SDM636, eMMC, A/B slots).
 
 # The system partition (btrfs once migrated: bases, kernels, modules, state/).
+# A path, for a machine whose device description fixes its partition names (one
+# disk, its names unique), as here. A PC leaves SYSTEM_DEV and USERDATA_DEV empty
+# (SYSTEM_DEV=): each is then the partition this boot's command line names,
+# glassine.system=PARTUUID=<uuid> and glassine.userdata=PARTUUID=<uuid>, since a
+# second disk can carry partitions of the same names (docs/deployments.md, "Which
+# partitions"). Both given: they must be the same partition, else every command
+# refuses.
 SYSTEM_DEV=/dev/disk/by-partlabel/system_b
 # Where its top level is (or gets) mounted. glassine-deploy mounts it here
 # itself when it is not mounted (read-only, rescue=nologreplay, for reading).

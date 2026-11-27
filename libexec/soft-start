@@ -23,6 +23,13 @@ if . /usr/lib/glassine-boot/glassine-state.sh 2>/dev/null && . /usr/lib/glassine
     # shellcheck disable=SC2034  # read by the library
     GR_TMP=/run/glassine
     gr_log() { echo "<3>glassine-soft-start: $*" > /dev/kmsg 2>/dev/null; }
+    # a PC's deploy.conf names neither: the partitions this boot's command line
+    # names (010 FR-051); one that can't be found is logged and left alone
+    # shellcheck source=../lib/glassine-bootpart.sh
+    if [ -r /usr/lib/glassine-boot/glassine-bootpart.sh ] && . /usr/lib/glassine-boot/glassine-bootpart.sh 2>/dev/null; then
+        gp_conf_dev SYSTEM_DEV glassine.system /proc/cmdline || { gr_log "$GP_WHY"; SYSTEM_DEV=''; }
+        gp_conf_dev USERDATA_DEV glassine.userdata /proc/cmdline || { gr_log "$GP_WHY"; USERDATA_DEV=''; }
+    fi
     for d in "$USERDATA_DEV" "$SYSTEM_DEV"; do [ -z "$d" ] || gr_shutdown_ro "$d"; done
 fi
 sync

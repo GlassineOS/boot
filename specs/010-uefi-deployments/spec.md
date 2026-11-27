@@ -292,8 +292,12 @@ the next start without a choice runs the current deployment again.
     exactly one partition carries it.
   - A key that is missing, given twice or malformed, or an identity that no partition
     or more than one partition carries, makes the tool refuse with the reason, a
-    nonzero exit and no write. The shutdown's read-only step, which must never stop a
-    shutdown, logs the reason and leaves that partition to the shutdown's own handling.
+    nonzero exit and no write. Two go on and say the reason instead, writing nothing to
+    that partition:
+    the deployment tool's status, which shows what it can read without that partition
+    (a status report must work on a broken start), and the shutdown's read-only step,
+    which must never stop a shutdown and leaves that partition to the shutdown's own
+    handling.
   - A machine whose description fixes its partition names (one disk, its names unique)
     names both partitions in its system configuration and starts with no identities
     on its command line; the names are then used.

@@ -151,6 +151,32 @@ ok "USERDATA_RESERVE_KIB=16: the file system ends 16 KiB before the partition" "
 down
 conf
 
+# --- a PC: deploy.conf names neither partition, the command line does ----------
+# (010 FR-051) A second disk's userdata of the same name (an install medium) is
+# never formatted; a missing key or an identity two partitions carry refuses.
+SU=0f3e26a1-5c7b-4a55-9b8d-2c4f6e8a1b3d UU=6d1a5e2b-8c4f-4b3a-a9e7-1f2d3c4b5a69 OU=22222222-2222-4222-8222-222222222222
+mkpool --install-marker; mkud stock
+cp $W/ud.img $W/other.img; loop $W/other.img; OD=$LOOP
+PB=$W/pcsb PD=$W/pcdev; rm -rf $PB $PD; mkdir -p $PB/sys $PB/ud $PB/other $PD
+ln -s "$SD" $PD/sys; ln -s "$UDEV" $PD/ud; ln -s "$OD" $PD/other
+pcpart() { printf 'DEVNAME=%s\nPARTN=%s\nPARTNAME=%s\nPARTUUID=%s\n' $1 $2 $3 $4 > $PB/$1/uevent; }
+pcpart sys 2 glassine-system $SU; pcpart ud 3 glassine-userdata $UU; pcpart other 3 glassine-userdata $OU
+sed -i '/^SYSTEM_DEV=\|^USERDATA_DEV=/d' $W/deploy.conf
+export GLASSINE_BI_SYSBLOCK=$PB GLASSINE_BI_DEVDIR=$PD GLASSINE_DEPLOY_CMDLINE=$W/cmdline
+boot
+U0=$(uuid "$UDEV") O0=$(sha $W/other.img)
+echo "quiet glassine.system=PARTUUID=$SU" > $W/cmdline
+ok "pc, no glassine.userdata= on the command line: refused (exit 1), neither userdata touched, marker kept" "! fs && grep -q 'has no glassine.userdata=PARTUUID=<uuid>' $W/fsout && [ \"\$(uuid $UDEV)\" = \"$U0\" ] && [ -e $RG/userdata/android.txt ] && [ \"\$(sha $W/other.img)\" = $O0 ] && [ -e $RG/system/state/install ] && ! rebooted"
+pcpart other 3 glassine-userdata $UU
+echo "quiet glassine.system=PARTUUID=$SU glassine.userdata=PARTUUID=$UU" > $W/cmdline
+ok "pc, two partitions carry userdata's identity (a cloned disk): refused, neither touched" "! fs && grep -q '2 partitions carry PARTUUID=$UU' $W/fsout && [ \"\$(uuid $UDEV)\" = \"$U0\" ] && [ \"\$(sha $W/other.img)\" = $O0 ] && [ -e $RG/system/state/install ] && ! rebooted"
+pcpart other 3 glassine-userdata $OU
+ok "pc, both keys: the first start formats the userdata the command line names and selects the first deployment" "fs && rebooted && [ \"\$(uuid $UDEV)\" != \"$U0\" ] && ! has_android && [ -n \"\$(st candidate)\" ] && [ ! -e $RG/system/state/install ]"
+ok "pc: the other disk's userdata of the same name is byte for byte the same" "[ \"\$(sha $W/other.img)\" = $O0 ]"
+unset GLASSINE_BI_SYSBLOCK GLASSINE_BI_DEVDIR GLASSINE_DEPLOY_CMDLINE
+down
+conf
+
 # --- a power cut after each step, then the next boot ---------------------------
 # cut STEP: the first start killed right after STEP (no clean-up), the device off
 cut() {
