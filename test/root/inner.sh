@@ -477,15 +477,15 @@ ok "a count removal that fails: said, the accept still exit 0" "PATH=$W/shimmv:\
 # the system partition short: the room comes back only after the removed one's base goes
 rm -rf $U/deployments; mkdir -p $U/deployments; mkbase7() { for n in "$@"; do btrfs -q subvolume create $S/bases/$n && cp -a $B/etc $S/bases/$n/ && head -c 8388608 /dev/urandom > $S/bases/$n/blob && btrfs property set -ts $S/bases/$n ro true; done; sync; }
 mkbase7 sb1 sb2
-room7 sb1 sb2; k7conf 4 0; btrfs -q subvolume sync $S; btrfs filesystem sync $S; SF=$(df -Pk $S | awk 'NR == 2 { print $4 }')
+room7 sb1 sb2; k7conf 4 0; btrfs -q subvolume sync $S; btrfs filesystem sync $S
 ok "room short on the system partition: the oldest earlier one and its base go, then the room is there" "ROOM7=\$((SF + 4096)) && g7 accept rn >$W/out 2>$W/err && grep -q 'deployment r1 removed: room' $W/out && grep -q 'base sb1 removed' $W/out && [ ! -e $S/bases/sb1 ] && [ -e $S/bases/sb2 ] && [ -d $U/deployments/r2 ]"
 # a stage of a base no deployment uses yet, under room pressure: the room step's base
 # clean-up keeps it, the stage goes on
-ROOM7=0; room7 sb2 sb2; gs_update $S/state/deploy candidate= tries=0; mkbase7 sn; btrfs -q subvolume sync $S; btrfs filesystem sync $S; SF=$(df -Pk $S | awk 'NR == 2 { print $4 }')
+ROOM7=0; room7 sb2 sb2; gs_update $S/state/deploy candidate= tries=0; mkbase7 sn; btrfs -q subvolume sync $S; btrfs filesystem sync $S
 ok "stage of a fresh base under room pressure: earlier ones removed for room, the fresh base kept and staged" "ROOM7=\$((SF + 4096)) && g7 stage sn --no-replay --yes >$W/out 2>$W/err && grep -q 'deployment r2 removed: room' $W/out && [ -e $S/bases/sn ] && grep -qx base=sn $U/deployments/\$(st staged)/meta"
 ROOM7=0; rm -rf "$U/deployments/$(st staged)"; gs_update $S/state/deploy staged=; btrfs -q subvolume delete $S/bases/sn >/dev/null 2>&1
 mkbase7 sb2
-ROOM7=0; room7 sb2 sb2; sed -i 's/^base=b1$/base=sb2/' $U/deployments/rn/meta; btrfs -q subvolume sync $S; btrfs filesystem sync $S; SF=$(df -Pk $S | awk 'NR == 2 { print $4 }')
+ROOM7=0; room7 sb2 sb2; sed -i 's/^base=b1$/base=sb2/' $U/deployments/rn/meta; btrfs -q subvolume sync $S; btrfs filesystem sync $S
 ok "room short on the system partition, the only freeable base used by a deployment that stays: all kept, said" "ROOM7=\$((SF + 4096)) && g7 accept rn >$W/out 2>$W/err && [ \"\$(deps7)\" = 'r1 r2 rc rn rp ' ] && grep -q 'all kept' $W/err && [ -e $S/bases/sb2 ]"
 ROOM7=0; btrfs -q subvolume delete $S/bases/sb2 >/dev/null 2>&1
 # an older deployment's meta (no current_until): its created time stands in

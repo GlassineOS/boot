@@ -96,9 +96,9 @@ more needs a larger system partition.
   FR-019a) counts `keep_updates` base updates instead of a fixed number: one base as
   received + 64 MiB × `keep_updates` + the kernel modules, × 1.25, at least 1 GiB,
   rounded up to a whole MiB.
-- **FR-004**: The descriptions: the Onyx Boox Note Air keeps 1 (its data partition is
-  the smallest it has room for: a deployment costs it 0.7 to 1.3 GB); the generic UEFI
-  PC keeps 4.
+- **FR-004**: Each device description states its value: a device with a small data
+  partition keeps 1 (a deployment can cost it over a gigabyte), a PC with a large disk
+  keeps 4.
 
 ### What is kept
 
