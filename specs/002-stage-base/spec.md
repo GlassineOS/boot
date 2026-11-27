@@ -143,7 +143,10 @@ memberships survive a base change and a reset alike.
     still come; it goes at the first of these points after the next start that nothing
     else names it).
 
-  Nothing is removed while any of these can't be read, while the default slot's kernel
+  A board with a raw default boot slot whose kernel state doesn't exist (no kernel was
+  ever installed through the kernel tool) has no recorded kernels: there the running
+  kernel and the boot chain's are all. On a PC the kernel state comes with the install,
+  so its absence counts as unreadable. Nothing is removed while any of these can't be read, while the default slot's kernel
   has no module set (a release that matches none is taken as misread), or on a board
   whose default boot can't be told (no default slot, an unknown hand-off). The removal never fails
   the command and needs btrfs-progs (without it, nothing). `bases` lists each module

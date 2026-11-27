@@ -319,6 +319,9 @@ rm -f $BP/glassine/sets/00000000c0ffee00/set.rec
 ok "kernels: a set directory without set.rec (a cut write: the loader starts none) not counted" "$B kernels >$W/kout 2>/dev/null && ! grep -q c0ffee00 $W/kout"
 rm -rf $BP/glassine/sets/00000000c0ffee00
 ok "kernels: the boot partition can't be mounted: exit 1, said" "! GLASSINE_BI_BOOTPART_DIR= GLASSINE_BI_CMDLINE=$W/nocmdline $B kernels >/dev/null 2>$W/err && grep -q 'boot partition can.t be mounted' $W/err"
+mv $K $W/kernel.save
+ok "kernels: no state/kernel on uefi (records come with the install: a loss): exit 1, said" "! $B kernels >/dev/null 2>$W/err && grep -q 'state/kernel can.t be read' $W/err"
+mv $W/kernel.save $K
 
 # the boot partition's device: the partition named glassine-boot on the system partition's disk
 unset GLASSINE_BI_BOOTPART_DIR

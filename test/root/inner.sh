@@ -475,7 +475,7 @@ ok "bases (real glassine-bootimg): the default slot's kernel's set is default-sl
 dd if=/dev/zero of=$W/defslot bs=4096 count=1 conv=notrunc 2>/dev/null
 ok "the recovery, a default slot with no image (a cut write): no module set removed, said" "mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && $GR remove km --yes >/dev/null 2>$W/err && [ \"\$(mnames)\" = 'k1 k2 kr um ' ] && grep -q 'unused module sets not removed: the default slot .* holds no boot image' $W/err"
 rawimg $W/defslot k2; mv $S/state/kernel $W/kernel.save
-ok "the recovery, no state/kernel: no module set removed, said" "mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && $GR remove km --yes >/dev/null 2>$W/err && [ \"\$(mnames)\" = 'k1 k2 kr um ' ] && grep -q 'unused module sets not removed: .*state/kernel can.t be read' $W/err"
+ok "bases (raw board, no state/kernel: no kernel installed by the tool): the default slot's set is default-slot, the rest unused, nothing unknown" "$GR bases --porcelain >$W/out 2>$W/err && grep -q 'name=k2	used_by=default-slot$' $W/out && grep -q 'name=k1	used_by=$' $W/out && ! grep -q unknown $W/out && [ ! -s $W/err ]"
 mv $W/kernel.save $S/state/kernel
 ok "the recovery (running kernel not the system's, state/kernel empty): only the default slot's kernel's set stays" "mkdir -p $U/deployments/km/build && printf 'base=b1\nkind=reset\n' > $U/deployments/km/meta && $GR remove km --yes >$W/out 2>&1 && [ \"\$(mnames)\" = 'k2 ' ] && grep -q 'modules k1 removed' $W/out"
 gs_update $S/state/kernel previous=pk; mkmod pk p2

@@ -1054,18 +1054,27 @@ gk_slot_release() {
 # partition (set:<id>), else the default slot's kernel (default-slot), with
 # bootpart-test the test slot's (test-slot), with blocklist the record's image
 # (blocklist). A release may come more than once. Reads only, takes no lock (the
-# caller may hold it: glassine-deploy's removal of unused module sets). 1 = one of
+# caller may hold it: glassine-deploy's removal of unused module sets). Without
+# state/kernel on a board that isn't uefi, only the running kernel and the boot chain
+# are listed (no kernel was installed through glassine-bootimg). 1 = one of
 # them can't be read, the default slot's kernel has no module set (more likely
 # misread than real), or this board's boot can't be told (said): nothing it
 # printed is the whole list.
 gk_kernels() {
     gk_open
-    [ -r "$K" ] || { echo "glassine-bootimg: $K can't be read" >&2; return 1; }
+    # no state/kernel at all: no kernel was ever installed through this tool. On a
+    # board that starts a raw default slot, that slot (read below) and the running
+    # kernel are then all it can start. On uefi the records are made at install, so a
+    # missing file there is a loss, not an empty list.
+    _gk_rec=1
+    if [ ! -e "$K" ] && [ "$HANDOFF" != uefi ]; then _gk_rec=0
+    elif [ ! -r "$K" ]; then echo "glassine-bootimg: $K can't be read" >&2; return 1
+    fi
     _r=$(uname_r); [ -z "$_r" ] || echo "$_r running"
-    for _key in current previous candidate failed deferred; do
+    [ $_gk_rec = 1 ] && for _key in current previous candidate failed deferred; do
         _v=$(k "$_key"); [ -z "$_v" ] || echo "$_v $_key"
     done
-    for _key in current_img previous_img candidate_img failed_img writing; do
+    [ $_gk_rec = 1 ] && for _key in current_img previous_img candidate_img failed_img writing; do
         _i=$(k "$_key"); [ -n "$_i" ] || continue
         _v=$(man "$_i" release)
         [ -n "$_v" ] || { echo "glassine-bootimg: the image record $_i ($_key) names no release" >&2; return 1; }
