@@ -117,7 +117,8 @@ more needs a larger system partition.
      (002's estimate) plus the hibernation reserve, the oldest earlier deployment that
      isn't previous or pinned is removed, one at a time, re-reading the free space after
      each and after its base goes (bases free their space only when no deployment uses
-     them).
+     them). Only when removing all of those would give the room: otherwise none is
+     removed for room (Scenario 3).
 - **FR-007**: Removal works as `remove` does (002: rename, then delete; never a mounted
   one). Each removal is one line on stdout and in the kernel log with the id and why
   (`count` or `room`). A removal that fails is logged and never fails the command.
