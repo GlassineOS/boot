@@ -704,7 +704,10 @@ exactly one partition (010 FR-051).
 - A value set and no key on the command line (a fixed-name machine): the value.
 
 `glassine-first-start` and `glassine-hibernate` find userdata the same way (a refusal
-before their first write). The shutdown's read-only step (`glassine-mount-ro`, the soft
+before their first write), and so does `glassine-bootimg` for the block-list hand-off
+(with the key given; without it `USERDATA_DEV`, else the board's `USERDATA_PART`): a
+userdata it can't find leaves no device, so the check of the kernel file on it fails
+and nothing is written, with the reason logged. The shutdown's read-only step (`glassine-mount-ro`, the soft
 start's cold fallback) logs the reason of a partition it can't find and leaves that one
 to the shutdown's own handling. The command line is `/proc/cmdline`; the host tests read
 another file (`GLASSINE_DEPLOY_CMDLINE`, `glassine-hibernate`: `GLASSINE_PROC_CMDLINE`),

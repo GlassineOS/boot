@@ -282,8 +282,8 @@ the next start without a choice runs the current deployment again.
   in the form the kernel loads early. The order of a set's initramfs is in
   [boot-partition.md](../../docs/boot-partition.md#files).
 - **FR-051** The running system's tools that read or write the system partition or
-  userdata outside the initramfs (the deployment tool, the first start, hibernation, and
-  the shutdown's read-only step) find them as the initramfs does: by the identities on
+  userdata outside the initramfs (the deployment tool, the first start, hibernation, the
+  kernel tool, and the shutdown's read-only step) find them as the initramfs does: by the identities on
   the running kernel's command line (FR-005), never by a partition name, so a second
   disk that carries partitions of the same names (an install medium, a clone, another
   installation) is never written. A PC's system configuration names neither partition.

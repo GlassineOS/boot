@@ -170,6 +170,20 @@ scen; boot $OLDID
 ok "no userdata at its mount point: it can't be checked, no-boot, the record cleared" "GLASSINE_BI_USERDATA_MNT=$W/plain $B promote 2>/dev/null && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = no-boot ] && [ \"\$(recid)\" = none ] && grep -q 'not mounted' $W/log"
 scen; boot $OLDID
 ok "the partition can't be read: it can't be checked, no-boot" "GLASSINE_BI_USERDATA_DEV=/nonexistent $B promote 2>/dev/null && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = no-boot ] && [ \"\$(recid)\" = none ]"
+# userdata by glassine.userdata=PARTUUID= on the command line (010 FR-051), no
+# hook and no USERDATA_DEV: damaged blocks read through the partition it names
+# are a handoff; an identity no partition carries leaves no device to check
+UU=6d1a5e2b-8c4f-4b3a-a9e7-1f2d3c4b5a69
+mkdir -p $W/sb/udx $W/dev; ln -sf "$UD" $W/dev/udx
+printf 'DEVNAME=udx\nPARTN=1\nPARTNAME=elsewhere\nPARTUUID=%s\n' $UU > $W/sb/udx/uevent
+udkey() { env -u GLASSINE_BI_USERDATA_DEV GLASSINE_BI_SYSBLOCK=$W/sb GLASSINE_BI_DEVDIR=$W/dev $B promote 2>/dev/null; }
+scen; boot $OLDID "glassine.userdata=PARTUUID=$UU"; FIRST=$(python3 /p/lib/glassine-blocklist map $UDK/$ID.img | head -n 1 | cut -d' ' -f1)
+printf X | dd of=$UD bs=4096 seek=$FIRST conv=notrunc,fsync 2>/dev/null
+ok "userdata by the command line's identity: its blocks read there (damaged: handoff)" "udkey && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = handoff ]"
+scen; boot $OLDID "glassine.userdata=PARTUUID=33333333-3333-4333-8333-333333333333"
+ok "an identity no partition carries: no device, it can't be checked, no-boot, the reason logged" "udkey && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = no-boot ] && [ \"\$(recid)\" = none ] && grep -q 'userdata: glassine.userdata=PARTUUID=33333333-3333-4333-8333-333333333333: no partition carries' $W/log"
+scen; boot $OLDID "glassine.userdata=PARTUUID=$UU glassine.userdata=PARTUUID=$UU"
+ok "the key given twice: no device, no-boot" "udkey && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = no-boot ] && grep -q 'given more than once' $W/log"
 scen; boot $OLDID; head -c 4096 /dev/zero | tr '\000' g | dd of=$SLOT bs=4096 seek=$REC count=1 conv=notrunc,fsync 2>/dev/null
 ok "a garbage record: handoff, cleared, the default image untouched" "[ \"\$(readrec | head -c 8)\" = gggggggg ] && $B promote 2>/dev/null && [ \"\$(gs_kv $BI/$ID.manifest reason)\" = handoff ] && [ \"\$(recid)\" = none ] && oldslot"
 fresh; install

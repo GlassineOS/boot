@@ -73,6 +73,19 @@ USERDATA_PART=${USERDATA_PART:-} USERDATA_PREFIX=${USERDATA_PREFIX:-media/glassi
 SWITCH_MIN_CAPACITY=${SWITCH_MIN_CAPACITY:-30}
 GK_BLDEV=${GLASSINE_BI_RECORD_DEV:-/dev/disk/by-partlabel/$BLOCKLIST_RECORD_PART}
 GK_UDDEV=${GLASSINE_BI_USERDATA_DEV:-${USERDATA_DEV:-/dev/disk/by-partlabel/$USERDATA_PART}}
+# userdata named by this boot's glassine.userdata=PARTUUID= (010 FR-051): the
+# partition it names (gp_conf_dev, lib/glassine-bootpart.sh; a USERDATA_DEV of
+# deploy.conf must be the same one). Not found: no device, so every check of the
+# file on it fails and nothing is written; the reason logged. No key (a machine
+# whose names are fixed): deploy.conf's USERDATA_DEV, else the board's name.
+if [ -z "${GLASSINE_BI_USERDATA_DEV:-}" ] && command -v gp_conf_dev >/dev/null 2>&1; then
+    gp_cmdkey glassine.userdata "${CMDLINE:-/proc/cmdline}" >/dev/null
+    if [ $? != 1 ]; then
+        _gk_ud=${USERDATA_DEV:-}
+        if gp_conf_dev _gk_ud glassine.userdata "${CMDLINE:-/proc/cmdline}"; then GK_UDDEV=$_gk_ud
+        else GK_UDDEV=''; log "userdata: $GP_WHY"; fi
+    fi
+fi
 GK_UDMNT=${GLASSINE_BI_USERDATA_MNT:-${USERDATA_MNT:-/run/glassine/userdata}}
 GK_BLK=$GK_UDMNT/$USERDATA_PREFIX/kernel
 GK_ABLDEV=${GLASSINE_BI_ABL_DEV:-/dev/disk/by-partlabel/$BLOCKLIST_ABL_PART}
