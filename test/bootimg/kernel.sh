@@ -366,7 +366,7 @@ rm -rf $W/c.before
 gs_update $W/c/sys/state/kernel failed=7.1.0-b deferred=6.0.0-old
 ok "kernels: a failed kernel (retry can try it again) and a deferred one" "kl | grep -qx '7.1.0-b failed' && kl | grep -qx '6.0.0-old deferred'"
 mv $W/c/sys/state/kernel $W/c/kernel.save
-ok "kernels: no state/kernel: exit 1, said" "! kl >/dev/null && grep -q 'state/kernel can.t be read' $W/kerr"
+ok "kernels: no state/kernel on a raw-slot board (no kernel ever installed by this tool): the running kernel and the default slot's, no record roles" "kl > $W/kout && grep -qx '7.1.0-a running' $W/kout && grep -qx '7.1.0-a default-slot' $W/kout && ! grep -qE ' (current|previous|candidate|failed|deferred)(_img)?\$' $W/kout && [ ! -s $W/kerr ]"
 mv $W/c/kernel.save $W/c/sys/state/kernel
 CI=$(ck current_img); sed -i '/^release=/d' $W/c/sys/state/bootimg/$CI.manifest
 ok "kernels: an image record a key names without a release: exit 1, said" "! kl >/dev/null && grep -q \"image record $CI (current_img) names no release\" $W/kerr"

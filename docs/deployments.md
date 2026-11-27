@@ -346,7 +346,7 @@ so a module set no such kernel uses goes by itself:
 
   `glassine-deploy bases` shows these roles as each module set's `used_by`.
 - **Never:** nothing at all while one of these can't be read: `glassine-bootimg
-  kernels` fails (no `state/kernel`, a record it names without a release, a default
+  kernels` fails (no `state/kernel` on `uefi`, a record it names without a release, a default
   slot with no boot image, one whose kernel release can't be read or one whose kernel
   has no module set here, a boot partition
   that can't be mounted, no `DEFAULT_DEV` or an unknown `HANDOFF` in `board.conf`, the

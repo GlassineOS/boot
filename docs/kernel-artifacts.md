@@ -665,7 +665,13 @@ module sets ([deployments.md](deployments.md#unused-module-sets)):
 | `blocklist` | `blocklist`: the release of the image the block-list record names |
 | `set:<id>` | `uefi`: the `release` of every kernel set on the boot partition (`glassine/sets/<id>/set.rec`; a directory without one is a cut write the loader doesn't start). The loader may start any set a slot names, and a set needn't have a record (the installer's default before the seed). The recovery image isn't listed: its kernel uses no module set |
 
-It exits 1, naming what it couldn't read, when `state/kernel` is missing, an image key
+Without `state/kernel` on a board that isn't `uefi` (no kernel was ever installed
+through `glassine-bootimg`, so nothing is recorded), it lists the running kernel and
+the boot chain's only. On `uefi` the records come with the install, so a missing file
+there is a loss.
+
+It exits 1, naming what it couldn't read, when `state/kernel` is missing on `uefi` or
+can't be read, an image key
 names a record without a release, the default slot holds no boot image or one whose
 kernel release can't be read (another compression, another header version, a cut write),
 the default slot's kernel has no module set on the system partition (its only
@@ -675,7 +681,7 @@ without a release, the boot partition can't be mounted or a set's `set.rec` name
 release, `DEFAULT_DEV` is empty on a board without `uefi`, or `HANDOFF` is unknown. Then
 nothing it printed is the whole list. The plain layout has no `kernels` (usage, exit 2).
 
-On the Note Air today (no hand-off, `state/kernel` naming nothing until the first
+On the Note Air today (no hand-off, `state/kernel` absent or naming nothing until the first
 kernel update goes through `glassine-bootimg`) the kernels that can start are the
 running one and the default slot's. Its recovery partition's kernel is not counted: the board
 names no key for it, and the recovery's kernel uses no module set (everything built in).
