@@ -6,7 +6,8 @@ side of FR-005 (the identities on the command line) and of FR-042 to FR-047 (the
 deployment request), and the running system's kernel hand-off (FR-025 to FR-028:
 `glassine-bootimg` with `HANDOFF=uefi`), the healthy mark and the shutdown step
 (FR-012, FR-023: `glassine-loader-mark`), the rollback after the limit (FR-013:
-`glassine-bootimg rollback --limit`); nothing else
+`glassine-bootimg rollback --limit`), the running system's partitions by their
+identities (FR-051); nothing else
 **Builds on:** [001-deployments](../001-deployments/spec.md),
 [004-kernel-records](../004-kernel-records/spec.md),
 [008-recovery](../008-recovery/spec.md), [009-first-start](../009-first-start/spec.md) ·
@@ -280,6 +281,27 @@ the next start without a choice runs the current deployment again.
   microcode comes first in the kernel set's initramfs, before the GlassineOS initramfs,
   in the form the kernel loads early. The order of a set's initramfs is in
   [boot-partition.md](../../docs/boot-partition.md#files).
+- **FR-051** The running system's tools that read or write the system partition or
+  userdata outside the initramfs (the deployment tool, the first start, hibernation, and
+  the shutdown's read-only step) find them as the initramfs does: by the identities on
+  the running kernel's command line (FR-005), never by a partition name, so a second
+  disk that carries partitions of the same names (an install medium, a clone, another
+  installation) is never written. A PC's system configuration names neither partition.
+  - Each identity is taken when the command line gives its key exactly once, as
+    `PARTUUID=` and a whole unique partition identity (compared in lower case), and
+    exactly one partition carries it.
+  - A key that is missing, given twice or malformed, or an identity that no partition
+    or more than one partition carries, makes the tool refuse with the reason, a
+    nonzero exit and no write. The shutdown's read-only step, which must never stop a
+    shutdown, logs the reason and leaves that partition to the shutdown's own handling.
+  - A machine whose description fixes its partition names (one disk, its names unique)
+    names both partitions in its system configuration and starts with no identities
+    on its command line; the names are then used.
+  - When the system configuration names a partition and the command line names one
+    too, both must be the same partition; otherwise the tool refuses as above. The
+    command line names what this start runs on, so a configured name that points
+    elsewhere (a stale name, a second disk with the same names) is a fault, never a
+    choice between the two.
 
 ### Writing the boot partition safely
 
@@ -433,7 +455,7 @@ the next start without a choice runs the current deployment again.
 | The loader record | owned (new); read and written by the loader, the installer, the running system and the recovery | `format=1` | `docs/boot-partition.md`, "The loader record" |
 | The boot partition's layout and fixed names | owned (new); consumed by the loader, the installer's `write-boot-files` step and its repair | `format=1` | `docs/boot-partition.md`, "Layout" |
 | A kernel set: its files, the order of its initramfs, its record and id | owned (new); consumed by the loader and the installer | `format=1` | `docs/boot-partition.md`, "A kernel set" |
-| The identities on the command line | owned (new); written by whatever makes a kernel set, read by the initramfs | two command-line keys | `docs/boot.md`, "Command-line keys" |
+| The identities on the command line | owned (new); written by whatever makes a kernel set, read by the initramfs and the running system's tools (FR-051) | two command-line keys | `docs/boot.md`, "Command-line keys" |
 | The one-shot deployment request to the initramfs | owned (new); device-neutral | a command-line key | `docs/boot.md`, "Command-line keys"; 001 FR-005 |
 | The deployment list in the loader record | owned (new) | part of the loader record | `docs/boot-partition.md`, "Keys" |
 | The healthy mark | owned (new); written by the boot-success step on every healthy boot | part of the loader record | `docs/boot-partition.md`, "Keys"; `docs/deployments.md`, "Accepting a candidate" |
@@ -485,7 +507,11 @@ the next start without a choice runs the current deployment again.
 - **The other system, or a person, deletes files on the boot partition:** FR-007 and
   FR-016 decide the start; the repair rebuilds.
 - **Two GlassineOS installs on one PC:** each has its own boot partition, entry and
-  loader record; FR-004 and FR-005 keep them apart.
+  loader record; FR-004, FR-005 and FR-051 keep them apart.
+- **A second disk with partitions of the same names** (an install medium, a clone):
+  the running system's tools use the partitions the command line names (FR-051). A
+  clone carries the same identities, so two partitions carry one: the tools refuse
+  until one disk is removed.
 - **The first start (009):** the bare boot writes no healthy mark and restarts once; the
   first deployment's boots follow. The limit leaves room for that restart.
 - **The loader's list names a deployment that is gone:** FR-043; the ordinary pick runs.
@@ -562,6 +588,12 @@ Each is a test in QEMU with OVMF unless it says otherwise.
   deployment is assembled from the btrfs system partition and the ext4 userdata, and no
   boot module failed. The same initramfs without the boot modules does not find the
   system partition.
+- **SC-018** With a second disk whose partitions have the same names as the
+  installation's, and a system configuration that names neither partition, every
+  command of the deployment tool and the first start acts on the partitions the command
+  line names. With the key missing, given twice, malformed, naming no partition or a
+  partition two disks carry, or with a configured name that is another partition than
+  the key's, they refuse with the reason and write nothing.
 
 ## Assumptions
 
